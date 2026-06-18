@@ -29,8 +29,20 @@ const encoder = new TextEncoder();
  * UTF-16 unit, serde by UTF-8 byte — identical for ASCII) and integer/string/bool params
  * (serde's shortest-float formatting can differ from JS for non-integer floats). Revisit
  * if params ever gain float values or non-ASCII keys.
+ *
+ * `actor` (R8) is optional: the host skips it when absent (so pre-R8 receipts sign
+ * identically), and when present serializes it LAST, with its struct fields in declaration
+ * order (`agent`, then `user`) — NOT sorted. We reproduce that exactly here.
  */
 export function canonicalReceiptBytes(r: Receipt): Uint8Array {
+  const actor =
+    r.actor === undefined
+      ? ""
+      : ',"actor":{"agent":' +
+        JSON.stringify(r.actor.agent) +
+        ',"user":' +
+        JSON.stringify(r.actor.user) +
+        "}";
   const json =
     "{" +
     '"step_id":' +
@@ -43,6 +55,7 @@ export function canonicalReceiptBytes(r: Receipt): Uint8Array {
     (r.success ? "true" : "false") +
     ',"ts_ms":' +
     canonicalNumber(r.ts_ms) +
+    actor +
     "}";
   return encoder.encode(json);
 }

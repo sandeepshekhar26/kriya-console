@@ -2,8 +2,18 @@
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
 /**
+ * Who took the action (R8) — mirrors `kriya::audit::Actor`. Serialized in declaration
+ * order (`agent`, then `user`), which is load-bearing for the signature.
+ */
+export interface Actor {
+  agent: string;
+  user: string;
+}
+
+/**
  * The unsigned receipt. Field order mirrors `crates/kriya/src/audit.rs` exactly —
  * it is load-bearing: the host signs `serde_json::to_vec(&receipt)` over this shape.
+ * `actor` is optional and, when present, signed LAST (R8).
  */
 export interface Receipt {
   step_id: string;
@@ -11,6 +21,7 @@ export interface Receipt {
   params: Json;
   success: boolean;
   ts_ms: number;
+  actor?: Actor;
 }
 
 /** A full JSONL line: the receipt fields flattened, then `public_key` + `signature` (lowercase hex). */

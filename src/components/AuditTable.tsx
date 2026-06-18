@@ -11,6 +11,7 @@ export function AuditTable({ rows }: { rows: AuditRow[] }) {
           <tr>
             <th>Status</th>
             <th>Source</th>
+            <th>Actor</th>
             <th>Action</th>
             <th>Params</th>
             <th>Result</th>
@@ -32,6 +33,16 @@ export function AuditTable({ rows }: { rows: AuditRow[] }) {
                 )}
               </td>
               <td className="mono">{r.source}</td>
+              <td className="mono" title={r.receipt?.actor ? `${r.receipt.actor.agent} / ${r.receipt.actor.user}` : undefined}>
+                {r.receipt?.actor ? (
+                  <>
+                    {r.receipt.actor.agent}
+                    <span className="muted"> / {r.receipt.actor.user}</span>
+                  </>
+                ) : (
+                  "—"
+                )}
+              </td>
               <td className="mono strong">{r.receipt?.action_id ?? "—"}</td>
               <td className="mono params" title={r.receipt ? JSON.stringify(r.receipt.params) : undefined}>
                 {r.receipt ? truncate(JSON.stringify(r.receipt.params), 48) : "—"}
