@@ -247,6 +247,12 @@ table.audit { width: 100%; border-collapse: collapse; }
 .pill { display: inline-block; border: 1px solid var(--border-2); border-radius: 5px; padding: 1px 7px; font-size: 11.5px; color: var(--muted); }
 .pill.warn { color: var(--warn); border-color: var(--warn); }
 
+/* ════════════════ approval routing ════════════════ */
+.btn.small { padding: 4px 10px; font-size: 12px; }
+.decide-cell { display: flex; gap: 6px; white-space: nowrap; }
+.group-head { margin: 16px 0 6px; padding: 4px 2px; font-size: 12px; font-weight: 600; color: var(--muted); border-bottom: 1px solid var(--border); }
+.section-head { margin: 26px 0 10px; font-size: 15px; }
+
 /* ════════════════ policy editor ════════════════ */
 .policy-grid { display: grid; grid-template-columns: 1.35fr 1fr; gap: 16px; align-items: start; }
 @media (max-width: 1000px) { .policy-grid { grid-template-columns: 1fr; } }

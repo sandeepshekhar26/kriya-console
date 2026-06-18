@@ -1,13 +1,13 @@
-export type View = "overview" | "audit" | "policy";
+export type View = "overview" | "audit" | "policy" | "approvals";
 
 const NAV: { id: View; label: string; icon: string }[] = [
   { id: "overview", label: "Overview", icon: "◧" },
   { id: "audit", label: "Audit log", icon: "▤" },
+  { id: "approvals", label: "Approvals", icon: "✓" },
   { id: "policy", label: "Policy", icon: "⛨" },
 ];
 
 const SOON: { label: string; icon: string }[] = [
-  { label: "Approvals", icon: "✓" },
   { label: "Budgets", icon: "◔" },
   { label: "Identity", icon: "⊙" },
 ];
@@ -18,12 +18,16 @@ export function Sidebar({
   receiptCount,
   failedCount,
   warningCount,
+  pendingApprovals,
+  highRiskApprovals,
 }: {
   view: View;
   onNavigate: (v: View) => void;
   receiptCount: number;
   failedCount: number;
   warningCount: number;
+  pendingApprovals: number;
+  highRiskApprovals: number;
 }) {
   return (
     <aside className="sidebar">
@@ -53,6 +57,12 @@ export function Sidebar({
             {n.id === "audit" && receiptCount > 0 && failedCount === 0 && (
               <span className="nav-badge">{receiptCount}</span>
             )}
+            {n.id === "approvals" && highRiskApprovals > 0 && (
+              <span className="nav-badge bad">{pendingApprovals}</span>
+            )}
+            {n.id === "approvals" && pendingApprovals > 0 && highRiskApprovals === 0 && (
+              <span className="nav-badge warn">{pendingApprovals}</span>
+            )}
             {n.id === "policy" && warningCount > 0 && <span className="nav-badge warn">{warningCount}</span>}
           </button>
         ))}
@@ -71,7 +81,7 @@ export function Sidebar({
         <div className="foot-row">
           <span className="dot ok" /> verified locally · nothing leaves this machine
         </div>
-        <div className="foot-muted">R6 · audit + policy</div>
+        <div className="foot-muted">R6 · audit · approvals · policy</div>
       </div>
     </aside>
   );
