@@ -4,6 +4,7 @@ import { OverviewView } from "./views/OverviewView";
 import { AuditView } from "./views/AuditView";
 import { PolicyView } from "./views/PolicyView";
 import { ApprovalsView } from "./views/ApprovalsView";
+import { ComplianceView } from "./views/ComplianceView";
 import { loadAuditLog } from "./lib/receipts";
 import type { AuditRow } from "./lib/types";
 import { defaultPolicy, lintPolicy, type Policy } from "./lib/policy";
@@ -17,6 +18,7 @@ import {
 } from "./lib/approvals";
 import sampleAudit from "./sample/sample-audit.jsonl?raw";
 import sampleApprovals from "./sample/sample-approvals.jsonl?raw";
+import sampleCompliance from "./sample/sample-compliance.jsonl?raw";
 
 const QUEUE_KEY = "kriya-console:approvals";
 const OPERATOR = "console-operator";
@@ -58,6 +60,9 @@ export function App() {
   }
 
   const loadSample = () => void ingest(sampleAudit, "sample-audit.jsonl");
+  // The compliance view's sample includes attributed + on-device-attested + tampered receipts,
+  // so the control mapping has rich evidence to show.
+  const loadComplianceSample = () => void ingest(sampleCompliance, "sample-compliance.jsonl");
 
   function ingestApprovals(text: string, source: string) {
     setQueue((q) => ingestPending(q, parsePendingApprovals(text, source)));
@@ -113,6 +118,9 @@ export function App() {
         )}
         {view === "policy" && (
           <PolicyView policy={policy} onChange={setPolicy} observedActions={observedActions} />
+        )}
+        {view === "compliance" && (
+          <ComplianceView rows={rows} policy={policy} onNavigate={setView} onLoadSample={loadComplianceSample} />
         )}
       </main>
       {busy && <div className="busy">verifying…</div>}

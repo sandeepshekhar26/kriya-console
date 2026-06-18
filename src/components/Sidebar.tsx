@@ -1,10 +1,11 @@
-export type View = "overview" | "audit" | "policy" | "approvals";
+export type View = "overview" | "audit" | "policy" | "approvals" | "compliance";
 
 const NAV: { id: View; label: string; icon: string }[] = [
   { id: "overview", label: "Overview", icon: "◧" },
   { id: "audit", label: "Audit log", icon: "▤" },
   { id: "approvals", label: "Approvals", icon: "✓" },
   { id: "policy", label: "Policy", icon: "⛨" },
+  { id: "compliance", label: "Compliance", icon: "▦" },
 ];
 
 const SOON: { label: string; icon: string }[] = [
