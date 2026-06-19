@@ -2,63 +2,67 @@
 
 **Proprietary — paid tier. Not open source.** All rights reserved; see [`LICENSE`](LICENSE).
 
-> **The governance plane for on-device AI agents.** kriya Console is where an organization
-> oversees, governs, and *proves* what agents did across every app they operate — built on top of
-> the open-source [kriya](https://github.com/sandeepshekhar26/kriya) runtime.
+> **The governance plane for on-device AI agents.** Where an organization oversees, governs, and
+> *proves* what every agent did across every app it operates — built on the open-source
+> [kriya](https://github.com/sandeepshekhar26/kriya) runtime. **The engine is open; the cockpit is paid.**
 
-The open `kriya` runtime (MIT) makes a single app safely drivable by an agent: every action runs
-through **policy → human approval → budget → an Ed25519-signed audit receipt**, on-device. That's
-the adoption funnel. **kriya Console is the layer organizations pay for** — the cross-app cockpit
-that aggregates those signed receipts, verifies them, and lets you author the policy the runtime
-enforces.
+The open `kriya` runtime (MIT) makes a *single* app safely drivable by an agent: every action runs
+through **policy → human approval → budget → an Ed25519-signed audit receipt**, on-device. That's the
+adoption funnel. kriya Console is the layer **organizations pay for** — the cross-app cockpit that
+aggregates those signed receipts, **re-verifies them locally**, lets you author the policy the
+runtime enforces, routes approvals, and turns the whole trail into compliance evidence.
 
-*The engine is open; the cockpit is paid.* (Public/private split + rationale: the runtime repo's
-`docs/LICENSING.md`, decision **D-011**.)
+## Who it's for
 
----
+Teams and regulated organizations running agents across **more than one** app, where *"an agent did
+something"* is not enough — they must **prove what it did and constrain what it can do**, on-device,
+where a cloud MCP gateway structurally can't reach. POS, CRM, finance, healthcare, legal, gov.
 
-## What's inside (R6 — increments 1 & 2)
+## What you can do today
 
-### ▤ Audit log — tamper-evident, verified locally
-Drop in one or many `kriya-audit.jsonl` logs from any kriya app. Every signed receipt is **verified
-in the browser** against its embedded Ed25519 key — nothing leaves the machine. Tampered or forged
-rows fail verification and surface in red. Filter by action, status, or source app; see a live
-verified / failed / distinct-signer summary across apps.
+| | The view | The value |
+|---|---|---|
+| **Oversee** | **Overview** | One posture dashboard across all your apps: receipts, **verified vs failed/tampered**, distinct signers, governance posture, policy coverage. |
+| **Prove** | **Audit log** | Every signed receipt **verified in your browser** against its embedded Ed25519 key — tampered or forged rows fail and surface in red. Filter by action / status / source app. |
+| **Decide** | **Approvals** | One cross-app/agent queue for the actions a policy holds for a human — **risk-ranked** (destructive + financial first), per-app and per-agent, attributed to the requesting agent + operator, approve/deny with a recorded reason. |
+| **Constrain** | **Policy** | Author the `agent-policy.yaml` the runtime enforces: ordered Allow / Require-approval / Deny rules, one-click coverage for ungoverned actions, lint, a per-minute budget cap, import/export — with a live decision preview. |
+| **Report** | **Compliance** | Turn the verified trail into a **SOC 2 / ISO 42001 / EU AI Act** evidence bundle (control mapping, attribution, on-device attestations, action inventory) — export Markdown + JSON. |
 
-The verifier is a from-scratch TypeScript reimplementation of the host's canonical signing
-(`crates/kriya/src/audit.rs`), proven **byte-identical** against real Rust-signed receipts in the
-test suite — if it drifted by a single byte, the signatures wouldn't verify.
+Coming next: live budget controls (R6 inc 4), and enterprise identity — SSO/OIDC + RBAC (R8). See
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
-### ⛨ Policy — author the rules the runtime enforces
-The policy plane is where you decide what agents may do with your registered actions:
-
-- **Ordered rules** (first match wins, no match = deny) mapping an action pattern (`delete_*`,
-  `close_account`, `*`) to a tier — **Allow · Require approval · Deny** — with drag-to-reorder.
-- **Coverage from your logs** — actions seen in your audit logs that *aren't* explicitly governed
-  are surfaced as one-click suggestions, so nothing silently rides the catch-all.
-- **Live decision preview** — see exactly how the current policy treats every observed action
-  (and test any action id).
-- **Lint** — the same checks the host runs at startup (`Policy::warnings()`): wildcard-allow,
-  destructive-named actions without approval, missing catch-all, missing budget cap.
-- **Budget** — a per-minute action cap to stop a looping agent.
-- **Export / import** — download a host-ready `agent-policy.yaml`; paste an existing one to edit it.
-
-The policy model is a faithful port of `crates/kriya/src/permissions.rs`, with parity tests against
-the Rust unit tests — so what the console shows is what the runtime will do.
-
----
-
-## Develop
+## See it in 30 seconds
 
 ```bash
 npm install
-npm test         # verifier + policy model, cross-checked against the Rust host
-npm run dev      # the console → http://localhost:5173
-npm run build    # typecheck (tsc --noEmit) + production build
+npm run dev      # → http://localhost:5173
 ```
 
-`npm test` is the spine: it proves the TS verifier agrees with the Rust signer on real receipts
-(and rejects tampered ones), and that the policy model decides + lints identically to the host.
+Click **Overview → Load sample data** (real Rust-signed receipts ship in the repo). Then walk
+**Audit → Approvals → Policy → Compliance**. To produce marketing screenshots, see
+[`docs/screenshots/CAPTURE.md`](docs/screenshots/CAPTURE.md).
+
+## The trust spine — verify, don't trust
+
+The product's spine is **local, independent verification**: every "the agent did X" traces to a
+signed receipt the Console re-verifies on your machine, and every policy it shows decides
+*identically* to the host. The TS verifier is a from-scratch reimplementation of the host's canonical
+signing (`crates/kriya/src/audit.rs`), proven **byte-identical** against real Rust-signed receipts in
+the test suite, and the policy model is a parity-tested port of `permissions.rs`. Nothing leaves the
+machine.
+
+What that proof does — and, honestly, does **not** — guarantee (pin your signer; whole-record
+deletion needs the R20 hash-chaining; full-host-compromise is out of scope) is written up for
+security reviewers in **[`docs/TRUST.md`](docs/TRUST.md)**. We publish the boundaries rather than
+paper over them — enterprise buyers reward the candor.
+
+## Why now
+
+**EU AI Act** high-risk obligations take effect **August 2, 2026** (penalties up to 7% of worldwide
+turnover); **SOC 2** monitoring and **ISO 42001** ask the same of any agent touching real data. The
+Console is buy-not-build governance plus cryptographic, tamper-evident audit — the willingness-to-pay
+surface those mandates create, on-device. Pricing (open-core tiers) is drafted in
+[`docs/PRICING.md`](docs/PRICING.md).
 
 ## How it relates to the open runtime
 
@@ -66,30 +70,41 @@ npm run build    # typecheck (tsc --noEmit) + production build
  open   kriya (MIT)       per action →  policy → approval → budget → Ed25519-signed receipt
                                            ▲                                   │
  paid   kriya-console     ── authors agent-policy.yaml ──┘                     │
-                          ── verifies + aggregates the signed receipts ────────┘
+                          ── aggregates + re-verifies the signed receipts ─────┘
+                          ── routes approvals · exports compliance evidence
 ```
 
-Dependency is **one-way**: the console consumes the open `kriya` audit + policy formats; the public
+Dependency is **one-way**: the Console consumes the open `kriya` audit + policy formats; the public
 repo never references this one. Don't copy proprietary code into the open repo, and don't relicense
-the open SDK.
+the open SDK. (Split + rationale: runtime repo `docs/LICENSING.md`, decision **D-011**.)
 
-## Why it sells
+## Develop
 
-For regulated and multi-app organizations, "an agent did something" is not enough — they must
-**prove what it did and constrain what it can do**, on-device, where cloud MCP gateways structurally
-can't reach. The console is buy-not-build governance plus cryptographic, tamper-evident audit: the
-willingness-to-pay surface that EU AI Act enforcement (Aug 2026) and SOC 2 make non-optional. Next
-on the roadmap — approval routing, live budgets, compliance-evidence export, identity —
-[`docs/ROADMAP.md`](docs/ROADMAP.md).
+```bash
+npm test              # verifier + policy + approvals + compliance — cross-checked against the Rust host
+npm run dev           # the console
+npm run build         # typecheck (tsc --noEmit) + production build
+npm run demo:approvals    # walk the approval-routing flow in the terminal
+npm run demo:compliance   # print a full compliance-evidence report
+```
+
+`npm test` is the spine: it proves the TS verifier agrees with the Rust signer on real receipts (and
+rejects tampered ones), and that the policy model decides + lints identically to the host.
 
 ## Layout
 
 ```
-src/lib/verify.ts      canonical bytes + Ed25519 verification (the trust core)
-src/lib/policy.ts      policy model: rules, decide(), lint — a port of permissions.rs
-src/lib/receipts.ts    parse a JSONL log → verified rows
-src/views/             Overview · AuditView · PolicyView
-src/components/         Sidebar · AuditTable
-src/sample/            real Rust-signed receipts (zero-setup demo + test fixtures)
-test/                  verify.test.ts · policy.test.ts (parity with the Rust host)
+src/lib/verify.ts        canonical bytes + Ed25519 verification (the trust core)
+src/lib/policy.ts        policy model: rules, decide(), lint — a port of permissions.rs
+src/lib/approvals.ts     approval queue: risk ranking, routing, persistence
+src/lib/compliance.ts    verified trail → SOC 2 / ISO 42001 / EU AI Act evidence bundle
+src/lib/receipts.ts      parse a JSONL log → verified rows
+src/views/               Overview · AuditView · ApprovalsView · PolicyView · ComplianceView
+src/components/          Sidebar · AuditTable
+src/sample/              real Rust-signed receipts (zero-setup demo + test fixtures)
+test/                    verify · policy · approvals · compliance · actor (parity with the Rust host)
+docs/                    ROADMAP · TRUST · PRICING · screenshots/CAPTURE
 ```
+
+Enterprise & regulated deployments → [kriyanative.com](https://kriyanative.com) ·
+**Sandeepshekhar26@gmail.com**.
