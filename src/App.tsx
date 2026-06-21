@@ -4,8 +4,10 @@ import { OverviewView } from "./views/OverviewView";
 import { AuditView } from "./views/AuditView";
 import { PolicyView } from "./views/PolicyView";
 import { ApprovalsView } from "./views/ApprovalsView";
+import { BudgetView } from "./views/BudgetView";
 import { ComplianceView } from "./views/ComplianceView";
 import { loadAuditLog } from "./lib/receipts";
+import { summarizeBudget } from "./lib/budget";
 import type { AuditRow } from "./lib/types";
 import { defaultPolicy, lintPolicy, type Policy } from "./lib/policy";
 import {
@@ -82,6 +84,14 @@ export function App() {
 
   const verified = rows.filter((r) => r.outcome.ok).length;
   const warningCount = useMemo(() => lintPolicy(policy).length, [policy]);
+  const budgetAtLimit = useMemo(
+    () =>
+      summarizeBudget(rows, "source", {
+        maxActionsPerMinute: policy.maxActionsPerMinute,
+        maxApiCallsPerHour: policy.maxApiCallsPerHour,
+      }).scopesAtLimit,
+    [rows, policy.maxActionsPerMinute, policy.maxApiCallsPerHour],
+  );
 
   return (
     <div className="shell">
@@ -93,6 +103,7 @@ export function App() {
         warningCount={warningCount}
         pendingApprovals={queueStats.pending}
         highRiskApprovals={queueStats.highRiskPending}
+        budgetAtLimit={budgetAtLimit}
       />
       <main className="main">
         {view === "overview" && (
@@ -119,6 +130,7 @@ export function App() {
         {view === "policy" && (
           <PolicyView policy={policy} onChange={setPolicy} observedActions={observedActions} />
         )}
+        {view === "budget" && <BudgetView rows={rows} policy={policy} onLoadSample={loadSample} />}
         {view === "compliance" && (
           <ComplianceView rows={rows} policy={policy} onNavigate={setView} onLoadSample={loadComplianceSample} />
         )}
