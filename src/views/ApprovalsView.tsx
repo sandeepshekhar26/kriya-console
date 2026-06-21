@@ -7,6 +7,7 @@ import {
   type QueueState,
   type RoutedApproval,
 } from "../lib/approvals";
+import { can, roleOf, type RbacModel } from "../lib/identity";
 
 type GroupKey = "none" | "source" | "agent";
 
@@ -16,14 +17,26 @@ export function ApprovalsView({
   onDecide,
   onClear,
   onLoadSample,
+  rbac,
+  actingOperator,
+  onActingOperatorChange,
+  operators,
 }: {
   queue: QueueState;
   onIngest: (text: string, source: string) => void;
   onDecide: (id: string, kind: DecisionKind, reason: string) => void;
   onClear: () => void;
   onLoadSample: () => void;
+  rbac: RbacModel;
+  actingOperator: string;
+  onActingOperatorChange: (op: string) => void;
+  operators: string[];
 }) {
   const [group, setGroup] = useState<GroupKey>("none");
+  // RBAC gate (R8): only an `approve`-capable role may decide. Self-asserted operator here — real
+  // sign-in (SSO/OIDC) is the enterprise-gated, hosted-tier item on the roadmap.
+  const role = roleOf(rbac, actingOperator);
+  const canApprove = can(rbac, actingOperator, "approve");
   // A single "now" per render so wait times + sort are stable within a frame.
   const now = Date.now();
   const routed = useMemo(() => routeQueue(queue.pending, now), [queue.pending, now]);
@@ -35,6 +48,7 @@ export function ApprovalsView({
   }
 
   function act(id: string, kind: DecisionKind) {
+    if (!canApprove) return; // RBAC gate — the buttons are disabled, but defend in code too.
     // A reason is mandatory on deny (it lands in the audit trail); optional on approve.
     const reason =
       kind === "denied"
@@ -102,6 +116,25 @@ export function ApprovalsView({
             <Stat label="Denied" value={stats.denied} />
           </section>
 
+          <div className="acting-bar">
+            <span className="muted small">Acting as</span>
+            <select value={actingOperator} onChange={(e) => onActingOperatorChange(e.target.value)}>
+              {operators.map((op) => (
+                <option key={op} value={op}>
+                  {op}
+                </option>
+              ))}
+            </select>
+            <span className={`badge ${canApprove ? "ok" : ""}`}>{role}</span>
+            {canApprove ? (
+              <span className="muted small">can decide approvals</span>
+            ) : (
+              <span className="warn small">
+                this role can’t decide — grant an approver/admin role in <strong>Identity</strong>
+              </span>
+            )}
+          </div>
+
           <div className="toolbar">
             <span className="count">{routed.length} pending</span>
             <select value={group} onChange={(e) => setGroup(e.target.value as GroupKey)}>
@@ -155,10 +188,20 @@ export function ApprovalsView({
                           </td>
                           <td className="mono">{fmtWait(a.waitingSeconds)}</td>
                           <td className="decide-cell">
-                            <button className="btn small" onClick={() => act(a.id, "approved")}>
+                            <button
+                              className="btn small"
+                              disabled={!canApprove}
+                              title={canApprove ? undefined : `${role} role can't decide approvals`}
+                              onClick={() => act(a.id, "approved")}
+                            >
                               Approve
                             </button>
-                            <button className="btn small ghost" onClick={() => act(a.id, "denied")}>
+                            <button
+                              className="btn small ghost"
+                              disabled={!canApprove}
+                              title={canApprove ? undefined : `${role} role can't decide approvals`}
+                              onClick={() => act(a.id, "denied")}
+                            >
                               Deny
                             </button>
                           </td>

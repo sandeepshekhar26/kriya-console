@@ -189,6 +189,11 @@ body {
 .role-row:first-of-type { border-top: none; }
 @media (max-width: 980px) { .rbac-grid { grid-template-columns: 1fr; } }
 
+/* Approvals — the RBAC "acting as" gate bar. */
+.acting-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.acting-bar .warn { color: var(--warn); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
 /* ── panels ── */
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; }
 .panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }

@@ -9,7 +9,7 @@ import { IdentityView } from "./views/IdentityView";
 import { ComplianceView } from "./views/ComplianceView";
 import { loadAuditLog } from "./lib/receipts";
 import { summarizeBudget } from "./lib/budget";
-import { defaultRbac, type RbacModel } from "./lib/identity";
+import { defaultRbac, summarizeIdentities, type RbacModel } from "./lib/identity";
 import type { AuditRow } from "./lib/types";
 import { defaultPolicy, lintPolicy, type Policy } from "./lib/policy";
 import {
@@ -39,13 +39,19 @@ function loadQueue(): QueueState {
 }
 
 function loadRbac(): RbacModel {
+  let model = defaultRbac();
   try {
     const raw = localStorage.getItem(RBAC_KEY);
-    if (raw) return JSON.parse(raw) as RbacModel;
+    if (raw) model = JSON.parse(raw) as RbacModel;
   } catch {
     /* corrupt or unavailable storage → start with defaults */
   }
-  return defaultRbac();
+  // The local user runs this console — admin by default (re-assignable in Identity). Everyone
+  // observed in the logs falls to the default role (viewer) until you grant them one.
+  if (!model.assignments[OPERATOR]) {
+    model = { ...model, assignments: { ...model.assignments, [OPERATOR]: "admin" } };
+  }
+  return model;
 }
 
 export function App() {
@@ -55,6 +61,7 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [queue, setQueue] = useState<QueueState>(loadQueue);
   const [rbac, setRbac] = useState<RbacModel>(loadRbac);
+  const [actingOperator, setActingOperator] = useState<string>(OPERATOR);
 
   // Persist the approval queue so decisions + pending items survive a reload (R6 inc 3).
   useEffect(() => {
@@ -93,10 +100,23 @@ export function App() {
     setQueue((q) => ingestPending(q, parsePendingApprovals(text, source)));
   }
   function decideApproval(id: string, kind: DecisionKind, reason: string) {
-    setQueue((q) => decide(q, id, kind, reason, OPERATOR, Date.now()));
+    setQueue((q) => decide(q, id, kind, reason, actingOperator, Date.now()));
   }
   const loadSampleApprovals = () => ingestApprovals(sampleApprovals, "sample-approvals.jsonl");
   const queueStats = useMemo(() => summarize(queue), [queue]);
+
+  // Operators offered in the approvals "acting as" selector: the local user + anyone seen in the
+  // audit log + anyone already assigned a role.
+  const operators = useMemo(
+    () => [
+      ...new Set([
+        OPERATOR,
+        ...summarizeIdentities(rows, "user").map((u) => u.id).filter((u) => u !== "(unattributed)"),
+        ...Object.keys(rbac.assignments),
+      ]),
+    ].sort(),
+    [rows, rbac.assignments],
+  );
 
   // distinct action ids seen in verified receipts — feeds policy coverage + suggestions
   const observedActions = useMemo(() => {
@@ -148,6 +168,10 @@ export function App() {
             onDecide={decideApproval}
             onClear={() => setQueue({ pending: [], decided: [] })}
             onLoadSample={loadSampleApprovals}
+            rbac={rbac}
+            actingOperator={actingOperator}
+            onActingOperatorChange={setActingOperator}
+            operators={operators}
           />
         )}
         {view === "policy" && (
