@@ -26,6 +26,7 @@ import sampleCompliance from "./sample/sample-compliance.jsonl?raw";
 
 const QUEUE_KEY = "kriya-console:approvals";
 const RBAC_KEY = "kriya-console:rbac";
+const THEME_KEY = "kriya-console:theme";
 const OPERATOR = "console-operator";
 
 function loadQueue(): QueueState {
@@ -62,6 +63,19 @@ export function App() {
   const [queue, setQueue] = useState<QueueState>(loadQueue);
   const [rbac, setRbac] = useState<RbacModel>(loadRbac);
   const [actingOperator, setActingOperator] = useState<string>(OPERATOR);
+  const [theme, setTheme] = useState<"dark" | "light">(
+    () => (localStorage.getItem(THEME_KEY) === "light" ? "light" : "dark"),
+  );
+
+  // Apply + persist the theme (dark/light) across reloads.
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    try {
+      localStorage.setItem(THEME_KEY, theme);
+    } catch {
+      /* storage unavailable — non-fatal */
+    }
+  }, [theme]);
 
   // Persist the approval queue so decisions + pending items survive a reload (R6 inc 3).
   useEffect(() => {
@@ -147,6 +161,8 @@ export function App() {
         pendingApprovals={queueStats.pending}
         highRiskApprovals={queueStats.highRiskPending}
         budgetAtLimit={budgetAtLimit}
+        theme={theme}
+        onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
       />
       <main className="main">
         {view === "overview" && (

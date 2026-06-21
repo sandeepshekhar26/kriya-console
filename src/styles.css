@@ -29,6 +29,42 @@
   --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
+/* ── light theme — token overrides (everything else is token-driven) ── */
+:root[data-theme="light"] {
+  --bg: #f5f7fb;
+  --bg-2: #ffffff;
+  --panel: #ffffff;
+  --panel-2: #f3f6fa;
+  --panel-3: #eaeff6;
+  --border: #e3e9f1;
+  --border-2: #d2dbe7;
+  --text: #0f1729;
+  --text-2: #44516a;
+  --muted: #6a7686;
+  --accent: #3b6fe6;
+  --accent-2: #7c6cf5;
+  --accent-dim: #dde7ff;
+  --ok: #15924a;
+  --ok-bg: #e6f5ec;
+  --warn: #b3650a;
+  --warn-bg: #fbf0dd;
+  --bad: #d62f2f;
+  --bad-bg: #fceaea;
+  --grad: linear-gradient(135deg, var(--accent), var(--accent-2));
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow: 0 8px 24px -8px rgba(16, 24, 40, 0.14);
+  --shadow-lg: 0 18px 44px -12px rgba(16, 24, 40, 0.18);
+  --glow: 0 4px 16px -4px rgba(59, 111, 230, 0.35);
+}
+[data-theme="light"] body {
+  background-image:
+    radial-gradient(900px 500px at 12% -8%, rgba(59, 111, 230, 0.06), transparent 62%),
+    radial-gradient(800px 480px at 92% 4%, rgba(124, 108, 245, 0.05), transparent 60%);
+}
+[data-theme="light"] ::selection { background: rgba(59, 111, 230, 0.18); }
+/* smooth theme switch on the big surfaces (not on every element, to keep hovers snappy) */
+body, .sidebar, .panel, .stat, .table-wrap, .nav-item { transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease; }
+
 * { box-sizing: border-box; }
 
 html, body, #root { height: 100%; }
@@ -119,7 +155,7 @@ body {
 .nav-item:hover:not(:disabled):not(.active) { background: var(--panel); color: var(--text); }
 .nav-item.active {
   background: linear-gradient(90deg, rgba(110, 168, 254, 0.16), rgba(155, 140, 255, 0.04));
-  color: #fff;
+  color: var(--text);
   font-weight: 600;
 }
 .nav-item.active::before {
@@ -166,6 +202,17 @@ body {
 .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
 .dot.ok { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
 .foot-muted { font-size: 11px; color: var(--muted); margin-top: 6px; }
+.theme-toggle {
+  display: inline-flex; align-items: center; gap: 8px;
+  margin-top: 12px; width: 100%;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-sm);
+  color: var(--text-2); font-family: inherit; font-size: 12.5px;
+  padding: 8px 11px; cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.theme-toggle:hover { background: var(--panel-2); border-color: var(--border-2); color: var(--text); }
+.theme-toggle .tt-icon { font-size: 13px; line-height: 1; }
+.theme-toggle .tt-label { flex: 1; text-align: left; }
 
 /* ── main ── */
 .main { overflow-x: hidden; }
@@ -324,7 +371,7 @@ table.audit { width: 100%; border-collapse: collapse; }
 .audit tbody tr { transition: background 0.12s ease; }
 .audit tbody tr:hover { background: var(--panel-2); }
 .audit .row-bad { background: var(--bad-bg); }
-.audit .row-bad:hover { background: #361a1c; }
+.audit .row-bad:hover { background: var(--bad-bg); filter: brightness(0.96); }
 .mono { font-family: var(--mono); font-size: 12px; }
 .strong { font-weight: 600; color: var(--text); }
 .params { color: var(--muted); max-width: 320px; }

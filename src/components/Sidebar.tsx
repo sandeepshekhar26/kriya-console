@@ -26,6 +26,8 @@ export function Sidebar({
   pendingApprovals,
   highRiskApprovals,
   budgetAtLimit,
+  theme,
+  onToggleTheme,
 }: {
   view: View;
   onNavigate: (v: View) => void;
@@ -35,6 +37,8 @@ export function Sidebar({
   pendingApprovals: number;
   highRiskApprovals: number;
   budgetAtLimit: number;
+  theme: "dark" | "light";
+  onToggleTheme: () => void;
 }) {
   return (
     <aside className="sidebar">
@@ -81,6 +85,10 @@ export function Sidebar({
           <span className="dot ok" /> verified locally · nothing leaves this machine
         </div>
         <div className="foot-muted">R6 · audit · approvals · policy · budgets · identity</div>
+        <button className="theme-toggle" onClick={onToggleTheme} title="Switch light / dark theme">
+          <span className="tt-icon">{theme === "dark" ? "☀" : "☾"}</span>
+          <span className="tt-label">{theme === "dark" ? "Light mode" : "Dark mode"}</span>
+        </button>
       </div>
     </aside>
   );
