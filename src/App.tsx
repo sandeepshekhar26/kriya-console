@@ -5,9 +5,11 @@ import { AuditView } from "./views/AuditView";
 import { PolicyView } from "./views/PolicyView";
 import { ApprovalsView } from "./views/ApprovalsView";
 import { BudgetView } from "./views/BudgetView";
+import { IdentityView } from "./views/IdentityView";
 import { ComplianceView } from "./views/ComplianceView";
 import { loadAuditLog } from "./lib/receipts";
 import { summarizeBudget } from "./lib/budget";
+import { defaultRbac, type RbacModel } from "./lib/identity";
 import type { AuditRow } from "./lib/types";
 import { defaultPolicy, lintPolicy, type Policy } from "./lib/policy";
 import {
@@ -23,6 +25,7 @@ import sampleApprovals from "./sample/sample-approvals.jsonl?raw";
 import sampleCompliance from "./sample/sample-compliance.jsonl?raw";
 
 const QUEUE_KEY = "kriya-console:approvals";
+const RBAC_KEY = "kriya-console:rbac";
 const OPERATOR = "console-operator";
 
 function loadQueue(): QueueState {
@@ -35,12 +38,23 @@ function loadQueue(): QueueState {
   return { pending: [], decided: [] };
 }
 
+function loadRbac(): RbacModel {
+  try {
+    const raw = localStorage.getItem(RBAC_KEY);
+    if (raw) return JSON.parse(raw) as RbacModel;
+  } catch {
+    /* corrupt or unavailable storage → start with defaults */
+  }
+  return defaultRbac();
+}
+
 export function App() {
   const [view, setView] = useState<View>("overview");
   const [rows, setRows] = useState<AuditRow[]>([]);
   const [policy, setPolicy] = useState<Policy>(defaultPolicy);
   const [busy, setBusy] = useState(false);
   const [queue, setQueue] = useState<QueueState>(loadQueue);
+  const [rbac, setRbac] = useState<RbacModel>(loadRbac);
 
   // Persist the approval queue so decisions + pending items survive a reload (R6 inc 3).
   useEffect(() => {
@@ -50,6 +64,15 @@ export function App() {
       /* storage full/unavailable — non-fatal */
     }
   }, [queue]);
+
+  // Persist RBAC role assignments across reloads (R8).
+  useEffect(() => {
+    try {
+      localStorage.setItem(RBAC_KEY, JSON.stringify(rbac));
+    } catch {
+      /* storage full/unavailable — non-fatal */
+    }
+  }, [rbac]);
 
   async function ingest(text: string, source: string) {
     setBusy(true);
@@ -131,6 +154,9 @@ export function App() {
           <PolicyView policy={policy} onChange={setPolicy} observedActions={observedActions} />
         )}
         {view === "budget" && <BudgetView rows={rows} policy={policy} onLoadSample={loadSample} />}
+        {view === "identity" && (
+          <IdentityView rows={rows} rbac={rbac} onRbacChange={setRbac} onLoadSample={loadComplianceSample} />
+        )}
         {view === "compliance" && (
           <ComplianceView rows={rows} policy={policy} onNavigate={setView} onLoadSample={loadComplianceSample} />
         )}

@@ -180,6 +180,15 @@ body {
 .cap-label { color: var(--muted); font-size: 12px; }
 .cap-value { font-family: var(--mono); font-weight: 700; font-variant-numeric: tabular-nums; }
 
+/* Identity & access (R8) — the RBAC table + role legend, side by side. */
+.rbac-grid { display: grid; grid-template-columns: 1fr 280px; gap: 16px; align-items: start; }
+.caps-cell { display: flex; gap: 6px; flex-wrap: wrap; }
+.role-legend { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+.role-legend h3 { margin: 0 0 10px; font-size: 13px; color: var(--text-2); }
+.role-row { display: flex; align-items: baseline; gap: 8px; padding: 6px 0; border-top: 1px solid var(--border); }
+.role-row:first-of-type { border-top: none; }
+@media (max-width: 980px) { .rbac-grid { grid-template-columns: 1fr; } }
+
 /* ── panels ── */
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; }
 .panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }

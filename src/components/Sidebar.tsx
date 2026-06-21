@@ -1,4 +1,11 @@
-export type View = "overview" | "audit" | "policy" | "approvals" | "budget" | "compliance";
+export type View =
+  | "overview"
+  | "audit"
+  | "policy"
+  | "approvals"
+  | "budget"
+  | "identity"
+  | "compliance";
 
 const NAV: { id: View; label: string; icon: string }[] = [
   { id: "overview", label: "Overview", icon: "◧" },
@@ -6,10 +13,9 @@ const NAV: { id: View; label: string; icon: string }[] = [
   { id: "approvals", label: "Approvals", icon: "✓" },
   { id: "policy", label: "Policy", icon: "⛨" },
   { id: "budget", label: "Budgets", icon: "◔" },
+  { id: "identity", label: "Identity", icon: "⊙" },
   { id: "compliance", label: "Compliance", icon: "▦" },
 ];
-
-const SOON: { label: string; icon: string }[] = [{ label: "Identity", icon: "⊙" }];
 
 export function Sidebar({
   view,
@@ -68,22 +74,13 @@ export function Sidebar({
             {n.id === "budget" && budgetAtLimit > 0 && <span className="nav-badge bad">{budgetAtLimit}</span>}
           </button>
         ))}
-
-        <div className="nav-divider">COMING SOON</div>
-        {SOON.map((n) => (
-          <button key={n.label} className="nav-item soon" disabled>
-            <span className="nav-icon">{n.icon}</span>
-            <span className="nav-label">{n.label}</span>
-            <span className="soon-tag">soon</span>
-          </button>
-        ))}
       </nav>
 
       <div className="sidebar-foot">
         <div className="foot-row">
           <span className="dot ok" /> verified locally · nothing leaves this machine
         </div>
-        <div className="foot-muted">R6 · audit · approvals · policy · budgets</div>
+        <div className="foot-muted">R6 · audit · approvals · policy · budgets · identity</div>
       </div>
     </aside>
   );
