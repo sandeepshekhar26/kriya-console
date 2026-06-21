@@ -25,11 +25,13 @@ where a cloud MCP gateway structurally can't reach. POS, CRM, finance, healthcar
 | **Oversee** | **Overview** | One posture dashboard across all your apps: receipts, **verified vs failed/tampered**, distinct signers, governance posture, policy coverage. |
 | **Prove** | **Audit log** | Every signed receipt **verified in your browser** against its embedded Ed25519 key — tampered or forged rows fail and surface in red. Filter by action / status / source app. |
 | **Decide** | **Approvals** | One cross-app/agent queue for the actions a policy holds for a human — **risk-ranked** (destructive + financial first), per-app and per-agent, attributed to the requesting agent + operator, approve/deny with a recorded reason. |
-| **Constrain** | **Policy** | Author the `agent-policy.yaml` the runtime enforces: ordered Allow / Require-approval / Deny rules, one-click coverage for ungoverned actions, lint, a per-minute budget cap, import/export — with a live decision preview. |
+| **Constrain** | **Policy** | Author the `agent-policy.yaml` the runtime enforces: ordered Allow / Require-approval / Deny rules, one-click coverage for ungoverned actions, lint, per-minute action **and** per-hour api-call budget caps, import/export — with a live decision preview. |
+| **Throttle** | **Budgets** | Per-app / per-agent / per-operator usage against the rate caps — peak action rate, utilization, at-limit history. A scope *at* its cap is the host throttling it. |
+| **Attribute** | **Identity** | Who operated each app — per-operator + per-agent dashboards from the signed `actor` (verified receipts only) — and **RBAC** roles (admin / approver / operator / viewer) keyed on the operator. |
 | **Report** | **Compliance** | Turn the verified trail into a **SOC 2 / ISO 42001 / EU AI Act** evidence bundle (control mapping, attribution, on-device attestations, action inventory) — export Markdown + JSON. |
 
-Coming next: live budget controls (R6 inc 4), and enterprise identity — SSO/OIDC + RBAC (R8). See
-[`docs/ROADMAP.md`](docs/ROADMAP.md).
+Coming next: **SSO / OIDC** sign-in (a hosted-tier feature) to back the RBAC roles, and wiring those
+roles into the approvals gate. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## See it in 30 seconds
 
@@ -39,7 +41,7 @@ npm run dev      # → http://localhost:5173
 ```
 
 Click **Overview → Load sample data** (real Rust-signed receipts ship in the repo). Then walk
-**Audit → Approvals → Policy → Compliance**. To produce marketing screenshots, see
+**Audit → Approvals → Policy → Budgets → Identity → Compliance**. To produce marketing screenshots, see
 [`docs/screenshots/CAPTURE.md`](docs/screenshots/CAPTURE.md).
 
 ## The trust spine — verify, don't trust
@@ -99,7 +101,7 @@ src/lib/policy.ts        policy model: rules, decide(), lint — a port of permi
 src/lib/approvals.ts     approval queue: risk ranking, routing, persistence
 src/lib/compliance.ts    verified trail → SOC 2 / ISO 42001 / EU AI Act evidence bundle
 src/lib/receipts.ts      parse a JSONL log → verified rows
-src/views/               Overview · AuditView · ApprovalsView · PolicyView · ComplianceView
+src/views/               Overview · AuditView · ApprovalsView · PolicyView · BudgetView · IdentityView · ComplianceView
 src/components/          Sidebar · AuditTable
 src/sample/              real Rust-signed receipts (zero-setup demo + test fixtures)
 test/                    verify · policy · approvals · compliance · actor (parity with the Rust host)
