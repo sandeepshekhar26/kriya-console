@@ -23,6 +23,9 @@ export interface Policy {
   rules: PolicyRule[];
   /** Max actions per trailing 60s window. `null` = no cap. */
   maxActionsPerMinute: number | null;
+  /** Max inference/API calls per trailing 60-minute window (R11). `null` = no cap. Independent of
+   *  the per-minute action cap: bounds model *cost*, not action bursts. */
+  maxApiCallsPerHour: number | null;
 }
 
 // ── YAML shapes (what the host's serde sees) ──────────────────────────────────
@@ -33,7 +36,7 @@ interface YamlRule {
 }
 interface YamlPolicy {
   rules?: YamlRule[];
-  budget?: { max_actions_per_minute?: number | null };
+  budget?: { max_actions_per_minute?: number | null; max_api_calls_per_hour?: number | null };
 }
 
 export function tierFrom(allow: boolean, requireApproval: boolean): Tier {
@@ -57,6 +60,7 @@ export function defaultPolicy(): Policy {
       { action: "*", tier: "deny" },
     ],
     maxActionsPerMinute: 60,
+    maxApiCallsPerHour: null,
   };
 }
 
@@ -70,6 +74,10 @@ export function parsePolicyYaml(text: string): Policy {
     maxActionsPerMinute:
       doc.budget && typeof doc.budget.max_actions_per_minute === "number"
         ? doc.budget.max_actions_per_minute
+        : null,
+    maxApiCallsPerHour:
+      doc.budget && typeof doc.budget.max_api_calls_per_hour === "number"
+        ? doc.budget.max_api_calls_per_hour
         : null,
   };
 }
@@ -86,7 +94,11 @@ export function policyToYaml(p: Policy): string {
     return o;
   });
   const doc: YamlPolicy = { rules };
-  if (p.maxActionsPerMinute !== null) doc.budget = { max_actions_per_minute: p.maxActionsPerMinute };
+  if (p.maxActionsPerMinute !== null || p.maxApiCallsPerHour !== null) {
+    doc.budget = {};
+    if (p.maxActionsPerMinute !== null) doc.budget.max_actions_per_minute = p.maxActionsPerMinute;
+    if (p.maxApiCallsPerHour !== null) doc.budget.max_api_calls_per_hour = p.maxApiCallsPerHour;
+  }
   const body = dump(doc, { lineWidth: -1, quotingType: '"', forceQuotes: true });
   return YAML_HEADER + body;
 }

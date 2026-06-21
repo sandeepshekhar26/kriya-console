@@ -115,4 +115,19 @@ budget:
     expect(decide(p, "close_account").decision).toBe("deny");
     expect(p.maxActionsPerMinute).toBe(30);
   });
+
+  it("round-trips the per-hour api-call cap (R11 parity)", () => {
+    const p = parsePolicyYaml(`
+rules:
+  - action: "*"
+    allow: false
+budget:
+  max_actions_per_minute: 30
+  max_api_calls_per_hour: 500
+`);
+    expect(p.maxActionsPerMinute).toBe(30);
+    expect(p.maxApiCallsPerHour).toBe(500);
+    // emits both caps and reads them back identically
+    expect(parsePolicyYaml(policyToYaml(p))).toEqual(p);
+  });
 });

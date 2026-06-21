@@ -234,6 +234,25 @@ export function PolicyView({
                 }
               />
             )}
+            <label className="budget-row">
+              <input
+                type="checkbox"
+                checked={policy.maxApiCallsPerHour !== null}
+                onChange={(e) => onChange({ ...policy, maxApiCallsPerHour: e.target.checked ? 500 : null })}
+              />
+              Cap inference/API calls per hour
+            </label>
+            {policy.maxApiCallsPerHour !== null && (
+              <input
+                type="number"
+                min={1}
+                className="budget-input"
+                value={policy.maxApiCallsPerHour}
+                onChange={(e) =>
+                  onChange({ ...policy, maxApiCallsPerHour: Math.max(1, Number(e.target.value) || 1) })
+                }
+              />
+            )}
           </div>
         </section>
 
