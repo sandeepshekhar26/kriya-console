@@ -24,14 +24,15 @@ where a cloud MCP gateway structurally can't reach. POS, CRM, finance, healthcar
 |---|---|---|
 | **Oversee** | **Overview** | One posture dashboard across all your apps: receipts, **verified vs failed/tampered**, distinct signers, governance posture, policy coverage. |
 | **Prove** | **Audit log** | Every signed receipt **verified in your browser** against its embedded Ed25519 key — tampered or forged rows fail and surface in red. Filter by action / status / source app. |
-| **Decide** | **Approvals** | One cross-app/agent queue for the actions a policy holds for a human — **risk-ranked** (destructive + financial first), per-app and per-agent, attributed to the requesting agent + operator, approve/deny with a recorded reason. |
+| **Decide** | **Approvals** | One cross-app/agent queue for the actions a policy holds for a human — **risk-ranked** (destructive + financial first), per-app and per-agent, attributed to the requesting agent + operator, approve/deny with a recorded reason. **Role-gated** (RBAC): only an `approve`-capable role may decide. |
 | **Constrain** | **Policy** | Author the `agent-policy.yaml` the runtime enforces: ordered Allow / Require-approval / Deny rules, one-click coverage for ungoverned actions, lint, per-minute action **and** per-hour api-call budget caps, import/export — with a live decision preview. |
 | **Throttle** | **Budgets** | Per-app / per-agent / per-operator usage against the rate caps — peak action rate, utilization, at-limit history. A scope *at* its cap is the host throttling it. |
 | **Attribute** | **Identity** | Who operated each app — per-operator + per-agent dashboards from the signed `actor` (verified receipts only) — and **RBAC** roles (admin / approver / operator / viewer) keyed on the operator. |
 | **Report** | **Compliance** | Turn the verified trail into a **SOC 2 / ISO 42001 / EU AI Act** evidence bundle (control mapping, attribution, on-device attestations, action inventory) — export Markdown + JSON. |
 
-Coming next: **SSO / OIDC** sign-in (a hosted-tier feature) to back the RBAC roles, and wiring those
-roles into the approvals gate. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+Coming next: **SSO / OIDC** sign-in to back the RBAC roles — a **hosted-tier** feature, deliberately
+gated to a concrete enterprise deal rather than built speculatively (the console currently sells on
+"nothing leaves this machine"). See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## See it in 30 seconds
 
