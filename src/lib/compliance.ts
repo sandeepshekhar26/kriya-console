@@ -38,7 +38,7 @@ export interface EvidenceBundle {
   period: { from: string | null; to: string | null };
   integrity: { totalReceipts: number; verified: number; failed: number; distinctSigners: number };
   attribution: { attributed: number; coveragePct: number; agents: string[]; users: string[] };
-  onDevice: { attestations: number; sealedBackends: string[] };
+  onDevice: { attestations: number; sealedBackends: string[]; components: string[] };
   humanOversight: {
     approvalGatedActions: string[];
     denyByDefault: boolean;
@@ -79,10 +79,16 @@ export function buildEvidence(
   // On-device attestations (R13).
   const attestations = verified.filter((r) => r.receipt!.action_id === ATTESTATION_ON_DEVICE);
   const sealedBackends = new Set<string>();
+  // Gateway sessions (R24) attest with a `component` (e.g. "kriya-gateway") instead of a sealed
+  // inference `backend` — they proxy a downstream / reach into a no-API app, with no model egress.
+  // Surface that provenance so an auditor sees a governed proxy/reach-in session ran on-device, not
+  // only an in-process host backend.
+  const components = new Set<string>();
   for (const r of attestations) {
     const p = r.receipt!.params;
-    if (p && typeof p === "object" && !Array.isArray(p) && typeof p.backend === "string") {
-      sealedBackends.add(p.backend);
+    if (p && typeof p === "object" && !Array.isArray(p)) {
+      if (typeof p.backend === "string") sealedBackends.add(p.backend);
+      if (typeof p.component === "string") components.add(p.component);
     }
   }
 
@@ -115,7 +121,11 @@ export function buildEvidence(
     period: { from: times.length ? iso(Math.min(...times)) : null, to: times.length ? iso(Math.max(...times)) : null },
     integrity: { totalReceipts, verified: verified.length, failed, distinctSigners: signers.size },
     attribution: { attributed, coveragePct, agents: [...agents].sort(), users: [...users].sort() },
-    onDevice: { attestations: attestations.length, sealedBackends: [...sealedBackends].sort() },
+    onDevice: {
+      attestations: attestations.length,
+      sealedBackends: [...sealedBackends].sort(),
+      components: [...components].sort(),
+    },
     humanOversight: {
       approvalGatedActions,
       denyByDefault,
@@ -191,7 +201,10 @@ function mapControls(b: Omit<EvidenceBundle, "controls">): EvidenceControl[] {
       control: "On-device processing",
       requirement: "Sensitive data is processed on-device with no remote egress.",
       evidence: onDevice.attestations
-        ? `${onDevice.attestations} signed on-device attestation(s); sealed backend(s): ${onDevice.sealedBackends.join(", ")}.`
+        ? `${onDevice.attestations} signed on-device attestation(s)` +
+          (onDevice.sealedBackends.length ? `; sealed backend(s): ${onDevice.sealedBackends.join(", ")}` : "") +
+          (onDevice.components.length ? `; governed component(s): ${onDevice.components.join(", ")}` : "") +
+          "."
         : "No on-device attestations in this trail.",
       status: onDeviceStatus,
     },
@@ -231,7 +244,7 @@ export function renderMarkdown(b: EvidenceBundle): string {
   L.push(`- Deny-by-default policy: **${b.humanOversight.denyByDefault ? "yes" : "no"}**`);
   L.push(`- Approval-gated actions observed: ${b.humanOversight.approvalGatedActions.join(", ") || "—"}`);
   L.push(`- Budget cap: ${b.humanOversight.budgetCapPerMinute ? `${b.humanOversight.budgetCapPerMinute}/min` : "none"}`);
-  L.push(`- On-device attestations: **${b.onDevice.attestations}**${b.onDevice.sealedBackends.length ? ` (${b.onDevice.sealedBackends.join(", ")})` : ""}`);
+  L.push(`- On-device attestations: **${b.onDevice.attestations}**${b.onDevice.sealedBackends.length ? ` (${b.onDevice.sealedBackends.join(", ")})` : ""}${b.onDevice.components.length ? ` · via ${b.onDevice.components.join(", ")}` : ""}`);
   L.push("");
   L.push("## Action inventory");
   L.push("");

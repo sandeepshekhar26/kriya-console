@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { loadAuditLog } from "../src/lib/receipts";
 import { buildEvidence, renderJson, renderMarkdown } from "../src/lib/compliance";
 import { defaultPolicy, type Policy } from "../src/lib/policy";
+import type { AuditRow, SignedReceipt } from "../src/lib/types";
 
 const here = dirname(fileURLToPath(import.meta.url));
 // On-device attestation + sealed action + 2 actor receipts + 1 tampered line — all REAL
@@ -48,6 +49,46 @@ describe("buildEvidence — attribution (R8) + on-device (R13)", () => {
     expect(b.onDevice.sealedBackends).toEqual(["scripted"]);
     const residency = b.controls.find((c) => c.framework === "Data residency");
     expect(residency?.status).toBe("satisfied");
+  });
+});
+
+describe("buildEvidence — gateway provenance (R24)", () => {
+  // A pre-verified in-memory row (signature is checked elsewhere; buildEvidence trusts outcome.ok).
+  function row(action_id: string, params: SignedReceipt["params"]): AuditRow {
+    return {
+      source: "test",
+      lineNo: 1,
+      raw: "",
+      receipt: {
+        step_id: "s",
+        action_id,
+        params,
+        success: true,
+        ts_ms: AT,
+        public_key: "pk",
+        signature: "sig",
+      } as SignedReceipt,
+      outcome: { ok: true },
+    };
+  }
+
+  it("surfaces the governed component from a gateway on-device attestation", () => {
+    // Gateway sessions attest with `component` (no inference `backend`) — the R24 shape.
+    const rows: AuditRow[] = [
+      row("kriya.attestation.on_device", {
+        component: "kriya-gateway",
+        network_profile: "gateway-proxy",
+        egress: false,
+      }),
+      row("delete_note", { id: "n1" }),
+    ];
+    const b = buildEvidence(rows, defaultPolicy(), { generatedAt: AT, organization: "Acme" });
+    expect(b.onDevice.attestations).toBe(1);
+    expect(b.onDevice.components).toEqual(["kriya-gateway"]);
+    expect(b.onDevice.sealedBackends).toEqual([]); // a gateway session seals no inference backend
+    const residency = b.controls.find((c) => c.framework === "Data residency");
+    expect(residency?.evidence).toContain("kriya-gateway");
+    expect(renderMarkdown(b)).toContain("via kriya-gateway");
   });
 });
 
