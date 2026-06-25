@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Lets the Console webview invoke the backend governance commands and receive the live audit-changed events.",
+  "windows": ["main"],
+  "permissions": ["core:default", "core:event:default"]
+}

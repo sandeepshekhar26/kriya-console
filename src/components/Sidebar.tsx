@@ -5,16 +5,20 @@ export type View =
   | "approvals"
   | "budget"
   | "identity"
-  | "compliance";
+  | "compliance"
+  | "fleet"
+  | "setup";
 
-const NAV: { id: View; label: string; icon: string }[] = [
+const NAV: { id: View; label: string; icon: string; paid?: boolean }[] = [
   { id: "overview", label: "Overview", icon: "◧" },
   { id: "audit", label: "Audit log", icon: "▤" },
   { id: "approvals", label: "Approvals", icon: "✓" },
   { id: "policy", label: "Policy", icon: "⛨" },
   { id: "budget", label: "Budgets", icon: "◔" },
   { id: "identity", label: "Identity", icon: "⊙" },
-  { id: "compliance", label: "Compliance", icon: "▦" },
+  { id: "compliance", label: "Compliance", icon: "▦", paid: true },
+  { id: "fleet", label: "Fleet", icon: "⊞", paid: true },
+  { id: "setup", label: "Setup", icon: "⚙" },
 ];
 
 export function Sidebar({
@@ -28,6 +32,9 @@ export function Sidebar({
   budgetAtLimit,
   theme,
   onToggleTheme,
+  licensed,
+  licenseHolder,
+  live,
 }: {
   view: View;
   onNavigate: (v: View) => void;
@@ -39,6 +46,9 @@ export function Sidebar({
   budgetAtLimit: number;
   theme: "dark" | "light";
   onToggleTheme: () => void;
+  licensed: boolean;
+  licenseHolder?: string | null;
+  live: boolean;
 }) {
   return (
     <aside className="sidebar">
@@ -52,7 +62,15 @@ export function Sidebar({
 
       <div className="workspace">
         <div className="ws-label">WORKSPACE</div>
-        <div className="ws-name">Local workspace</div>
+        <div className="ws-name">
+          {live ? (
+            <span className="live-dot-row">
+              <span className="dot live" /> watching ~/.kriya/audit
+            </span>
+          ) : (
+            "Local workspace"
+          )}
+        </div>
       </div>
 
       <nav className="nav">
@@ -64,6 +82,11 @@ export function Sidebar({
           >
             <span className="nav-icon">{n.icon}</span>
             <span className="nav-label">{n.label}</span>
+            {n.paid && !licensed && (
+              <span className="nav-lock" title="Paid feature">
+                🔒
+              </span>
+            )}
             {n.id === "audit" && failedCount > 0 && <span className="nav-badge bad">{failedCount}</span>}
             {n.id === "audit" && receiptCount > 0 && failedCount === 0 && (
               <span className="nav-badge">{receiptCount}</span>
@@ -81,10 +104,17 @@ export function Sidebar({
       </nav>
 
       <div className="sidebar-foot">
+        <button
+          className={`license-badge ${licensed ? "pro" : "free"}`}
+          onClick={() => onNavigate("setup")}
+          title="Manage license"
+        >
+          <span className="lb-dot" />
+          {licensed ? `Pro${licenseHolder ? ` · ${licenseHolder}` : ""}` : "Free tier"}
+        </button>
         <div className="foot-row">
           <span className="dot ok" /> verified locally · nothing leaves this machine
         </div>
-        <div className="foot-muted">R6 · audit · approvals · policy · budgets · identity</div>
         <button className="theme-toggle" onClick={onToggleTheme} title="Switch light / dark theme">
           <span className="tt-icon">{theme === "dark" ? "☀" : "☾"}</span>
           <span className="tt-label">{theme === "dark" ? "Light mode" : "Dark mode"}</span>

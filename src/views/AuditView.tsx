@@ -9,11 +9,14 @@ export function AuditView({
   onIngest,
   onClear,
   onLoadSample,
+  live,
 }: {
   rows: AuditRow[];
   onIngest: (text: string, source: string) => Promise<void>;
   onClear: () => void;
   onLoadSample: () => void;
+  /** In the desktop app: the audit dir being tailed. The log auto-appears; import is demoted. */
+  live?: string;
 }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<StatusFilter>("all");
@@ -54,8 +57,13 @@ export function AuditView({
           </p>
         </div>
         <div className="page-actions">
-          <label className="btn">
-            Load log(s)
+          {live && (
+            <span className="live-pill" title={live}>
+              <span className="dot live" /> live · tailing {live}
+            </span>
+          )}
+          <label className="btn ghost">
+            Open a file…
             <input
               type="file"
               accept=".jsonl,.log,.txt"
@@ -64,9 +72,11 @@ export function AuditView({
               onChange={(e) => void onFiles(e.target.files)}
             />
           </label>
-          <button className="btn ghost" onClick={onLoadSample}>
-            Load sample
-          </button>
+          {!live && (
+            <button className="btn ghost" onClick={onLoadSample}>
+              Load sample
+            </button>
+          )}
           {rows.length > 0 && (
             <button className="btn ghost" onClick={onClear}>
               Clear
@@ -78,14 +88,26 @@ export function AuditView({
       {rows.length === 0 ? (
         <div className="empty">
           <div className="empty-glyph">▤</div>
-          <p>
-            Drop in one or more <code>kriya-audit.jsonl</code> logs to verify every signed receipt and
-            audit what agents did across your apps.
-          </p>
-          <p className="muted">Signatures are verified locally — no data leaves this machine.</p>
-          <button className="btn" onClick={onLoadSample}>
-            Load sample data
-          </button>
+          {live ? (
+            <>
+              <p>
+                Watching <code>{live}</code> for signed receipts. Drive a governed app and they appear
+                here live — every one verified in compiled Rust against its embedded key.
+              </p>
+              <p className="muted">Nothing leaves this machine. Go to Setup to wire an app.</p>
+            </>
+          ) : (
+            <>
+              <p>
+                Drop in one or more <code>kriya-audit.jsonl</code> logs to verify every signed receipt
+                and audit what agents did across your apps.
+              </p>
+              <p className="muted">Signatures are verified locally — no data leaves this machine.</p>
+              <button className="btn" onClick={onLoadSample}>
+                Load sample data
+              </button>
+            </>
+          )}
         </div>
       ) : (
         <>

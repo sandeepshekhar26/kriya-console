@@ -1,0 +1,44 @@
+[package]
+name = "kriya-console"
+version = "0.1.0"
+description = "kriya Console — on-device governance control-plane (paid tier)"
+edition = "2021"
+rust-version = "1.77"
+publish = false
+# Two binaries live here (the app + the dev `issue-license` minter); `tauri dev` runs the app.
+default-run = "kriya-console"
+
+# The compiled Rust backend is where the PAID value and the license check live (D-018): a
+# downloaded app can't be lifted into a clone because the moat is this crate, not the webview JS.
+[lib]
+name = "kriya_console_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+# The dev-only license minter is gated behind the `dev-issuer` feature so it is NOT built (and so is
+# never bundled into the shipped .app) by a default `cargo build` / `tauri build`. Run it for dev with
+# `cargo run --features dev-issuer --bin issue-license -- --holder "<name>"`.
+[[bin]]
+name = "issue-license"
+path = "src/bin/issue-license.rs"
+required-features = ["dev-issuer"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Receipt re-verification + offline license verification — the compiled "tamper-proof anchoring"
+# and license-check moat. Self-contained (no cross-repo path dep on the public crate) so the
+# private Console builds + ships independently; the canonical-bytes format mirrors
+# crates/kriya/src/audit.rs (kept in sync via the parity test).
+ed25519-dalek = "2"
+sha2 = "0.10"
+hex = "0.4"
+
+[features]
+# Custom protocol is the default Tauri runtime; this mirrors the scaffolder's default.
+custom-protocol = ["tauri/custom-protocol"]
+# Enables building the dev-only `issue-license` binary. Off by default so it never ships.
+dev-issuer = []

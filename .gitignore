@@ -22,3 +22,6 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# R29 dev license-issuer PRIVATE seed — never commit (production issuer key lives offline)
+dev-keys/

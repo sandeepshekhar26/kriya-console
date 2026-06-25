@@ -43,6 +43,9 @@ export function canonicalReceiptBytes(r: Receipt): Uint8Array {
         ',"user":' +
         JSON.stringify(r.actor.user) +
         "}";
+  // R20 hash-chain: `prev_hash` is signed LAST (after `actor`), skipped when absent — so chained
+  // receipts must include it here or they fail to verify (the bug this line fixes).
+  const prevHash = r.prev_hash === undefined ? "" : ',"prev_hash":' + JSON.stringify(r.prev_hash);
   const json =
     "{" +
     '"step_id":' +
@@ -56,6 +59,7 @@ export function canonicalReceiptBytes(r: Receipt): Uint8Array {
     ',"ts_ms":' +
     canonicalNumber(r.ts_ms) +
     actor +
+    prevHash +
     "}";
   return encoder.encode(json);
 }

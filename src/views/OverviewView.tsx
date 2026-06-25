@@ -9,12 +9,15 @@ export function OverviewView({
   observedActions,
   onNavigate,
   onLoadSample,
+  live,
 }: {
   rows: AuditRow[];
   policy: Policy;
   observedActions: string[];
   onNavigate: (v: View) => void;
   onLoadSample: () => void;
+  /** In the desktop app: the audit dir being tailed. Replaces the "load sample" affordance. */
+  live?: string;
 }) {
   const stats = useMemo(() => {
     const verified = rows.filter((r) => r.outcome.ok).length;
@@ -47,10 +50,16 @@ export function OverviewView({
           <p className="page-sub">Governed-agent activity and posture across your apps.</p>
         </div>
         <div className="page-actions">
-          {rows.length === 0 && (
-            <button className="btn" onClick={onLoadSample}>
-              Load sample data
-            </button>
+          {live ? (
+            <span className="live-pill" title={live}>
+              <span className="dot live" /> live · tailing {live}
+            </span>
+          ) : (
+            rows.length === 0 && (
+              <button className="btn" onClick={onLoadSample}>
+                Load sample data
+              </button>
+            )
           )}
         </div>
       </header>

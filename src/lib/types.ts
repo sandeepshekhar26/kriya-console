@@ -22,6 +22,12 @@ export interface Receipt {
   success: boolean;
   ts_ms: number;
   actor?: Actor;
+  /**
+   * Hash of the previous receipt LINE in the log (R20 hash-chain). Optional and signed LAST (after
+   * `actor`), so a genesis / pre-R20 receipt signs byte-identically. Part of the signed bytes — it
+   * must be reproduced in the canonical form or chained receipts fail to verify.
+   */
+  prev_hash?: string;
 }
 
 /** A full JSONL line: the receipt fields flattened, then `public_key` + `signature` (lowercase hex). */
