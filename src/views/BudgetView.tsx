@@ -9,17 +9,19 @@ import {
   type ScopeKind,
   type UsageStatus,
 } from "../lib/budget";
+import { Icon } from "../components/Icon";
+import type { View } from "../components/Sidebar";
 
 /** R6 increment 4 — live budget controls: observed per-app / per-agent / per-operator usage
  *  against the policy's rate caps, derived from the verified audit log. */
 export function BudgetView({
   rows,
   policy,
-  onLoadSample,
+  onNavigate,
 }: {
   rows: AuditRow[];
   policy: Policy;
-  onLoadSample: () => void;
+  onNavigate: (v: View) => void;
 }) {
   const [kind, setKind] = useState<ScopeKind>("source");
   const caps: BudgetCaps = {
@@ -42,24 +44,19 @@ export function BudgetView({
             from the verified audit log. A scope sitting <em>at</em> its cap is the host throttling it.
           </p>
         </div>
-        <div className="page-actions">
-          <button className="btn ghost" onClick={onLoadSample}>
-            Load sample
-          </button>
-        </div>
       </header>
 
       {empty ? (
         <div className="empty">
-          <div className="empty-glyph">◔</div>
+          <div className="empty-ico"><Icon name="gauge" size={22} /></div>
+          <p className="empty-title">No usage to measure yet</p>
           <p>
-            Budget usage is computed from your verified audit log. Load receipts in the{" "}
-            <strong>Audit log</strong> tab (or here) to see per-app and per-agent action rates
-            against the caps.
+            Budget usage is computed from your verified audit log — per-app and per-agent action rates
+            against the caps. Connect a governed app to start the trail.
           </p>
-          <button className="btn" onClick={onLoadSample}>
-            Load sample audit
-          </button>
+          <div className="page-actions">
+            <button className="btn primary" onClick={() => onNavigate("connections")}>Add a connection</button>
+          </div>
         </div>
       ) : (
         <>
@@ -71,7 +68,7 @@ export function BudgetView({
               note="Configured cap. Inference calls aren't individually signed, so usage isn't measurable from the audit log — set + enforced by the host."
             />
             <span className="muted small">
-              Set caps in the <strong>Policy</strong> tab.
+              Set caps in <button className="link" onClick={() => onNavigate("policy")}>Policy</button>.
             </span>
           </section>
 

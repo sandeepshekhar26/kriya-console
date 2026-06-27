@@ -1,4 +1,5 @@
 import type { AuditRow } from "../lib/types";
+import { Icon } from "./Icon";
 
 export function AuditTable({ rows }: { rows: AuditRow[] }) {
   if (rows.length === 0) {
@@ -21,26 +22,31 @@ export function AuditTable({ rows }: { rows: AuditRow[] }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((r, i) => (
-            <tr key={`${r.source}:${r.lineNo}:${i}`} className={r.outcome.ok ? "" : "row-bad"}>
+          {rows.map((r) => (
+            <tr key={`${r.source}:${r.lineNo}`} className={r.outcome.ok ? "" : "row-bad"}>
               <td>
                 {r.outcome.ok ? (
-                  <span className="badge ok">✓ verified</span>
+                  <span className="vstat ok">
+                    <Icon name="check" size={15} /> verified
+                  </span>
                 ) : (
-                  <span className="badge bad" title={r.outcome.reason}>
-                    ✗ {truncate(r.outcome.reason, 20)}
+                  <span className="vstat bad" title={r.outcome.reason}>
+                    <Icon name="shield-x" size={15} /> {truncate(r.outcome.reason, 18)}
                   </span>
                 )}
               </td>
               <td className="mono">{r.source}</td>
-              <td className="mono" title={r.receipt?.actor ? `${r.receipt.actor.agent} / ${r.receipt.actor.user}` : undefined}>
+              <td
+                className="mono"
+                title={r.receipt?.actor ? `${r.receipt.actor.agent} / ${r.receipt.actor.user}` : undefined}
+              >
                 {r.receipt?.actor ? (
                   <>
                     {r.receipt.actor.agent}
                     <span className="muted"> / {r.receipt.actor.user}</span>
                   </>
                 ) : (
-                  "—"
+                  <span className="subtle">—</span>
                 )}
               </td>
               <td className="mono strong">{r.receipt?.action_id ?? "—"}</td>
@@ -53,7 +59,7 @@ export function AuditTable({ rows }: { rows: AuditRow[] }) {
                     {r.receipt.success ? "ok" : "failed"}
                   </span>
                 ) : (
-                  "—"
+                  <span className="subtle">—</span>
                 )}
               </td>
               <td className="mono">{r.receipt ? formatTs(r.receipt.ts_ms) : "—"}</td>

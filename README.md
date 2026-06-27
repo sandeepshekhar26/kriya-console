@@ -22,18 +22,19 @@ where a cloud MCP gateway structurally can't reach. POS, CRM, finance, healthcar
 
 | | The view | The value |
 |---|---|---|
-| **Oversee** | **Overview** | One posture dashboard across all your apps: receipts, **verified vs failed/tampered**, distinct signers, governance posture, policy coverage. |
-| **Prove** | **Audit log** | Every signed receipt **verified on-device** against its embedded Ed25519 key — tampered or forged rows fail and surface in red. Filter by action / status / source app. |
+| **Oversee** | **Monitor** (home) | The live home: an auto-tailing stream of signed receipts **re-verified on-device**, posture at a glance (receipts, verified vs unverified, signers, coverage), and per-app **attestation continuity** — a colored band per receipt so a verification gap is obvious. |
+| **Prove** | **Audit log** | Every signed receipt **verified on-device** against its embedded Ed25519 key — tampered or forged rows fail and get a tamper-flagged row. Filter by action / status / source app. |
 | **Decide** | **Approvals** | One cross-app/agent queue for the actions a policy holds for a human — **risk-ranked** (destructive + financial first), per-app and per-agent, attributed to the requesting agent + operator, approve/deny with a recorded reason. **Role-gated** (RBAC): only an `approve`-capable role may decide. |
 | **Constrain** | **Policy** | Author the `agent-policy.yaml` the runtime enforces: ordered Allow / Require-approval / Deny rules, one-click coverage for ungoverned actions, lint, per-minute action **and** per-hour api-call budget caps, import/export — with a live decision preview. |
-| **Throttle** | **Budgets** | Per-app / per-agent / per-operator usage against the rate caps — peak action rate, utilization, at-limit history. A scope *at* its cap is the host throttling it. |
-| **Attribute** | **Identity** | Who operated each app — per-operator + per-agent dashboards from the signed `actor` (verified receipts only) — and **RBAC** roles (admin / approver / operator / viewer) keyed on the operator. |
-| **Report** | **Compliance** | Turn the verified trail into a **SOC 2 / ISO 42001 / EU AI Act** evidence bundle (control mapping, attribution, on-device attestations, action inventory) — export Markdown + JSON. |
+| **Throttle** | **Budgets & rate** | Per-app / per-agent / per-operator usage against the rate caps — peak action rate, utilization, at-limit history. A scope *at* its cap is the host throttling it. |
+| **Attribute** | **Identity & access** | Who operated each app — per-operator + per-agent dashboards from the signed `actor` (verified receipts only) — and **RBAC** roles (admin / approver / operator / viewer) keyed on the operator. |
+| **Report** | **Evidence** | A report builder: pick a framework — **SOC 2 / ISO 42001 / EU AI Act** — and generate an auditor-ready bundle (control mapping, attribution, on-device attestations, action inventory), Markdown + JSON, on-device. |
+| **Connect** | **Connections** | Add/manage **governed MCP connections** across the reach hierarchy: **kriya-native** (bolt-on), **proxy** any MCP server, or **govern a desktop app** via reach-in / computer-use. Wires `claude_desktop_config.json` and walks the macOS permissions for you. |
 
-**Freemium:** the **free** tier is the live governance monitor, offline receipt verification, and
-guided setup — fully usable on its own. An **offline license** unlocks the **compliance tier**:
-auditor-ready evidence export (**Compliance**) and cross-app correlation across the apps on this
-machine. (Cross-*machine* fleet is on the roadmap; the license issuer/purchase path is a deferred
+**Freemium:** the **free** tier is the live governance monitor, offline receipt verification, the
+Connections manager, and guided setup — fully usable on its own. An **offline license** unlocks the
+**compliance tier**: auditor-ready evidence export (**Evidence**) and cross-app correlation
+(**Fleet**) across the apps on this machine. (Cross-*machine* fleet is on the roadmap; the license issuer/purchase path is a deferred
 stub.)
 
 Coming next: **SSO / OIDC** sign-in to back the RBAC roles — a **hosted-tier** feature, deliberately
@@ -42,10 +43,11 @@ gated to a concrete enterprise deal rather than built speculatively (the console
 
 ## See it in 30 seconds
 
-Download and open the Console desktop app. On launch it **auto-discovers and tails the standard
-on-device audit location (`~/.kriya/audit/`)** — no import, no log-hunting — and re-verifies every
-receipt on-device in its compiled backend. Then walk
-**Audit → Approvals → Policy → Budgets → Identity → Compliance**. To produce marketing screenshots, see
+Download and open the Console desktop app. It opens on the **Monitor** — it **auto-discovers and
+tails the standard on-device audit location (`~/.kriya/audit/`)** — no import, no log-hunting — and
+re-verifies every receipt on-device in its compiled backend. Then walk
+**Monitor → Audit → Approvals → Policy → Budgets → Identity → Evidence**, and add a governed app from
+**Connections**. Press **⌘K** to jump anywhere. To produce marketing screenshots, see
 [`docs/screenshots/CAPTURE.md`](docs/screenshots/CAPTURE.md).
 
 Developer path (run from source):
@@ -112,8 +114,9 @@ src/lib/policy.ts        policy model: rules, decide(), lint — a port of permi
 src/lib/approvals.ts     approval queue: risk ranking, routing, persistence
 src/lib/compliance.ts    verified trail → SOC 2 / ISO 42001 / EU AI Act evidence bundle
 src/lib/receipts.ts      parse a JSONL log → verified rows
-src/views/               Overview · AuditView · ApprovalsView · PolicyView · BudgetView · IdentityView · ComplianceView
-src/components/          Sidebar · AuditTable
+src/views/               Monitor · Audit · Approvals · Policy · Budget · Identity · Reports(Evidence) · Fleet · Connections · Settings
+src/components/          Sidebar · Icon · CommandPalette · AuditTable · LicenseGate
+src/styles.css           the design system — light-first tokens, one rationed accent, hairline structure
 src/sample/              real Rust-signed receipts (zero-setup demo + test fixtures)
 test/                    verify · policy · approvals · compliance · actor (parity with the Rust host)
 docs/                    ROADMAP · TRUST · PRICING · screenshots/CAPTURE

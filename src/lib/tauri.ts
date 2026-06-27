@@ -50,7 +50,8 @@ export interface OnboardingStatus {
   auditLogs: number;
 }
 export interface WireRequest {
-  front: "proxy" | "reach-in" | "computer-use" | "router";
+  /** `kriya` = a kriya-instrumented server launched directly (bolt-on / serve). */
+  front: "kriya" | "proxy" | "reach-in" | "computer-use" | "router";
   app?: string;
   approval?: string;
   downstream?: string[];

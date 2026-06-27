@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Icon } from "../components/Icon";
 import {
   decide,
   defaultPolicy,
@@ -158,16 +159,17 @@ export function PolicyView({
             {policy.rules.map((r, i) => (
               <div className={`rule ${r.action === "*" ? "catch-all" : ""}`} key={i}>
                 <div className="rule-order">
-                  <button className="icon-btn" disabled={i === 0} onClick={() => moveRule(i, -1)} title="Move up">
-                    ▲
+                  <button className="icon-btn" disabled={i === 0} onClick={() => moveRule(i, -1)} title="Move up" aria-label="Move rule up">
+                    <Icon name="chevron-up" size={11} />
                   </button>
                   <button
                     className="icon-btn"
                     disabled={i === policy.rules.length - 1}
                     onClick={() => moveRule(i, 1)}
                     title="Move down"
+                    aria-label="Move rule down"
                   >
-                    ▼
+                    <Icon name="chevron-down" size={11} />
                   </button>
                 </div>
                 <input
@@ -187,8 +189,8 @@ export function PolicyView({
                     </option>
                   ))}
                 </select>
-                <button className="icon-btn danger" onClick={() => removeRule(i)} title="Remove rule">
-                  ✕
+                <button className="icon-btn danger" onClick={() => removeRule(i)} title="Remove rule" aria-label="Remove rule">
+                  <Icon name="x" size={12} />
                 </button>
               </div>
             ))}
@@ -262,7 +264,7 @@ export function PolicyView({
               <h2>Lint</h2>
             </div>
             {warnings.length === 0 ? (
-              <p className="ok-text">✓ Policy looks clean.</p>
+              <p className="ok-text"><Icon name="check" size={14} /> Policy looks clean.</p>
             ) : (
               <ul className="lint">
                 {warnings.map((w, i) => (
@@ -310,10 +312,10 @@ export function PolicyView({
             <div className="panel-head">
               <h2>agent-policy.yaml</h2>
               <button className="link" onClick={copyYaml}>
-                {copied ? "copied ✓" : "copy"}
+                {copied ? (<><Icon name="check" size={12} /> copied</>) : "copy"}
               </button>
             </div>
-            <pre className="yaml">{yaml}</pre>
+            <pre className="well yaml">{yaml}</pre>
           </article>
         </section>
       </div>

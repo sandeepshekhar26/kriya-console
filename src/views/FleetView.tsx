@@ -1,5 +1,20 @@
 import { useEffect, useState } from "react";
 import { fleetCorrelation, type FleetReport } from "../lib/tauri";
+import { Icon } from "../components/Icon";
+
+function FleetHead() {
+  return (
+    <header className="page-head">
+      <div>
+        <h1>Fleet</h1>
+        <p className="page-sub">
+          Cross-machine, cross-app correlation of the signed audit trail — generated on-device in
+          compiled Rust.
+        </p>
+      </div>
+    </header>
+  );
+}
 
 /**
  * Fleet correlation (paid, D-018): cross-machine / cross-app rollup of the signed trail, computed in
@@ -18,24 +33,24 @@ export function FleetView() {
   if (err) {
     return (
       <div className="view">
-        <header className="page-head">
-          <h1>Fleet</h1>
-        </header>
-        <section className="panel">
+        <FleetHead />
+        <div className="empty">
+          <div className="empty-ico"><Icon name="shield-x" size={22} /></div>
+          <p className="empty-title">Couldn’t correlate the trail</p>
           <p className="warn-text">{err}</p>
-        </section>
+        </div>
       </div>
     );
   }
   if (!report) {
     return (
       <div className="view">
-        <header className="page-head">
-          <h1>Fleet</h1>
-        </header>
-        <section className="panel">
-          <p className="muted">Correlating the signed trail…</p>
-        </section>
+        <FleetHead />
+        <div className="empty">
+          <div className="empty-ico"><Icon name="fleet" size={22} /></div>
+          <p className="empty-title">Correlating the signed trail…</p>
+          <p>Grouping every receipt by signer and app, on-device.</p>
+        </div>
       </div>
     );
   }
@@ -47,15 +62,7 @@ export function FleetView() {
 
   return (
     <div className="view">
-      <header className="page-head">
-        <div>
-          <h1>Fleet</h1>
-          <p className="page-sub">
-            Cross-machine, cross-app correlation of the signed audit trail — generated on-device in
-            compiled Rust.
-          </p>
-        </div>
-      </header>
+      <FleetHead />
 
       <section className="stat-grid">
         <Stat label="Receipts" value={report.totalReceipts} />
@@ -68,7 +75,7 @@ export function FleetView() {
 
       {report.tamperSignals.length > 0 && (
         <section className="panel bad-panel">
-          <h2>⚠ Integrity alerts</h2>
+          <h2><Icon name="alert" size={16} /> Integrity alerts</h2>
           {report.tamperSignals.map((t) => (
             <p key={t} className="warn-text small">
               {t}
@@ -82,7 +89,7 @@ export function FleetView() {
           <h2>Signers</h2>
           <span className="muted small">{span}</span>
         </div>
-        <table className="data-table">
+        <table className="audit">
           <thead>
             <tr>
               <th>Fingerprint</th>
@@ -117,7 +124,7 @@ export function FleetView() {
           <h2>Apps</h2>
           <span className="muted small">{report.onDeviceAttestations} on-device attestation(s)</span>
         </div>
-        <table className="data-table">
+        <table className="audit">
           <thead>
             <tr>
               <th>App / source</th>

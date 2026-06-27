@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 import type { AuditRow } from "../lib/types";
+import { Icon } from "../components/Icon";
+import type { View } from "../components/Sidebar";
 import {
   summarizeIdentities,
   assignRole,
@@ -23,12 +25,12 @@ export function IdentityView({
   rows,
   rbac,
   onRbacChange,
-  onLoadSample,
+  onNavigate,
 }: {
   rows: AuditRow[];
   rbac: RbacModel;
   onRbacChange: (next: RbacModel) => void;
-  onLoadSample: () => void;
+  onNavigate: (v: View) => void;
 }) {
   const [kind, setKind] = useState<IdentityKind>("user");
   const identities = useMemo(() => summarizeIdentities(rows, kind), [rows, kind]);
@@ -53,23 +55,19 @@ export function IdentityView({
             roles may approve, edit policy, or view the audit.
           </p>
         </div>
-        <div className="page-actions">
-          <button className="btn ghost" onClick={onLoadSample}>
-            Load sample
-          </button>
-        </div>
       </header>
 
       {empty ? (
         <div className="empty">
-          <div className="empty-glyph">⊙</div>
+          <div className="empty-ico"><Icon name="users" size={22} /></div>
+          <p className="empty-title">No attributed activity yet</p>
           <p>
             Operator + agent activity is read from the <strong>signed actor</strong> on each verified
-            receipt. Load an audit log to see who did what — and assign roles.
+            receipt. Connect a governed app to capture who did what — and assign roles.
           </p>
-          <button className="btn" onClick={onLoadSample}>
-            Load sample audit
-          </button>
+          <div className="page-actions">
+            <button className="btn primary" onClick={() => onNavigate("connections")}>Add a connection</button>
+          </div>
         </div>
       ) : (
         <>
