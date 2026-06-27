@@ -1,24 +1,48 @@
+import { Icon, type IconName } from "./Icon";
+
 export type View =
-  | "overview"
+  | "monitor"
   | "audit"
-  | "policy"
   | "approvals"
+  | "policy"
   | "budget"
   | "identity"
-  | "compliance"
+  | "evidence"
   | "fleet"
-  | "setup";
+  | "connections"
+  | "settings";
 
-const NAV: { id: View; label: string; icon: string; paid?: boolean }[] = [
-  { id: "overview", label: "Overview", icon: "◧" },
-  { id: "audit", label: "Audit log", icon: "▤" },
-  { id: "approvals", label: "Approvals", icon: "✓" },
-  { id: "policy", label: "Policy", icon: "⛨" },
-  { id: "budget", label: "Budgets", icon: "◔" },
-  { id: "identity", label: "Identity", icon: "⊙" },
-  { id: "compliance", label: "Compliance", icon: "▦", paid: true },
-  { id: "fleet", label: "Fleet", icon: "⊞", paid: true },
-  { id: "setup", label: "Setup", icon: "⚙" },
+type NavItem = { id: View; label: string; icon: IconName; paid?: boolean };
+type NavGroup = { label: string; items: NavItem[] };
+
+const GROUPS: NavGroup[] = [
+  {
+    label: "Monitor",
+    items: [
+      { id: "monitor", label: "Monitor", icon: "monitor" },
+      { id: "audit", label: "Audit log", icon: "list" },
+      { id: "approvals", label: "Approvals", icon: "approvals" },
+    ],
+  },
+  {
+    label: "Govern",
+    items: [
+      { id: "policy", label: "Policy", icon: "policy" },
+      { id: "budget", label: "Budgets & rate", icon: "gauge" },
+      { id: "identity", label: "Identity & access", icon: "users" },
+    ],
+  },
+  {
+    label: "Compliance",
+    items: [
+      { id: "evidence", label: "Evidence", icon: "evidence", paid: true },
+      { id: "fleet", label: "Fleet", icon: "fleet", paid: true },
+    ],
+  },
+  {
+    label: "Connect",
+    items: [{ id: "connections", label: "Connections", icon: "link" }],
+  },
 ];
 
 export function Sidebar({
@@ -35,6 +59,7 @@ export function Sidebar({
   licensed,
   licenseHolder,
   live,
+  liveDir,
 }: {
   view: View;
   onNavigate: (v: View) => void;
@@ -49,77 +74,137 @@ export function Sidebar({
   licensed: boolean;
   licenseHolder?: string | null;
   live: boolean;
+  liveDir: string;
 }) {
   return (
     <aside className="sidebar">
-      <div className="sidebar-brand">
-        <span className="logo">▣</span>
+      <div className="brand">
+        <span className="brand-mark">
+          <Icon name="shield-check" size={24} strokeWidth={1.5} />
+        </span>
         <div>
-          <div className="brand-name">kriya</div>
+          <div className="brand-word">Kriya</div>
           <div className="brand-sub">Console</div>
         </div>
       </div>
 
-      <div className="workspace">
-        <div className="ws-label">WORKSPACE</div>
-        <div className="ws-name">
-          {live ? (
-            <span className="live-dot-row">
-              <span className="dot live" /> watching ~/.kriya/audit
-            </span>
-          ) : (
-            "Local workspace"
-          )}
+      <div className="scope" title={live ? liveDir : "Local workspace"}>
+        <span className={`dot ${live ? "live" : "ok"}`} />
+        <div className="scope-text">
+          <b>{live ? "Live" : "Local workspace"}</b>
+          <span className="mono">{live ? liveDir : "no device watcher"}</span>
         </div>
       </div>
 
       <nav className="nav">
-        {NAV.map((n) => (
-          <button
-            key={n.id}
-            className={`nav-item ${view === n.id ? "active" : ""}`}
-            onClick={() => onNavigate(n.id)}
-          >
-            <span className="nav-icon">{n.icon}</span>
-            <span className="nav-label">{n.label}</span>
-            {n.paid && !licensed && (
-              <span className="nav-lock" title="Paid feature">
-                🔒
-              </span>
-            )}
-            {n.id === "audit" && failedCount > 0 && <span className="nav-badge bad">{failedCount}</span>}
-            {n.id === "audit" && receiptCount > 0 && failedCount === 0 && (
-              <span className="nav-badge">{receiptCount}</span>
-            )}
-            {n.id === "approvals" && highRiskApprovals > 0 && (
-              <span className="nav-badge bad">{pendingApprovals}</span>
-            )}
-            {n.id === "approvals" && pendingApprovals > 0 && highRiskApprovals === 0 && (
-              <span className="nav-badge warn">{pendingApprovals}</span>
-            )}
-            {n.id === "policy" && warningCount > 0 && <span className="nav-badge warn">{warningCount}</span>}
-            {n.id === "budget" && budgetAtLimit > 0 && <span className="nav-badge bad">{budgetAtLimit}</span>}
-          </button>
+        {GROUPS.map((group) => (
+          <div className="nav-group" key={group.label}>
+            <div className="nav-group-label">{group.label}</div>
+            {group.items.map((n) => (
+              <NavButton
+                key={n.id}
+                item={n}
+                active={view === n.id}
+                locked={!!n.paid && !licensed}
+                onClick={() => onNavigate(n.id)}
+                count={countFor(n.id, { receiptCount, failedCount, warningCount, pendingApprovals, highRiskApprovals, budgetAtLimit })}
+              />
+            ))}
+          </div>
         ))}
       </nav>
 
-      <div className="sidebar-foot">
+      <div className="nav-foot">
+        <NavButton
+          item={{ id: "settings", label: "Settings", icon: "settings" }}
+          active={view === "settings"}
+          locked={false}
+          onClick={() => onNavigate("settings")}
+          count={null}
+        />
         <button
-          className={`license-badge ${licensed ? "pro" : "free"}`}
-          onClick={() => onNavigate("setup")}
+          className={`license-chip ${licensed ? "pro" : ""}`}
+          onClick={() => onNavigate("settings")}
           title="Manage license"
         >
-          <span className="lb-dot" />
-          {licensed ? `Pro${licenseHolder ? ` · ${licenseHolder}` : ""}` : "Free tier"}
+          <span className="lc-dot" />
+          <span className="lc-tier">{licensed ? "Pro" : "Free"}</span>
+          {licensed && licenseHolder && <span className="lc-holder">· {licenseHolder}</span>}
+          <span className="spacer" />
+          <Icon name="chevron-right" size={14} className="muted" />
         </button>
-        <div className="foot-row">
-          <span className="dot ok" /> verified locally · nothing leaves this machine
+        <div className="foot-actions">
+          <button className="icon-toggle grow" onClick={onToggleTheme} title="Switch theme">
+            <Icon name={theme === "dark" ? "sun" : "moon"} size={15} />
+            {theme === "dark" ? "Light" : "Dark"}
+          </button>
         </div>
-        <button className="theme-toggle" onClick={onToggleTheme} title="Switch light / dark theme">
-          <span className="tt-icon">{theme === "dark" ? "☀" : "☾"}</span>
-          <span className="tt-label">{theme === "dark" ? "Light mode" : "Dark mode"}</span>
-        </button>
+        <div className="trust-strip">
+          <Icon name="lock" size={13} />
+          Verified on-device · nothing leaves this machine
+        </div>
       </div>
     </aside>
   );
+}
+
+function NavButton({
+  item,
+  active,
+  locked,
+  onClick,
+  count,
+}: {
+  item: NavItem;
+  active: boolean;
+  locked: boolean;
+  onClick: () => void;
+  count: { value: number; tone: "neutral" | "warn" | "bad" } | { dot: "warn" } | null;
+}) {
+  return (
+    <button className={`nav-item ${active ? "active" : ""}`} onClick={onClick}>
+      <span className="nav-ico">
+        <Icon name={item.icon} size={16} />
+      </span>
+      <span className="nav-label">{item.label}</span>
+      {locked ? (
+        <span className="nav-lock" title="Pro feature">
+          <Icon name="lock" size={13} />
+        </span>
+      ) : count && "dot" in count ? (
+        <span className={`nav-dot ${count.dot}`} />
+      ) : count && count.value > 0 ? (
+        <span className={`nav-count ${count.tone}`}>{count.value}</span>
+      ) : null}
+    </button>
+  );
+}
+
+type Counts = {
+  receiptCount: number;
+  failedCount: number;
+  warningCount: number;
+  pendingApprovals: number;
+  highRiskApprovals: number;
+  budgetAtLimit: number;
+};
+
+function countFor(id: View, c: Counts): { value: number; tone: "neutral" | "warn" | "bad" } | { dot: "warn" } | null {
+  switch (id) {
+    case "audit":
+      if (c.failedCount > 0) return { value: c.failedCount, tone: "bad" };
+      return null;
+    case "approvals":
+      if (c.highRiskApprovals > 0) return { value: c.pendingApprovals, tone: "bad" };
+      if (c.pendingApprovals > 0) return { dot: "warn" };
+      return null;
+    case "policy":
+      if (c.warningCount > 0) return { value: c.warningCount, tone: "warn" };
+      return null;
+    case "budget":
+      if (c.budgetAtLimit > 0) return { value: c.budgetAtLimit, tone: "bad" };
+      return null;
+    default:
+      return null;
+  }
 }

@@ -1,8 +1,8 @@
 # Capturing marketing screenshots
 
-The Console ships with real Rust-signed sample data, so you can produce clean product screenshots
-in a couple of minutes with **no setup beyond `npm run dev`**. These five views are the sellable set
-(verified live, 2026-06-19).
+Populate the Console with a **real signed trail** on this machine, then capture. In the desktop app
+the Monitor tails `~/.kriya/audit/` live; in the browser build (`npm run dev`) import a real
+`kriya-audit.jsonl` via **Audit log → Open a file…**. These views are the sellable set.
 
 ## Setup
 
@@ -11,23 +11,25 @@ npm install
 npm run dev            # → http://localhost:5173
 ```
 
-Use a **1280×800** (desktop) viewport and your OS dark theme. Save captures into this folder as
-`overview.png`, `audit.png`, `approvals.png`, `policy.png`, `compliance.png`, then reference them
-from `README.md`.
+Then **Audit log → Open a file…** and pick a real `kriya-audit.jsonl` (ideally one that includes a
+*tampered* row, an on-device attestation, and two operators for the strongest scenes). Use a
+**1280×800** viewport and the **light theme** (the first-class default). Save captures into this
+folder as `monitor.png`, `audit.png`, `approvals.png`, `policy.png`, `connections.png`,
+`evidence.png`, then reference them from `README.md`.
 
-## The five views (what to load, what it shows)
+## The key views (how to get there, what it shows)
 
 | View | How to get there | What sells |
 |---|---|---|
-| **Overview** | Click **Overview** → **Load sample data** | The posture dashboard: receipts, **verified vs failed/tampered**, distinct signers, governance posture + policy coverage at a glance. |
-| **Audit log** | **Audit log** (uses the loaded receipts) | The signed-receipt table — *"every receipt, verified locally against its embedded key."* Status / source / actor / action / params, with filters. |
-| **Approvals** | **Approvals** → **Load sample** | The cross-app/agent approval queue — **high-risk first** (close_account, refund_payment, delete_transaction in red), per-app + per-actor (`claude-desktop / alice`, `cursor / bob`), waiting time, Approve/Deny. The clearest enterprise screenshot. |
+| **Monitor** (home) | Opens here (tails `~/.kriya/audit`; in the browser build, import a trail first via Audit) | The live home: the signed-receipt tail, posture (receipts, **verified vs unverified**, signers, coverage), and the per-app **attestation continuity** ribbon. |
+| **Audit log** | **Audit log → Open a file…** (a `kriya-audit.jsonl` trail) | The signed-receipt table — *"every receipt, verified locally against its embedded key."* Status / source / actor / action / params, with filters. |
+| **Approvals** | **Approvals → Load queue(s)** (a real `pending-approvals.jsonl`) | The cross-app/agent approval queue — **high-risk first** (close_account, refund_payment, delete_transaction tamper-flagged), per-app + per-actor (`claude-desktop / alice`, `cursor / bob`), waiting time, Approve/Deny. The clearest enterprise screenshot. |
 | **Policy** | **Policy** | The rule editor: ordered Allow / Require-approval / Deny (color-coded), one-click coverage suggestions for ungoverned actions, budget cap, lint, decision preview. *"Author the rules the runtime enforces."* |
-| **Compliance** | **Compliance** → **Load sample** | The control mapping (EU AI Act Art. 12/13/14, SOC 2 CC7.2, ISO 42001 A.9) with satisfied/gap status + **Export Markdown / JSON**. The willingness-to-pay shot. |
+| **Connections** | **Connections** | The governed-MCP manager: the connection-type catalog (kriya-native / proxy / desktop) + the slide-in add-connection flow. The "how it gets wired" shot. |
+| **Evidence** | **Evidence** (uses the loaded trail; Pro) | The report builder — pick SOC 2 / ISO 42001 / EU AI Act, generate on-device; control mapping (EU AI Act Art. 12/13/14, SOC 2 CC7.2, ISO 42001 A.9) with satisfied/gap + **Markdown / JSON**. The willingness-to-pay shot. |
 
-> Tip for the strongest **Audit** shot (a red tampered row): load the compliance sample, which
-> includes a deliberately tampered receipt — it surfaces in red, proving verification actually
-> catches forgery.
+> Tip for the strongest **Audit** shot (a tamper-flagged row): use a trail that includes a
+> deliberately tampered receipt — it surfaces flagged, proving verification actually catches forgery.
 
 ## Optional: scripted capture
 
@@ -38,8 +40,8 @@ If you want repeatable captures without an extra committed dependency, run Playw
 npm run dev &                                  # leave the dev server running
 npx --yes playwright@latest install chromium
 npx --yes playwright@latest screenshot --viewport-size=1280,800 \
-  http://localhost:5173 docs/screenshots/overview.png
-# …then drive the nav + "Load sample" buttons via a short Playwright script for the other four.
+  http://localhost:5173 docs/screenshots/monitor.png
+# …then drive Audit → Open a file… to import a real trail, and nav the other views, via a short Playwright script.
 ```
 
 For most needs the manual capture above is faster. Keep generated PNGs out of git history if they

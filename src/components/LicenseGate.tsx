@@ -1,4 +1,5 @@
 import type { LicenseStatus } from "../lib/tauri";
+import { Icon } from "./Icon";
 
 /**
  * The paywall a free-tier user sees on a paid view (Compliance, Fleet). The feature's *value* is
@@ -25,15 +26,15 @@ export function LicenseGate({
         </div>
       </header>
       <section className="panel gate">
-        <div className="gate-lock">🔒</div>
-        <h2>Paid feature</h2>
+        <div className="gate-ico"><Icon name="lock" size={22} /></div>
+        <h2>Compliance tier</h2>
         <p className="muted">
           {feature} is part of the paid tier. It runs entirely on-device in the compiled backend —
           activate a license to unlock it. Nothing is uploaded; the license is verified offline.
         </p>
         {license?.reason && <p className="warn-text small">Installed license rejected: {license.reason}</p>}
         <button className="btn primary" onClick={onActivate}>
-          Activate a license →
+          Activate a license <Icon name="arrow-right" size={14} />
         </button>
       </section>
     </div>

@@ -266,12 +266,28 @@ pub struct WireResult {
 /// other servers. Returns the snippet (also useful for manual paste) and whether the merge landed.
 #[tauri::command]
 pub fn wire_claude_config(req: WireRequest) -> Result<WireResult, String> {
-    let (gateway, _bundled) =
-        resolve_gateway().ok_or("the bundled gateway binary could not be located")?;
-    let command = gateway.to_string_lossy().into_owned();
     let approval = req.approval.clone().unwrap_or_else(|| "gui".to_string());
 
-    let (server_key, args) = build_args(&req, &approval)?;
+    // The `kriya` (bolt-on / serve) front is special: a kriya-instrumented MCP server governs and
+    // signs its own named actions in-process, so the MCP client launches it DIRECTLY — no gateway
+    // wrapper. Every other front routes through the bundled gateway.
+    let (server_key, command, args) = if req.front == "kriya" {
+        let downstream = req
+            .downstream
+            .clone()
+            .filter(|d| !d.is_empty())
+            .ok_or("a kriya-native connection needs a server command")?;
+        let mut it = downstream.into_iter();
+        let cmd = it.next().expect("downstream is non-empty (checked above)");
+        let rest: Vec<String> = it.collect();
+        let name = req.app.as_deref().filter(|s| !s.trim().is_empty()).unwrap_or("server");
+        (format!("kriya-native-{}", slug(name)), cmd, rest)
+    } else {
+        let (gateway, _bundled) =
+            resolve_gateway().ok_or("the bundled gateway binary could not be located")?;
+        let (key, args) = build_args(&req, &approval)?;
+        (key, gateway.to_string_lossy().into_owned(), args)
+    };
 
     let entry = serde_json::json!({ "command": command, "args": args });
 
@@ -317,30 +333,31 @@ pub fn wire_claude_config(req: WireRequest) -> Result<WireResult, String> {
     })
 }
 
+/// Slugify a human name into an MCP server-key suffix (`Numbers` → `numbers`).
+fn slug(s: &str) -> String {
+    let mut out = String::new();
+    let mut prev = true;
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            prev = false;
+        } else if !prev {
+            out.push('-');
+            prev = true;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() {
+        "app".into()
+    } else {
+        out
+    }
+}
+
 /// Build the `(server_key, args)` for the chosen front. Mirrors the gateway's subcommand contract.
 fn build_args(req: &WireRequest, approval: &str) -> Result<(String, Vec<String>), String> {
-    let slug = |s: &str| -> String {
-        let mut out = String::new();
-        let mut prev = true;
-        for c in s.chars() {
-            if c.is_ascii_alphanumeric() {
-                out.push(c.to_ascii_lowercase());
-                prev = false;
-            } else if !prev {
-                out.push('-');
-                prev = true;
-            }
-        }
-        while out.ends_with('-') {
-            out.pop();
-        }
-        if out.is_empty() {
-            "app".into()
-        } else {
-            out
-        }
-    };
-
     match req.front.as_str() {
         "reach-in" => {
             let app = req

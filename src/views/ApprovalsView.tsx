@@ -8,6 +8,8 @@ import {
   type RoutedApproval,
 } from "../lib/approvals";
 import { can, roleOf, type RbacModel } from "../lib/identity";
+import { Icon } from "../components/Icon";
+import type { View } from "../components/Sidebar";
 
 type GroupKey = "none" | "source" | "agent";
 
@@ -16,21 +18,21 @@ export function ApprovalsView({
   onIngest,
   onDecide,
   onClear,
-  onLoadSample,
   rbac,
   actingOperator,
   onActingOperatorChange,
   operators,
+  onNavigate,
 }: {
   queue: QueueState;
   onIngest: (text: string, source: string) => void;
   onDecide: (id: string, kind: DecisionKind, reason: string) => void;
   onClear: () => void;
-  onLoadSample: () => void;
   rbac: RbacModel;
   actingOperator: string;
   onActingOperatorChange: (op: string) => void;
   operators: string[];
+  onNavigate: (v: View) => void;
 }) {
   const [group, setGroup] = useState<GroupKey>("none");
   // RBAC gate (R8): only an `approve`-capable role may decide. Self-asserted operator here — real
@@ -84,9 +86,6 @@ export function ApprovalsView({
               onChange={(e) => void onFiles(e.target.files)}
             />
           </label>
-          <button className="btn ghost" onClick={onLoadSample}>
-            Load sample
-          </button>
           {!empty && (
             <button className="btn ghost" onClick={onClear}>
               Clear
@@ -97,15 +96,25 @@ export function ApprovalsView({
 
       {empty ? (
         <div className="empty">
-          <div className="empty-glyph">✓</div>
+          <div className="empty-ico"><Icon name="approvals" size={22} /></div>
+          <p className="empty-title">Queue clear</p>
           <p>
-            Pending approvals from every app land here. Drop in a{" "}
-            <code>pending-approvals.jsonl</code> queue to triage what your agents are waiting to do.
+            Pending approvals from every governed app land here, risk-ranked. Import a{" "}
+            <code>pending-approvals.jsonl</code> queue to triage what your agents are waiting to do —
+            decisions stay on this machine.
           </p>
-          <p className="muted">Decisions stay on this machine, persisted across reloads.</p>
-          <button className="btn" onClick={onLoadSample}>
-            Load sample queue
-          </button>
+          <div className="page-actions">
+            <label className="btn primary">
+              Load queue(s)
+              <input
+                type="file"
+                accept=".jsonl,.log,.txt"
+                multiple
+                hidden
+                onChange={(e) => void onFiles(e.target.files)}
+              />
+            </label>
+          </div>
         </div>
       ) : (
         <>
@@ -125,12 +134,13 @@ export function ApprovalsView({
                 </option>
               ))}
             </select>
-            <span className={`badge ${canApprove ? "ok" : ""}`}>{role}</span>
+            <span className="badge">{role}</span>
             {canApprove ? (
               <span className="muted small">can decide approvals</span>
             ) : (
               <span className="warn small">
-                this role can’t decide — grant an approver/admin role in <strong>Identity</strong>
+                this role can’t decide — grant an approver/admin role in{" "}
+                <button className="link" onClick={() => onNavigate("identity")}>Identity &amp; access</button>
               </span>
             )}
           </div>

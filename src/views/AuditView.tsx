@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import type { AuditRow } from "../lib/types";
 import { AuditTable } from "../components/AuditTable";
+import { Icon } from "../components/Icon";
+import type { View } from "../components/Sidebar";
 
 type StatusFilter = "all" | "verified" | "failed";
 
@@ -8,13 +10,13 @@ export function AuditView({
   rows,
   onIngest,
   onClear,
-  onLoadSample,
+  onNavigate,
   live,
 }: {
   rows: AuditRow[];
   onIngest: (text: string, source: string) => Promise<void>;
   onClear: () => void;
-  onLoadSample: () => void;
+  onNavigate: (v: View) => void;
   /** In the desktop app: the audit dir being tailed. The log auto-appears; import is demoted. */
   live?: string;
 }) {
@@ -59,11 +61,11 @@ export function AuditView({
         <div className="page-actions">
           {live && (
             <span className="live-pill" title={live}>
-              <span className="dot live" /> live · tailing {live}
+              <span className="dot live" /> Live · {live}
             </span>
           )}
           <label className="btn ghost">
-            Open a file…
+            <Icon name="folder" size={14} /> Open a file…
             <input
               type="file"
               accept=".jsonl,.log,.txt"
@@ -72,11 +74,6 @@ export function AuditView({
               onChange={(e) => void onFiles(e.target.files)}
             />
           </label>
-          {!live && (
-            <button className="btn ghost" onClick={onLoadSample}>
-              Load sample
-            </button>
-          )}
           {rows.length > 0 && (
             <button className="btn ghost" onClick={onClear}>
               Clear
@@ -87,25 +84,25 @@ export function AuditView({
 
       {rows.length === 0 ? (
         <div className="empty">
-          <div className="empty-glyph">▤</div>
+          <div className="empty-ico"><Icon name="list" size={22} /></div>
           {live ? (
             <>
+              <p className="empty-title">Watching for signed receipts</p>
               <p>
-                Watching <code>{live}</code> for signed receipts. Drive a governed app and they appear
-                here live — every one verified in compiled Rust against its embedded key.
+                Tailing <code>{live}</code>. Drive a governed app and receipts appear here live — every
+                one verified in compiled Rust against its embedded key. Nothing leaves this machine.
               </p>
-              <p className="muted">Nothing leaves this machine. Go to Setup to wire an app.</p>
             </>
           ) : (
             <>
+              <p className="empty-title">No receipts loaded</p>
               <p>
-                Drop in one or more <code>kriya-audit.jsonl</code> logs to verify every signed receipt
-                and audit what agents did across your apps.
+                Open a signed <code>kriya-audit.jsonl</code> trail to verify it, or connect a governed
+                app to capture one live. Signatures are verified locally — nothing leaves this machine.
               </p>
-              <p className="muted">Signatures are verified locally — no data leaves this machine.</p>
-              <button className="btn" onClick={onLoadSample}>
-                Load sample data
-              </button>
+              <div className="page-actions">
+                <button className="btn primary" onClick={() => onNavigate("connections")}>Add a connection</button>
+              </div>
             </>
           )}
         </div>
