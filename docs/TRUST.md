@@ -18,7 +18,7 @@ vendor** — so altered or forged records are detected, not assumed.
 
 | Question a regulator / auditor asks | How the Console answers it |
 |---|---|
-| *"Show me everything the agent did."* | The audit view aggregates the signed receipts from every kriya app into one table — action, parameters, who, when, success — and verifies each signature in the browser. |
+| *"Show me everything the agent did."* | The audit view aggregates the signed receipts from every kriya app into one table — action, parameters, who, when, success — and verifies each signature on-device, inside the Console app. |
 | *"How do I know this log wasn't edited?"* | Each receipt is Ed25519-signed by the host. The Console re-derives the signed bytes and checks the signature; **any edit to a retained receipt fails verification and is flagged in red.** |
 | *"Who authorized the risky ones?"* | Guarded actions (e.g. `delete_transaction`, `close_account`) were held for a human; the approval — with the operator's identity and a recorded reason — is part of the trail (R8 `actor`). |
 | *"What is the agent even allowed to do?"* | The policy view shows the exact allow / require-approval / deny rules the runtime enforces, and produces the `agent-policy.yaml` the host loads — so the control is provable, not aspirational. |
@@ -32,10 +32,10 @@ vendor** — so altered or forged records are detected, not assumed.
 2. **Receipts are append-only and self-describing.** Each is one line in a JSONL log carrying the
    signature and the signer's public key.
 3. **Verification is independent and offline.** The Console re-computes the exact bytes that were
-   signed and checks the signature with `@noble/ed25519`, in your browser. This logic is a
-   from-scratch reimplementation proven **byte-identical** to the Rust host's signing in the test
-   suite — if it drifted by a single byte, real receipts wouldn't verify. **Nothing is sent
-   anywhere; you are not trusting kriya's word, you are checking the math.**
+   signed and checks the signature on-device, inside the Console app's compiled backend. The
+   verification is proven **byte-identical** to the host's signing in the test suite — if it
+   drifted by a single byte, real receipts wouldn't verify. **Nothing is sent anywhere; you are
+   not trusting kriya's word, you are checking the math.**
 
 Because the signature covers *who/what/when*, you cannot quietly change the amount on a transaction,
 flip a failure to a success, or reassign an action to a different operator without invalidating that
@@ -50,17 +50,21 @@ tamper-*proofing*:
   A meaningful audit also confirms that key is **your** host's key. The Console surfaces every
   distinct signer across your logs precisely so an unexpected key stands out — make pinning the
   expected key part of your review.
-- **Whole-record deletion isn't yet detected by signatures alone.** Receipts are individually
-  signed, not yet hash-chained, so an attacker with write access to a log file could remove entire
-  records and the remaining ones would still verify. Signatures prove *no retained record was
-  altered*; a *completeness* guarantee (hash-chaining + the option to anchor) is on the runtime
-  roadmap (item **R20**). Until then, protect the log files with normal file-integrity controls.
+- **Whole-record deletion is detected — receipts are hash-chained.** Each receipt carries a
+  `prev_hash` (the SHA-256 of the previous log line) *inside the signed bytes*, so the log is a
+  tamper-evident chain, not just a set of independent signatures. Removing, truncating, or
+  reordering entire records breaks the chain: re-verification flags a `CHAIN-BREAK` at the gap.
+  Signatures prove *no retained record was altered*; the chain extends that to a *completeness*
+  guarantee against whole-receipt deletion. (Anchoring the chain head to an external timestamp is
+  a further hardening option.)
 - **A fully compromised host is out of scope.** The guarantee is against the *agent* and against
   *after-the-fact editing by anything without the key* — not against arbitrary code running inside
   the trusted host process.
-- **Signing key lifecycle.** The open runtime currently mints a fresh key per host run; a persisted,
-  optionally hardware-backed host identity is part of the same R20 hardening. (This is why a single
-  deployment may show several signer keys today — the Console shows you exactly how many.)
+- **Signing key lifecycle.** A persisted, stable signing identity has shipped (R20): the pinned
+  public key stays the same run-to-run, so the audit trail is verifiable over months, not just within
+  one session. A deployment only shows multiple signer keys if it runs with the ephemeral
+  per-process key instead of a persisted one — the Console shows you exactly how many. Hardware-backed
+  (Secure Enclave) anchoring of that identity is the remaining hardening.
 
 These boundaries are shared with the open runtime's threat model and are not unique to the paid
 tier; we publish them rather than paper over them.

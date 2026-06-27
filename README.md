@@ -23,12 +23,18 @@ where a cloud MCP gateway structurally can't reach. POS, CRM, finance, healthcar
 | | The view | The value |
 |---|---|---|
 | **Oversee** | **Overview** | One posture dashboard across all your apps: receipts, **verified vs failed/tampered**, distinct signers, governance posture, policy coverage. |
-| **Prove** | **Audit log** | Every signed receipt **verified in your browser** against its embedded Ed25519 key — tampered or forged rows fail and surface in red. Filter by action / status / source app. |
+| **Prove** | **Audit log** | Every signed receipt **verified on-device** against its embedded Ed25519 key — tampered or forged rows fail and surface in red. Filter by action / status / source app. |
 | **Decide** | **Approvals** | One cross-app/agent queue for the actions a policy holds for a human — **risk-ranked** (destructive + financial first), per-app and per-agent, attributed to the requesting agent + operator, approve/deny with a recorded reason. **Role-gated** (RBAC): only an `approve`-capable role may decide. |
 | **Constrain** | **Policy** | Author the `agent-policy.yaml` the runtime enforces: ordered Allow / Require-approval / Deny rules, one-click coverage for ungoverned actions, lint, per-minute action **and** per-hour api-call budget caps, import/export — with a live decision preview. |
 | **Throttle** | **Budgets** | Per-app / per-agent / per-operator usage against the rate caps — peak action rate, utilization, at-limit history. A scope *at* its cap is the host throttling it. |
 | **Attribute** | **Identity** | Who operated each app — per-operator + per-agent dashboards from the signed `actor` (verified receipts only) — and **RBAC** roles (admin / approver / operator / viewer) keyed on the operator. |
 | **Report** | **Compliance** | Turn the verified trail into a **SOC 2 / ISO 42001 / EU AI Act** evidence bundle (control mapping, attribution, on-device attestations, action inventory) — export Markdown + JSON. |
+
+**Freemium:** the **free** tier is the live governance monitor, offline receipt verification, and
+guided setup — fully usable on its own. An **offline license** unlocks the **compliance tier**:
+auditor-ready evidence export (**Compliance**) and cross-app correlation across the apps on this
+machine. (Cross-*machine* fleet is on the roadmap; the license issuer/purchase path is a deferred
+stub.)
 
 Coming next: **SSO / OIDC** sign-in to back the RBAC roles — a **hosted-tier** feature, deliberately
 gated to a concrete enterprise deal rather than built speculatively (the console currently sells on
@@ -36,22 +42,26 @@ gated to a concrete enterprise deal rather than built speculatively (the console
 
 ## See it in 30 seconds
 
-```bash
-npm install
-npm run dev      # → http://localhost:5173
-```
-
-Click **Overview → Load sample data** (real Rust-signed receipts ship in the repo). Then walk
+Download and open the Console desktop app. On launch it **auto-discovers and tails the standard
+on-device audit location (`~/.kriya/audit/`)** — no import, no log-hunting — and re-verifies every
+receipt on-device in its compiled backend. Then walk
 **Audit → Approvals → Policy → Budgets → Identity → Compliance**. To produce marketing screenshots, see
 [`docs/screenshots/CAPTURE.md`](docs/screenshots/CAPTURE.md).
+
+Developer path (run from source):
+
+```bash
+npm install
+npm run tauri dev      # build + launch the desktop control-plane app
+```
 
 ## The trust spine — verify, don't trust
 
 The product's spine is **local, independent verification**: every "the agent did X" traces to a
-signed receipt the Console re-verifies on your machine, and every policy it shows decides
-*identically* to the host. The TS verifier is a from-scratch reimplementation of the host's canonical
-signing (`crates/kriya/src/audit.rs`), proven **byte-identical** against real Rust-signed receipts in
-the test suite, and the policy model is a parity-tested port of `permissions.rs`. Nothing leaves the
+signed receipt the Console re-verifies **on-device in its compiled (Rust/Tauri) backend**, and every
+policy it shows decides *identically* to the host. Verification is proven **byte-identical** against
+the host's canonical signing (`crates/kriya/src/audit.rs`) on real Rust-signed receipts in the test
+suite, and the policy model is a parity-tested port of `permissions.rs`. Nothing leaves the
 machine.
 
 What that proof does — and, honestly, does **not** — guarantee (pin your signer; whole-record
@@ -85,7 +95,7 @@ the open SDK. (Split + rationale: runtime repo `docs/LICENSING.md`, decision **D
 
 ```bash
 npm test              # verifier + policy + approvals + compliance — cross-checked against the Rust host
-npm run dev           # the console
+npm run tauri dev     # build + launch the desktop control-plane app
 npm run build         # typecheck (tsc --noEmit) + production build
 npm run demo:approvals    # walk the approval-routing flow in the terminal
 npm run demo:compliance   # print a full compliance-evidence report
