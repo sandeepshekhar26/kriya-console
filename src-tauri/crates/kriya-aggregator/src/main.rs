@@ -6,6 +6,7 @@
 mod config;
 mod license;
 mod store;
+mod tls;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -212,15 +213,31 @@ async fn main() {
         std::process::exit(1);
     }
     let store = store::Store::open(&config.db_path).expect("open store");
-    let state = Arc::new(AppState::new(store));
-    let listener = tokio::net::TcpListener::bind(config.bind)
-        .await
-        .expect("bind");
-    eprintln!(
-        "kriyad listening on http://{} (mTLS arrives in 2.4)",
-        config.bind
-    );
-    axum::serve(listener, app(state)).await.expect("serve");
+    let router = app(Arc::new(AppState::new(store)));
+
+    // mTLS when the CA dir holds certs (the BOX/online modes); plain HTTP otherwise (local/dev).
+    match tls::server_config(&config.ca_dir) {
+        Ok(tls_config) => {
+            eprintln!("kriyad listening on https://{} (mTLS)", config.bind);
+            axum_server::bind_rustls(
+                config.bind,
+                axum_server::tls_rustls::RustlsConfig::from_config(tls_config),
+            )
+            .serve(router.into_make_service())
+            .await
+            .expect("serve mTLS");
+        }
+        Err(e) => {
+            eprintln!(
+                "kriyad: no mTLS certs ({e}); serving plain HTTP on {}",
+                config.bind
+            );
+            let listener = tokio::net::TcpListener::bind(config.bind)
+                .await
+                .expect("bind");
+            axum::serve(listener, router).await.expect("serve");
+        }
+    }
 }
 
 #[cfg(test)]

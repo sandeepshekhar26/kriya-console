@@ -5,10 +5,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
-// db_path/license_path/ca_dir are consumed as the server grows (2.2 license gate, 2.3 store, 2.4 mTLS).
-#[allow(dead_code)]
 pub struct Config {
-    /// Address to bind (mTLS in 2.4).
+    /// Address to bind (mTLS when the CA dir holds certs).
     pub bind: SocketAddr,
     /// SQLite file (the whole store = one file; backup = copy it).
     pub db_path: PathBuf,
