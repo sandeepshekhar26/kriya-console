@@ -233,6 +233,87 @@ pub fn build_signed_heartbeat(seq_seen: u64, ts_ms: u64, key: &SigningKey) -> Si
     }
 }
 
+// ── The spawn loop (1.18) ─────────────────────────────────────────────────────────────────────────
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// One window's real work, using the device's paths / keys / enrollment: compile the window from
+/// `~/.kriya/audit/`, append the signed envelope to the outbox, and persist the advanced state. Mints
+/// `evidence.key` + `pepper` on first use. This is the unit the positive-control test exercises and the
+/// spawn loop calls per boundary. Errors when not enrolled (a safety net behind the dormancy guard).
+pub fn compile_once(window: (u64, u64), produced_ms: u64) -> Result<(), String> {
+    let enrollment = crate::control_plane::enrollment::load_enrollment().ok_or("not enrolled")?;
+    let key = crate::control_plane::envelope::evidence_signing_key()?;
+    let pepper = crate::control_plane::envelope::pepper()?;
+    let state = load_state();
+    let head = crate::control_plane::outbox::head()?;
+    let audit_dir = crate::audit::default_audit_dir();
+    let (signed, next) = compile_window(
+        &audit_dir,
+        &state,
+        window,
+        head.next_seq,
+        head.prev_envelope_hash,
+        &enrollment.org_id,
+        enrollment.business_unit.as_deref(),
+        produced_ms,
+        &key,
+        &pepper,
+    )?;
+    crate::control_plane::outbox::append(&signed)?;
+    save_state(&next)?;
+    Ok(())
+}
+
+/// Build + queue a signed heartbeat at `~/.kriya/console/heartbeats.jsonl` (drained by the push client,
+/// 2.7). `seq_seen` is the highest envelope seq produced (the tail-truncation anchor).
+pub fn emit_heartbeat(seq_seen: u64, ts_ms: u64) -> Result<(), String> {
+    let key = crate::control_plane::envelope::evidence_signing_key()?;
+    let signed = build_signed_heartbeat(seq_seen, ts_ms, &key);
+    let path = crate::audit::console_dir().join("heartbeats.jsonl");
+    let line = serde_json::to_string(&signed).map_err(|e| e.to_string())?;
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| format!("opening heartbeats: {e}"))?;
+    writeln!(f, "{line}").map_err(|e| format!("writing heartbeat: {e}"))
+}
+
+/// Spawn the Compiler background loop on a thread. The caller (lib.rs) only calls this when the
+/// control plane is active. Poll-based + dependency-free: closes each W boundary into a (possibly
+/// empty) envelope and fires the independent H heartbeat — both regardless of UI activity.
+pub fn spawn() {
+    std::thread::spawn(move || {
+        let mut compiler = Compiler::new(DEFAULT_WINDOW_MS);
+        let mut heartbeat = HeartbeatTimer::new(DEFAULT_HEARTBEAT_MS);
+        // Start the window cursor at the current boundary so we don't backfill from the epoch.
+        let start = now_ms();
+        compiler.close_window((start / DEFAULT_WINDOW_MS) * DEFAULT_WINDOW_MS);
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            let now = now_ms();
+            if let Some(win) = compiler.due_window(now) {
+                let _ = compile_once(win, now); // a transient failure retries next boundary
+                compiler.close_window(win.1);
+            }
+            if heartbeat.due(now) {
+                let seq_seen = crate::control_plane::outbox::head()
+                    .map(|h| h.next_seq.saturating_sub(1))
+                    .unwrap_or(0);
+                let _ = emit_heartbeat(seq_seen, now);
+                heartbeat.fired(now);
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

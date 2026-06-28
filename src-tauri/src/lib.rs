@@ -26,6 +26,13 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             audit::spawn_watcher(app.handle().clone());
+            // Control-plane Evidence Compiler — spawned ONLY in a feature build AND only when the
+            // license grants `control-plane` AND the device is enrolled (the runtime dormancy gate;
+            // the free build can't even reach this branch). No license/enrollment ⇒ inert.
+            #[cfg(feature = "control-plane")]
+            if control_plane::enrollment::control_plane_active() {
+                control_plane::compiler::spawn();
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
