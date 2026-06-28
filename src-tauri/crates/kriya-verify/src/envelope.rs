@@ -285,7 +285,7 @@ mod tests {
             "intact"
         );
         assert_eq!(
-            envelope_chain_break(&[e2.clone()]),
+            envelope_chain_break(std::slice::from_ref(&e2)),
             Some(1),
             "a dropped genesis breaks at line 1"
         );

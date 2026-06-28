@@ -115,6 +115,14 @@ fn reject(report: &mut IngestReport, metrics: &Metrics, line: usize, reason: Str
 /// then gap-tolerant idempotent insert. Out-of-order / missing seqs are a coverage gap (→ /v1/coverage),
 /// never a 4xx; only forged/malformed/incoherent envelopes are rejected (and counted, not dropped).
 async fn post_envelopes(State(state): State<Arc<AppState>>, body: String) -> Json<IngestReport> {
+    Json(ingest_ndjson(&state, &body))
+}
+
+/// Verify + ingest an NDJSON batch. Shared by the HTTP handler (online mode) and the `ingest-file`
+/// subcommand (air-gap side-load) — the verifier is transport-agnostic, so both run the SAME offline
+/// re-verification + gap-tolerant idempotent insert. Only forged/malformed/incoherent lines are
+/// rejected (counted, not dropped); out-of-order / missing seqs are a coverage gap, never an error.
+fn ingest_ndjson(state: &AppState, body: &str) -> IngestReport {
     let mut report = IngestReport {
         accepted: 0,
         duplicates: 0,
@@ -155,7 +163,7 @@ async fn post_envelopes(State(state): State<Arc<AppState>>, body: String) -> Jso
             Err(e) => reject(&mut report, &state.metrics, line_no, e),
         }
     }
-    Json(report)
+    report
 }
 
 /// POST /v1/heartbeat — one signed heartbeat. Verify, append to the liveness log, update coverage.
@@ -213,7 +221,27 @@ async fn main() {
         std::process::exit(1);
     }
     let store = store::Store::open(&config.db_path).expect("open store");
-    let router = app(Arc::new(AppState::new(store)));
+    let state = AppState::new(store);
+
+    // Air-gap receive: `kriyad ingest-file <outbox.ndjson>` side-loads signed bytes carried across on
+    // approved media, runs the SAME offline re-verification as the wire path, then exits (no serve).
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(i) = args.iter().position(|a| a == "ingest-file") {
+        let path = args
+            .get(i + 1)
+            .expect("usage: kriyad ingest-file <file.ndjson>");
+        let body = std::fs::read_to_string(path).expect("read ingest file");
+        let report = ingest_ndjson(&state, &body);
+        println!(
+            "ingest-file {path}: accepted={} duplicates={} rejected={}",
+            report.accepted,
+            report.duplicates,
+            report.rejected.len()
+        );
+        return;
+    }
+
+    let router = app(Arc::new(state));
 
     // mTLS when the CA dir holds certs (the BOX/online modes); plain HTTP otherwise (local/dev).
     match tls::server_config(&config.ca_dir) {
@@ -357,5 +385,190 @@ mod tests {
             StatusCode::BAD_REQUEST,
             "a forged heartbeat is rejected"
         );
+    }
+
+    async fn get(state: Arc<AppState>, uri: &str) -> Vec<u8> {
+        let resp = app(state)
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "GET {uri}");
+        resp.into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec()
+    }
+
+    /// A real device-signed envelope (seq 1, genesis) the kriya-verify core accepts: coherent counts,
+    /// well-formed merkle_root, no sealed `MinimizedAction` (empty actions). Signed with `key`.
+    fn build_envelope(key: &ed25519_dalek::SigningKey, seq: u64) -> kriya_verify::SignedEnvelope {
+        use ed25519_dalek::Signer;
+        use kriya_verify::*;
+        let device_pub = hex::encode(key.verifying_key().to_bytes());
+        let env = AttestationEnvelope {
+            schema: "kriya.attestation.v1".into(),
+            device_pub: device_pub.clone(),
+            org_id: "acme".into(),
+            business_unit: None,
+            operators: vec![],
+            seq,
+            prev_envelope_hash: None,
+            window: Window {
+                from_ms: 1000,
+                to_ms: 2000,
+            },
+            signers: vec![],
+            actions: vec![],
+            counts: Counts {
+                receipts: 1,
+                verified: 1,
+                failed: 0,
+                destructive: 0,
+                attestations: 0,
+            },
+            integrity: Integrity {
+                merkle_root: "ab".repeat(32),
+                chain_intact: true,
+                broken_sources: vec![],
+            },
+            non_egress: NonEgress {
+                attested: false,
+                attestation_count: 0,
+                proof_digest: None,
+            },
+            compiler: CompilerInfo {
+                version: "e2e".into(),
+                produced_ms: 2000,
+            },
+        };
+        let signature = hex::encode(key.sign(&envelope_canonical_bytes(&env)).to_bytes());
+        SignedEnvelope {
+            envelope: env,
+            public_key: device_pub,
+            signature,
+        }
+    }
+
+    /// The ⭐ end-to-end pilot demo (2.11): device emits a signed envelope + heartbeat → kriyad ingests
+    /// and RE-VERIFIES offline → an auditor reads the bytes back over /v1/verify, re-verifies the SAME
+    /// bytes, and checks the tail-truncation anchor → coverage reads current, then silent once the device
+    /// goes quiet. Finally the air-gap variant proves sneaker-net == network: the identical signed bytes,
+    /// side-loaded from a file, yield the identical stored bytes and verdict.
+    #[tokio::test]
+    async fn e2e_pilot_demo() {
+        use ed25519_dalek::{Signer, SigningKey};
+        let key = SigningKey::from_bytes(&[7u8; 32]); // deterministic (no RNG in tests)
+        let device_pub = hex::encode(key.verifying_key().to_bytes());
+        let env_line = serde_json::to_string(&build_envelope(&key, 1)).unwrap();
+
+        let hb = kriya_verify::Heartbeat {
+            device_pub: device_pub.clone(),
+            seq_seen: 1,
+            ts_ms: 1500,
+        };
+        let hb_line = json!({
+            "heartbeat": hb,
+            "public_key": device_pub,
+            "signature": hex::encode(key.sign(&kriya_verify::heartbeat_canonical_bytes(&hb)).to_bytes()),
+        })
+        .to_string();
+
+        // 1. Device → kriyad: ingest + offline re-verify (kriyad never trusts the device).
+        let state = Arc::new(AppState::in_memory());
+        let (_, body) = post(state.clone(), "/v1/envelopes", env_line.clone()).await;
+        let r: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            r["accepted"], 1,
+            "kriyad re-verified + ingested the envelope"
+        );
+        let (status, _) = post(state.clone(), "/v1/heartbeat", hb_line).await;
+        assert_eq!(status, StatusCode::OK);
+
+        // 2. Auditor → /v1/verify: byte-identical read-back, re-verified offline, tail anchored.
+        let rb: Value = serde_json::from_slice(
+            &get(
+                state.clone(),
+                &format!("/v1/verify?device_pub={device_pub}"),
+            )
+            .await,
+        )
+        .unwrap();
+        let returned = rb["envelopes"][0].as_str().unwrap();
+        assert_eq!(returned, env_line, "server returned the EXACT signed bytes");
+        let returned_val: Value = serde_json::from_str(returned).unwrap();
+        assert!(
+            kriya_verify::verify_envelope(&returned_val).is_ok(),
+            "auditor re-verifies the same bytes offline"
+        );
+        let hb_val: Value = serde_json::from_str(rb["heartbeat"].as_str().unwrap()).unwrap();
+        assert!(kriya_verify::verify_heartbeat(&hb_val).is_ok());
+        let top = returned_val["envelope"]["seq"].as_u64().unwrap();
+        let seen = hb_val["heartbeat"]["seq_seen"].as_u64().unwrap();
+        assert!(top >= seen, "tail anchor: returned_top_seq >= seq_seen");
+
+        // 3. Coverage: current now; silent once the device goes quiet (past N·H).
+        let cov: Value = serde_json::from_slice(&get(state.clone(), "/v1/coverage").await).unwrap();
+        assert_eq!(cov[0]["status"], "current");
+        assert_eq!(cov[0]["device_pub"], device_pub);
+        let silent = state
+            .store
+            .coverage(now_ms() + 10 * 60 * 60 * 1000, SILENT_AFTER_MS, None);
+        assert_eq!(silent[0].status, "silent", "a quiet device flips to silent");
+
+        // 4. Air-gap variant: the SAME signed bytes, side-loaded from a file, ingest identically.
+        let airgap = AppState::in_memory();
+        assert_eq!(
+            ingest_ndjson(&airgap, &env_line).accepted,
+            1,
+            "sneaker-net == network"
+        );
+        let rb2 = airgap.store.read_back(&device_pub, 0, u64::MAX);
+        assert_eq!(
+            rb2.envelopes[0], env_line,
+            "air-gap read-back is byte-identical to the wire path"
+        );
+    }
+
+    /// Emitter (not a test): regenerate the committed pilot fixtures the real-binary demo
+    /// (`scripts/e2e-pilot.sh`) drives — a matching device envelope + heartbeat from a fixed key.
+    /// Run with `cargo test -p kriya-aggregator emit_pilot_fixtures -- --ignored`.
+    #[tokio::test]
+    #[ignore = "emitter: rewrites test-fixtures/pilot-*"]
+    async fn emit_pilot_fixtures() {
+        use ed25519_dalek::{Signer, SigningKey};
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        let device_pub = hex::encode(key.verifying_key().to_bytes());
+        let env_line = serde_json::to_string(&build_envelope(&key, 1)).unwrap();
+        let hb = kriya_verify::Heartbeat {
+            device_pub: device_pub.clone(),
+            seq_seen: 1,
+            ts_ms: 1500,
+        };
+        let hb_line = json!({
+            "heartbeat": hb,
+            "public_key": device_pub,
+            "signature": hex::encode(key.sign(&kriya_verify::heartbeat_canonical_bytes(&hb)).to_bytes()),
+        })
+        .to_string();
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/test-fixtures");
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            format!("{dir}/pilot-outbox.ndjson"),
+            format!("{env_line}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            format!("{dir}/pilot-heartbeat.json"),
+            format!("{hb_line}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            format!("{dir}/pilot-device-pub.txt"),
+            format!("{device_pub}\n"),
+        )
+        .unwrap();
+        eprintln!("wrote pilot fixtures for device {device_pub}");
     }
 }

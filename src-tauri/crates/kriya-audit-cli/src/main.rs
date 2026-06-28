@@ -29,7 +29,14 @@ fn main() -> ExitCode {
     let ok = match mode {
         Mode::Receipts => verify_receipt_files(&paths),
         Mode::Envelopes => verify_envelope_files(&paths),
-        Mode::Readback => paths.iter().map(|p| verify_readback_file(p)).all(|x| x),
+        Mode::Readback => {
+            // Loop, not `.all` — verify EVERY file (report all failures), don't short-circuit.
+            let mut all_ok = true;
+            for p in &paths {
+                all_ok &= verify_readback_file(p);
+            }
+            all_ok
+        }
     };
     if ok {
         ExitCode::SUCCESS
