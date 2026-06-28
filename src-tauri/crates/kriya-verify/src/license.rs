@@ -85,4 +85,32 @@ mod tests {
         };
         assert!(verify_token(&bad, 0).is_err());
     }
+
+    /// Seed-independent license-byte PARITY gate (0.6): a real dev-issuer-signed token, committed as
+    /// ground truth, must verify against the PINNED issuer key — so a license canonicalization/format
+    /// regression fails CI even on a clone WITHOUT the gitignored dev seed (where `dev_issue`'s
+    /// round-trip test skips). Mirrors how the TS `verify.test.ts` gates receipt parity via the
+    /// committed `sample-audit.jsonl`. The token is perpetual (no `expires_ms`), so `now_ms` is moot.
+    const DEV_LICENSE_FIXTURE: &str = include_str!("../fixtures/dev-license.json");
+
+    #[test]
+    fn committed_dev_license_verifies_against_pinned_issuer_key() {
+        let token: LicenseToken =
+            serde_json::from_str(DEV_LICENSE_FIXTURE).expect("fixture parses");
+        assert!(
+            verify_token(&token, 1_782_657_400_000).is_ok(),
+            "the committed dev license must verify against the pinned issuer key — a license-byte \
+             regression (canonicalization/format) would break this"
+        );
+    }
+
+    #[test]
+    fn tampering_the_committed_license_breaks_verification() {
+        let mut token: LicenseToken = serde_json::from_str(DEV_LICENSE_FIXTURE).unwrap();
+        token.license.tier = "enterprise-unlimited".into(); // forge a higher tier after signing
+        assert!(
+            verify_token(&token, 1_782_657_400_000).is_err(),
+            "a tampered license must fail"
+        );
+    }
 }

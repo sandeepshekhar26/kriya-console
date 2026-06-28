@@ -1,0 +1,13 @@
+{
+  "license": {
+    "holder": "Kriya Parity Fixture",
+    "tier": "pro",
+    "features": [
+      "compliance-export",
+      "fleet-correlation"
+    ],
+    "issued_ms": 1782657331990,
+    "license_id": "dev-1782657331990"
+  },
+  "signature": "2aa9d3c96af1c860164536ecbb117911950c5936f516131307501ad99a17f7bb52e0da67ee19ca58f2583c012dd27fc69e657cb10cf4dbc7b4404ea81f066b0c"
+}
