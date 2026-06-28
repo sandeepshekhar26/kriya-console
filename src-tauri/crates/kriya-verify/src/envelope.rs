@@ -296,4 +296,16 @@ mod tests {
             "a wrong prev_envelope_hash breaks"
         );
     }
+
+    /// Emits the committed Rust↔TS parity fixture (`src/sample/sample-envelope.json`) for the TS
+    /// envelope test (1.7). Deterministic (fixed key seed). Regenerate with:
+    ///   cargo test -p kriya-verify print_sample_envelope -- --ignored --nocapture
+    #[test]
+    #[ignore = "fixture generator; run with --ignored --nocapture to (re)generate the parity fixture"]
+    fn print_sample_envelope() {
+        let key = SigningKey::from_bytes(&[5u8; 32]);
+        let pk = hex::encode(key.verifying_key().to_bytes());
+        let signed = sign_envelope(sample_envelope(&pk, 1, None), &key);
+        println!("{}", serde_json::to_string_pretty(&signed).unwrap());
+    }
 }
