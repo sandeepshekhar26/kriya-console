@@ -14,9 +14,15 @@
 #![forbid(unsafe_code)]
 
 mod canonical;
+mod classify;
+mod license;
 mod receipts;
 mod sig;
 
 pub use canonical::{canonical_value, sha256_hex};
+pub use classify::is_destructive;
+pub use license::{
+    canonical_license_bytes, verify_token, LicensePayload, LicenseToken, ISSUER_PUBLIC_KEY_HEX,
+};
 pub use receipts::{chain_break, load_rows, verify_value, Actor, AuditRow};
 pub use sig::verify_detached;

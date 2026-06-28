@@ -11,6 +11,7 @@ use serde::Serialize;
 use crate::audit::default_audit_dir;
 use crate::license;
 use crate::receipts::{chain_break, verify_value};
+use kriya_verify::is_destructive;
 
 const ATTESTATION_ON_DEVICE: &str = "kriya.attestation.on_device";
 
@@ -89,15 +90,6 @@ fn collect() -> (Vec<Collected>, BTreeMap<String, Option<usize>>) {
         }
     }
     (out, chains)
-}
-
-fn is_destructive(action_id: &str) -> bool {
-    let a = action_id.to_lowercase();
-    [
-        "delete", "remove", "destroy", "drop", "close", "transfer", "pay", "send", "wire",
-    ]
-    .iter()
-    .any(|kw| a.contains(kw))
 }
 
 // ── Fleet correlation ─────────────────────────────────────────────────────────────────────────────

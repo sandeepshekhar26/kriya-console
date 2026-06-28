@@ -1,61 +1,27 @@
-//! Offline Ed25519 license verification (R29 / D-018) — the paid-tier gate, in compiled Rust.
-//!
-//! A license is just another signed artifact (same primitive as the audit receipts): the issuer
-//! signs a small JSON payload with a private key whose **public half ships embedded in this binary**
-//! ([`ISSUER_PUBLIC_KEY_HEX`]). The Console verifies the signature **entirely offline** — no runtime
-//! server, no phone-home, no account — which is exactly what the regulated, on-device thesis demands.
-//! The free tier needs no license; only the paid features ([`crate::paid`]) call [`require_pro`].
+//! Offline license **status + activation** (R29 / D-018) — the app-side half of the paid gate. The
+//! VERIFY path (`verify_token`, the pinned issuer key, the token types, the canonical bytes) moved
+//! into the shared `kriya-verify` crate (0.5) so the headless `kriyad` server can gate ingest on the
+//! same logic without pulling in Tauri. Re-exported here so `crate::license::*` (and the
+//! `issue-license` bin) keep resolving unchanged. What stays app-side: reading/writing the installed
+//! license, the cockpit status, the paid gate, the Tauri activation commands, and the DEV-ONLY issuer.
 //!
 //! ## What is real vs. deferred (the "scaffold" boundary, kickoff-honest)
-//! The **verify path is real and shipped**. What is deliberately deferred until a buyer exists is the
-//! **issuer**: there is no checkout, no customer DB, no key-management service. For development and
-//! the demo, a dev keypair lets us mint a working token (`issue-license` dev binary, gated on a
-//! **gitignored** seed file under `dev-keys/`). Productionizing = generate a real issuer key whose
+//! The verify path is real and shipped. Deferred until a buyer exists is the **issuer**: there is no
+//! checkout, no customer DB, no key-management service. For development and the demo, a gitignored dev
+//! keypair lets us mint a working token (`issue-license` bin). Productionizing = a real issuer key whose
 //! private half NEVER enters the repo, replace [`ISSUER_PUBLIC_KEY_HEX`], and wire checkout → a tiny
-//! offline signer. DRM isn't unbreakable and that's fine (D-018): consumers crack, enterprises buy
-//! the relationship (support, updates, key custody, compliance).
+//! offline signer. DRM isn't unbreakable and that's fine (D-018): consumers crack, enterprises buy the
+//! relationship (support, updates, key custody, compliance).
 
 use std::path::PathBuf;
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-use crate::receipts::canonical_value;
-
-/// The issuer's **public** key (lowercase hex, 32 bytes) — the on-device trust anchor. The matching
-/// private key is NOT in this binary in production; the dev/demo private seed lives only in the
-/// gitignored `dev-keys/issuer-dev-seed.hex`.
-pub const ISSUER_PUBLIC_KEY_HEX: &str =
-    "3042180089b12d85d962884f9f2a152c0edb22e2355ec123486a0e13996949f5";
-
-/// The signed license payload. Field order is load-bearing for the signature (declaration order,
-/// `params`-style canonicalization on the JSON form). Kept tiny on purpose.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LicensePayload {
-    /// Who the license is issued to (org or person) — shown in the cockpit.
-    pub holder: String,
-    /// Tier string; `pro` unlocks the paid features. (Room for future tiers without a format change.)
-    pub tier: String,
-    /// Paid feature flags this license grants (e.g. `compliance-export`, `fleet-correlation`).
-    pub features: Vec<String>,
-    /// Milliseconds since the Unix epoch when issued.
-    pub issued_ms: u64,
-    /// Optional hard expiry (ms since epoch). `None` = perpetual (the common enterprise case).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires_ms: Option<u64>,
-    /// Opaque license id for support/revocation bookkeeping.
-    pub license_id: String,
-}
-
-/// The full license token as activated: the payload plus the issuer's signature over its canonical
-/// bytes. (No embedded public key — verification is against the pinned [`ISSUER_PUBLIC_KEY_HEX`], so
-/// a token can't smuggle in its own trust anchor.)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LicenseToken {
-    pub license: LicensePayload,
-    /// Ed25519 signature (lowercase hex, 64 bytes) over `canonical(license)`.
-    pub signature: String,
-}
+// Re-export the shared verify-path symbols so `crate::license::{LicensePayload, verify_token, ...}`
+// (used by the dev issuer below and the `issue-license` bin) resolve exactly as before the 0.5 move.
+pub use kriya_verify::{
+    canonical_license_bytes, verify_token, LicensePayload, LicenseToken, ISSUER_PUBLIC_KEY_HEX,
+};
 
 /// The status the UI renders + the gate the paid commands consult.
 #[derive(Debug, Clone, Serialize)]
@@ -85,37 +51,6 @@ impl LicenseStatus {
             reason,
         }
     }
-}
-
-/// The canonical bytes signed/verified for a license payload: the JSON value with object keys
-/// recursively sorted (same rule as receipts, R21), serialized compactly. Independent of field
-/// declaration order so issuer and verifier always agree.
-fn canonical_license_bytes(p: &LicensePayload) -> Result<Vec<u8>, String> {
-    let v = serde_json::to_value(p).map_err(|e| e.to_string())?;
-    serde_json::to_vec(&canonical_value(&v)).map_err(|e| e.to_string())
-}
-
-/// Verify a token against the pinned issuer key and expiry. `Ok(payload)` only when the signature is
-/// valid AND the license has not expired.
-pub fn verify_token(token: &LicenseToken, now_ms: u64) -> Result<LicensePayload, String> {
-    let pub_bytes: [u8; 32] = hex::decode(ISSUER_PUBLIC_KEY_HEX)
-        .ok()
-        .and_then(|b| b.try_into().ok())
-        .ok_or("embedded issuer public key is malformed")?;
-    let sig_bytes: [u8; 64] = hex::decode(&token.signature)
-        .ok()
-        .and_then(|b| b.try_into().ok())
-        .ok_or("signature must be 64 bytes of hex")?;
-    let vk = VerifyingKey::from_bytes(&pub_bytes).map_err(|e| format!("bad issuer key: {e}"))?;
-    let msg = canonical_license_bytes(&token.license)?;
-    vk.verify(&msg, &Signature::from_bytes(&sig_bytes))
-        .map_err(|_| "license signature does not match (not issued by Kriya)".to_string())?;
-    if let Some(exp) = token.license.expires_ms {
-        if now_ms > exp {
-            return Err("license has expired".into());
-        }
-    }
-    Ok(token.license.clone())
 }
 
 /// Where an activated license is persisted on-device.
@@ -253,16 +188,6 @@ mod tests {
             expires_ms: None,
             license_id: "dev-0001".into(),
         }
-    }
-
-    #[test]
-    fn rejects_garbage_and_unsigned() {
-        // Always-on guard (no dev seed needed): random bytes / wrong signature never verify.
-        let bad = LicenseToken {
-            license: sample_payload(),
-            signature: "00".repeat(64),
-        };
-        assert!(verify_token(&bad, 0).is_err());
     }
 
     #[test]
