@@ -1,0 +1,17 @@
+[package]
+name = "kriya-audit-cli"
+version = "0.1.0"
+description = "Offline auditor re-prover for kriya signed receipts (and, later, attestation envelopes) — re-verifies the exact bytes with the shared kriya-verify trust core."
+edition = "2021"
+rust-version = "1.77"
+publish = false
+
+[[bin]]
+name = "kriya-audit"
+path = "src/main.rs"
+
+[dependencies]
+# The SAME verifier the Console and kriyad link — the auditor's verdict is produced by the audited
+# trust core, not a re-implementation. No Tauri, no network: a third party runs this fully offline.
+kriya-verify = { path = "../kriya-verify" }
+serde_json = "1"

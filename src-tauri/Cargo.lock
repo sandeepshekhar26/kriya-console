@@ -1669,6 +1669,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "kriya-audit-cli"
+version = "0.1.0"
+dependencies = [
+ "kriya-verify",
+ "serde_json",
+]
+
+[[package]]
 name = "kriya-console"
 version = "0.1.0"
 dependencies = [
