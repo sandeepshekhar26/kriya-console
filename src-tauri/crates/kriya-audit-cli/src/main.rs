@@ -287,9 +287,11 @@ fn verify_readback_file(path: &str) -> bool {
 
     let tail_ok = tail_anchor_ok(returned_top_seq, seq_seen);
     if !tail_ok {
+        let show = |o: Option<u64>| o.map(|n| n.to_string()).unwrap_or_else(|| "none".into());
         eprintln!(
-            "{source}: TAIL TRUNCATION — server returned up to seq {:?} but the device signed seq_seen={:?}",
-            returned_top_seq, seq_seen
+            "{source}: TAIL TRUNCATION — server returned up to seq {} but the device signed seq_seen={}",
+            show(returned_top_seq),
+            show(seq_seen)
         );
     }
     let ok = envelopes_ok && heartbeat_ok && tail_ok;

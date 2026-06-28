@@ -403,7 +403,11 @@ mod tests {
 
     /// A real device-signed envelope (seq 1, genesis) the kriya-verify core accepts: coherent counts,
     /// well-formed merkle_root, no sealed `MinimizedAction` (empty actions). Signed with `key`.
-    fn build_envelope(key: &ed25519_dalek::SigningKey, seq: u64) -> kriya_verify::SignedEnvelope {
+    fn build_envelope(
+        key: &ed25519_dalek::SigningKey,
+        seq: u64,
+        prev_hash: Option<String>,
+    ) -> kriya_verify::SignedEnvelope {
         use ed25519_dalek::Signer;
         use kriya_verify::*;
         let device_pub = hex::encode(key.verifying_key().to_bytes());
@@ -414,7 +418,7 @@ mod tests {
             business_unit: None,
             operators: vec![],
             seq,
-            prev_envelope_hash: None,
+            prev_envelope_hash: prev_hash,
             window: Window {
                 from_ms: 1000,
                 to_ms: 2000,
@@ -461,7 +465,7 @@ mod tests {
         use ed25519_dalek::{Signer, SigningKey};
         let key = SigningKey::from_bytes(&[7u8; 32]); // deterministic (no RNG in tests)
         let device_pub = hex::encode(key.verifying_key().to_bytes());
-        let env_line = serde_json::to_string(&build_envelope(&key, 1)).unwrap();
+        let env_line = serde_json::to_string(&build_envelope(&key, 1, None)).unwrap();
 
         let hb = kriya_verify::Heartbeat {
             device_pub: device_pub.clone(),
@@ -540,10 +544,21 @@ mod tests {
         use ed25519_dalek::{Signer, SigningKey};
         let key = SigningKey::from_bytes(&[7u8; 32]);
         let device_pub = hex::encode(key.verifying_key().to_bytes());
-        let env_line = serde_json::to_string(&build_envelope(&key, 1)).unwrap();
+
+        // A real 2-envelope hash chain: seq 1 (genesis) then seq 2 whose prev_envelope_hash is the
+        // sha256 of seq 1's canonical signed bytes — so a server that drops seq 2 is provably hiding
+        // the newest receipt (the tail-truncation demo beat).
+        let env1 = build_envelope(&key, 1, None);
+        let env1_line = serde_json::to_string(&env1).unwrap();
+        let prev = kriya_verify::sha256_hex(&kriya_verify::canonical_json_bytes(
+            &serde_json::to_value(&env1).unwrap(),
+        ));
+        let env2 = build_envelope(&key, 2, Some(prev));
+        let env2_line = serde_json::to_string(&env2).unwrap();
+
         let hb = kriya_verify::Heartbeat {
             device_pub: device_pub.clone(),
-            seq_seen: 1,
+            seq_seen: 2,
             ts_ms: 1500,
         };
         let hb_line = json!({
@@ -556,7 +571,7 @@ mod tests {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(
             format!("{dir}/pilot-outbox.ndjson"),
-            format!("{env_line}\n"),
+            format!("{env1_line}\n{env2_line}\n"),
         )
         .unwrap();
         std::fs::write(
