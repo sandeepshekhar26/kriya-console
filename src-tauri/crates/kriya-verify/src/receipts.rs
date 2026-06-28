@@ -160,7 +160,18 @@ fn field_str<'a>(v: &'a Value, key: &str) -> Result<&'a str, String> {
 /// whole chain is intact (deletion / truncation / reorder all surface as a break).
 pub fn chain_break(text: &str) -> Option<usize> {
     let lines: Vec<&str> = text.split('\n').filter(|l| !l.trim().is_empty()).collect();
-    let mut prev_line_hash: Option<String> = None;
+    chain_continues_from(None, &lines)
+}
+
+/// Windowed continuity for the Compiler's incremental tail (0.8): like [`chain_break`] but the
+/// expected `prev_hash` of the FIRST line is seeded from `prev_tail_hash` (the SHA-256 of the prior
+/// window's last line) instead of `None`. So tailing "new lines since last seq" doesn't false-positive
+/// on the first line, which legitimately points back into the previous window. `lines` are the exact
+/// (non-empty JSON) lines to check; the returned index is 1-based into this slice. Passing the genesis
+/// seed `None` recovers [`chain_break`]'s behavior exactly — `chain_break(text)` is defined as
+/// `chain_continues_from(None, &non_empty_lines(text))`.
+pub fn chain_continues_from(prev_tail_hash: Option<&str>, lines: &[&str]) -> Option<usize> {
+    let mut prev_line_hash: Option<String> = prev_tail_hash.map(str::to_string);
     for (idx, line) in lines.iter().enumerate() {
         let parsed: Value = match serde_json::from_str(line) {
             Ok(v) => v,
@@ -170,7 +181,7 @@ pub fn chain_break(text: &str) -> Option<usize> {
             .get("prev_hash")
             .and_then(Value::as_str)
             .map(str::to_string);
-        // The genesis line declares no prev_hash; every later line must point at the line before it.
+        // Each line must point at the line before it; the first line must match the seed.
         if declared != prev_line_hash {
             return Some(idx + 1);
         }
@@ -312,5 +323,37 @@ mod tests {
         assert_eq!(chain_break(&good), None);
         // Drop the genesis line: line "b" now declares a prev_hash with nothing before it → break at 1.
         assert_eq!(chain_break(&format!("{b}\n")), Some(1));
+    }
+
+    #[test]
+    fn chain_continues_from_matches_chain_break_and_seeds_a_window() {
+        // A 3-line chained log (plain JSON; the chain check only inspects prev_hash linkage).
+        let l1 = json!({ "n": 1 }).to_string();
+        let h1 = sha256_hex(l1.as_bytes());
+        let l2 = json!({ "n": 2, "prev_hash": h1 }).to_string();
+        let h2 = sha256_hex(l2.as_bytes());
+        let l3 = json!({ "n": 3, "prev_hash": h2 }).to_string();
+        let text = format!("{l1}\n{l2}\n{l3}\n");
+        let lines: Vec<&str> = text.split('\n').filter(|l| !l.trim().is_empty()).collect();
+
+        // The defining invariant: chain_break == chain_continues_from(None, &non_empty_lines).
+        assert_eq!(chain_break(&text), None);
+        assert_eq!(chain_continues_from(None, &lines), chain_break(&text));
+
+        // A TAIL window (l2, l3) seeded from l1's hash must NOT false-positive on its first line...
+        let tail = [l2.as_str(), l3.as_str()];
+        assert_eq!(
+            chain_continues_from(Some(&h1), &tail),
+            None,
+            "a correctly-seeded window is intact"
+        );
+        // ...whereas with no seed the tail's first line reads as a broken genesis (the bug this fixes).
+        assert_eq!(
+            chain_continues_from(None, &tail),
+            Some(1),
+            "an unseeded tail false-positives"
+        );
+        // A wrong seed breaks immediately at line 1.
+        assert_eq!(chain_continues_from(Some("deadbeef"), &tail), Some(1));
     }
 }
