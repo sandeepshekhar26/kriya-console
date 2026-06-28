@@ -4,6 +4,8 @@
 # Exit 1 if any control-plane dep leaks into the free dependency graph.
 set -euo pipefail
 
+# Only deps that are CONTROL-PLANE-EXCLUSIVE (getrandom is already a transitive dep of the app, so it
+# is not a leak signal). reqwest/rustls arrive with push.rs (2.7).
 leaked="$(cargo tree -e normal 2>/dev/null | grep -iE '[│├└].*\b(hmac|reqwest|rustls)\b' || true)"
 if [ -n "$leaked" ]; then
   echo "DORMANCY VIOLATION — control-plane deps found in the FREE build graph:" >&2

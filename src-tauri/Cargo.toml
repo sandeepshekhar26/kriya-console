@@ -51,6 +51,9 @@ hex = "0.4"
 # `tauri build` links none of them (the build-artifact half of the dormancy firewall, 1.4). hmac backs
 # the device-local operator-pseudonym pepper (1.8/1.9); reqwest/rustls arrive with push.rs (2.7).
 hmac = { version = "0.12", optional = true }
+# OS CSPRNG for minting the device evidence key + pseudonym pepper (1.8). Optional/feature-gated;
+# pinned to 0.3 to match the version already in the app's transitive tree (no new version added).
+getrandom = { version = "0.3", optional = true }
 
 [features]
 # Custom protocol is the default Tauri runtime; this mirrors the scaffolder's default.
@@ -60,4 +63,4 @@ dev-issuer = []
 # The on-prem control plane (Phase 1+). OFF by default: gates the device modules
 # (enrollment/redact/envelope/compiler/push) + their deps, so the free tier compiles none of it
 # (build-time half of the dormancy firewall; the runtime gate is enrollment::control_plane_active).
-control-plane = ["dep:hmac"]
+control-plane = ["dep:hmac", "dep:getrandom"]
