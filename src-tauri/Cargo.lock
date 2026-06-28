@@ -1685,6 +1685,13 @@ dependencies = [
 [[package]]
 name = "kriya-verify"
 version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+]
 
 [[package]]
 name = "libappindicator"

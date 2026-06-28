@@ -2,8 +2,21 @@
 //!
 //! Extracted from the Console's compiled verifier so the device Console, the `kriyad` aggregator,
 //! and the auditor CLI all verify the SAME bytes with the SAME code (the `kriya-verify` seam named in
-//! CLAUDE.md). Receipt + envelope + license verification, canonical JSON (R21), the SHA-256
-//! hash-chain, and the RFC-6962 Merkle tree land here across Phase 0.
+//! CLAUDE.md). The canonical signed-byte format mirrors `crates/kriya/src/audit.rs` exactly (kept
+//! honest by the `canonical_parity` test): a receipt is signed as `serde_json::to_vec(&receipt)` with
+//! fields in declaration order — `step_id, action_id, params, success, ts_ms`, then optional `actor`
+//! (R8), then optional `prev_hash` (R20) — both skipped when absent, and `params` object keys
+//! recursively sorted (R21).
 //!
-//! This is the empty scaffold (roadmap 0.2); the receipt trust core moves in next (0.3).
+//! Module map (grows across Phase 0–1): [`canonical`] (R21 key-sort + SHA-256), [`sig`] (the raw
+//! Ed25519 check), [`receipts`] (receipt verification + the hash-chain). Merkle, the windowed-chain
+//! helper, the license verifier, and the envelope schema land in later items.
 #![forbid(unsafe_code)]
+
+mod canonical;
+mod receipts;
+mod sig;
+
+pub use canonical::{canonical_value, sha256_hex};
+pub use receipts::{chain_break, load_rows, verify_value, Actor, AuditRow};
+pub use sig::verify_detached;
