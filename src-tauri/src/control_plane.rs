@@ -11,4 +11,5 @@
 
 pub mod enrollment;
 pub mod envelope;
+pub mod outbox;
 pub mod redact;
