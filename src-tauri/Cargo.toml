@@ -8,6 +8,14 @@ publish = false
 # Two binaries live here (the app + the dev `issue-license` minter); `tauri dev` runs the app.
 default-run = "kriya-console"
 
+# The Console app package is ALSO the workspace root (Open decision 2: least-disruptive to
+# `tauri dev`/`tauri build`, which expect `src-tauri/Cargo.toml` to be the app). Shared and
+# control-plane crates land under `crates/` and the glob picks them up as they arrive
+# (kriya-verify, kriya-audit-cli, kriya-aggregator). Empty today — the root package is the sole member.
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
 # The compiled Rust backend is where the PAID value and the license check live (D-018): a
 # downloaded app can't be lifted into a clone because the moat is this crate, not the webview JS.
 [lib]

@@ -1,0 +1,3 @@
+# Placeholder so the (otherwise-empty) crates/ dir is tracked and the
+# [workspace] members = ["crates/*"] glob resolves. Removed once real member
+# crates (kriya-verify, kriya-audit-cli, kriya-aggregator) land here.
