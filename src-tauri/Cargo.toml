@@ -66,8 +66,9 @@ dev-issuer = []
 control-plane = ["dep:hmac", "dep:getrandom"]
 
 [dev-dependencies]
-# For the redaction-manifest gate (1.12): sign sentinel receipts + serialize the built envelope to
-# assert no sensitive token survives. (Dev-only — does not affect the shipped/free dependency graph.)
+# For the redaction-manifest gate (1.12) + the device e2e (1.19): sign receipts, re-verify envelopes,
+# inspect bytes. (Dev-only — does not affect the shipped/free dependency graph.)
 ed25519-dalek = "2"
 hex = "0.4"
 serde_json = "1"
+kriya-verify = { path = "crates/kriya-verify" }
