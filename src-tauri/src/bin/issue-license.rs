@@ -22,11 +22,13 @@ fn now_ms() -> u64 {
 fn main() {
     let mut holder = "Demo Holder".to_string();
     let mut days: Option<u64> = None;
+    let mut control_plane = false;
 
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
         match flag.as_str() {
             "--holder" => holder = it.next().unwrap_or(holder),
+            "--control-plane" => control_plane = true, // also grant the on-prem control-plane feature
             "--days" => {
                 days = it.next().and_then(|d| d.parse().ok()).or_else(|| {
                     eprintln!("--days needs a number");
@@ -34,7 +36,9 @@ fn main() {
                 })
             }
             "-h" | "--help" => {
-                eprintln!("usage: issue-license --holder \"<name>\" [--days <n>]");
+                eprintln!(
+                    "usage: issue-license --holder \"<name>\" [--control-plane] [--days <n>]"
+                );
                 std::process::exit(0);
             }
             other => {
@@ -45,10 +49,14 @@ fn main() {
     }
 
     let issued = now_ms();
+    let mut features = vec!["compliance-export".into(), "fleet-correlation".into()];
+    if control_plane {
+        features.push("control-plane".into());
+    }
     let payload = LicensePayload {
         holder,
         tier: "pro".into(),
-        features: vec!["compliance-export".into(), "fleet-correlation".into()],
+        features,
         issued_ms: issued,
         expires_ms: days.map(|d| issued + d * 24 * 60 * 60 * 1000),
         license_id: format!("dev-{issued}"),

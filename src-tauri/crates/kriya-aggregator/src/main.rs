@@ -4,6 +4,8 @@
 //! and serves trustless read-back + coverage. No outbound calls; no kriya-cloud dependency.
 
 mod config;
+mod license;
+mod store;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -20,19 +22,20 @@ pub struct Metrics {
 
 pub struct AppState {
     pub metrics: Metrics,
+    pub store: store::Store,
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    pub fn new(store: store::Store) -> Self {
         Self {
             metrics: Metrics::default(),
+            store,
         }
     }
-}
 
-impl Default for AppState {
-    fn default() -> Self {
-        Self::new()
+    #[cfg(test)]
+    pub fn in_memory() -> Self {
+        Self::new(store::Store::open_in_memory().expect("in-memory store"))
     }
 }
 
@@ -65,7 +68,13 @@ async fn metrics(State(state): State<Arc<AppState>>) -> String {
 #[tokio::main]
 async fn main() {
     let config = config::Config::from_env();
-    let state = Arc::new(AppState::new());
+    // Offline license gate (2.2) — refuse to serve ingest without a valid control-plane license.
+    if let Err(e) = license::gate(&config.license_path) {
+        eprintln!("kriyad: refusing to start — {e}");
+        std::process::exit(1);
+    }
+    let store = store::Store::open(&config.db_path).expect("open store");
+    let state = Arc::new(AppState::new(store));
     let listener = tokio::net::TcpListener::bind(config.bind)
         .await
         .expect("bind");
@@ -86,7 +95,7 @@ mod tests {
 
     #[tokio::test]
     async fn healthz_and_metrics_respond() {
-        let state = Arc::new(AppState::new());
+        let state = Arc::new(AppState::in_memory());
 
         let resp = app(state.clone())
             .oneshot(

@@ -1,0 +1,14 @@
+{
+  "license": {
+    "holder": "Kriyad Pilot",
+    "tier": "pro",
+    "features": [
+      "compliance-export",
+      "fleet-correlation",
+      "control-plane"
+    ],
+    "issued_ms": 1782667500949,
+    "license_id": "dev-1782667500949"
+  },
+  "signature": "3de42ea8dd470b7c6cd7aa54eeaa704d352884ce4723f9dc85bc6cec779232f2c1905b09044afe8f36798e6bc82a6cb109c70c21a6b5d003c53b3d39d631500b"
+}
