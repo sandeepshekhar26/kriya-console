@@ -3,7 +3,10 @@
 //! This whole subtree is compiled ONLY under the off-by-default `control-plane` Cargo feature, so a
 //! default `tauri build` links none of it — and none of its deps (`hmac` now; `reqwest`/`rustls` when
 //! `push.rs` lands in 2.7). That is the **build-time** half of the dormancy firewall (1.4). Within the
-//! feature build, a second **runtime** gate (`enrollment::control_plane_active`, 1.3) keeps everything
-//! inert unless the license grants `control-plane` AND `~/.kriya/console/enrollment.json` exists.
+//! feature build, a second **runtime** gate ([`enrollment::control_plane_active`], 1.3) keeps
+//! everything inert unless the license grants `control-plane` AND `~/.kriya/console/enrollment.json`
+//! exists.
 //!
-//! Placeholder (1.1): the real modules — enrollment, redact, envelope, compiler, push — land in 1.3+.
+//! Modules land across Phase 1: [`enrollment`] (1.3); redact/envelope/compiler/push in 1.5+.
+
+pub mod enrollment;
