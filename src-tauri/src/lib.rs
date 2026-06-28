@@ -13,6 +13,11 @@ pub mod onboarding;
 pub mod paid;
 pub mod receipts;
 
+// Control-plane device modules — compiled ONLY under the off-by-default `control-plane` feature
+// (build-time dormancy, 1.1). Placeholder until enrollment/compiler/etc. land in 1.3+.
+#[cfg(feature = "control-plane")]
+mod control_plane;
+
 /// Build + run the Tauri app. On launch it starts the audit-dir watcher so the cockpit shows live
 /// governance the moment the window opens.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

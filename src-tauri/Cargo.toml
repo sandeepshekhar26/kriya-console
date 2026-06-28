@@ -47,9 +47,17 @@ serde_json = "1"
 ed25519-dalek = "2"
 sha2 = "0.10"
 hex = "0.4"
+# Control-plane-only deps are OPTIONAL + behind the `control-plane` feature, so a default/free
+# `tauri build` links none of them (the build-artifact half of the dormancy firewall, 1.4). hmac backs
+# the device-local operator-pseudonym pepper (1.8/1.9); reqwest/rustls arrive with push.rs (2.7).
+hmac = { version = "0.12", optional = true }
 
 [features]
 # Custom protocol is the default Tauri runtime; this mirrors the scaffolder's default.
 custom-protocol = ["tauri/custom-protocol"]
 # Enables building the dev-only `issue-license` binary. Off by default so it never ships.
 dev-issuer = []
+# The on-prem control plane (Phase 1+). OFF by default: gates the device modules
+# (enrollment/redact/envelope/compiler/push) + their deps, so the free tier compiles none of it
+# (build-time half of the dormancy firewall; the runtime gate is enrollment::control_plane_active).
+control-plane = ["dep:hmac"]
