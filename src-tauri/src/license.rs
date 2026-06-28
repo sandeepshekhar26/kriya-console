@@ -107,6 +107,26 @@ pub fn require_pro() -> Result<(), String> {
     }
 }
 
+/// True when `s` is a valid license granting the `control-plane` feature flag. Pure (testable without
+/// touching disk); the disk read happens in [`require_control_plane`] / `control_plane_active` (1.3).
+fn has_control_plane(s: &LicenseStatus) -> bool {
+    s.valid && s.features.iter().any(|f| f == "control-plane")
+}
+
+/// The gate the on-prem control plane consults (Phase 1+) — the analog of [`require_pro`] for the
+/// `control-plane` feature. `Ok(())` only when a valid installed license grants it. The dormancy
+/// decision in 1.3 is `has_control_plane(current_status()) && enrollment.json exists`.
+pub fn require_control_plane() -> Result<(), String> {
+    let s = current_status();
+    if has_control_plane(&s) {
+        Ok(())
+    } else {
+        Err(s.reason.unwrap_or_else(|| {
+            "the control plane requires a license with the `control-plane` feature".into()
+        }))
+    }
+}
+
 // ── Tauri commands ───────────────────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -215,5 +235,38 @@ mod tests {
         let token = dev_issue(p).unwrap();
         assert!(verify_token(&token, 2_000).is_err(), "expired must fail");
         assert!(verify_token(&token, 500).is_ok(), "pre-expiry must pass");
+    }
+
+    /// The control-plane grant requires BOTH validity AND the `control-plane` feature flag (the
+    /// pure predicate behind `require_control_plane`; seed-independent — no disk, no dev key).
+    #[test]
+    fn has_control_plane_requires_validity_and_the_flag() {
+        let granted = LicenseStatus {
+            tier: "pro".into(),
+            valid: true,
+            holder: Some("Acme Regulated Co".into()),
+            features: vec!["compliance-export".into(), "control-plane".into()],
+            expires_ms: None,
+            license_id: Some("dev-1".into()),
+            reason: None,
+        };
+        assert!(
+            has_control_plane(&granted),
+            "valid license with the flag grants it"
+        );
+        assert!(
+            !has_control_plane(&LicenseStatus {
+                features: vec!["compliance-export".into()],
+                ..granted.clone()
+            }),
+            "the control-plane flag is required"
+        );
+        assert!(
+            !has_control_plane(&LicenseStatus {
+                valid: false,
+                ..granted.clone()
+            }),
+            "an invalid license never grants control-plane"
+        );
     }
 }
