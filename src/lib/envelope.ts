@@ -37,6 +37,19 @@ function canonicalJson(v: Json): string {
   return "{" + keys.map((k) => JSON.stringify(k) + ":" + canonicalJson(v[k] as Json)).join(",") + "}";
 }
 
+/** Exposed for the hash-chain check: the exact canonical string Rust's `canonical_json_bytes` produces. */
+export function canonicalJsonString(v: unknown): string {
+  return canonicalJson(v as Json);
+}
+
+/** SHA-256 hex of a string's UTF-8 bytes — the envelope-chain link (`prev_envelope_hash`). */
+export async function sha256Hex(s: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(s));
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 export interface SignedEnvelope {
   envelope: Record<string, Json>;
   public_key: string;

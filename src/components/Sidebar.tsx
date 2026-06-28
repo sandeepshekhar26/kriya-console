@@ -9,6 +9,7 @@ export type View =
   | "identity"
   | "evidence"
   | "fleet"
+  | "controlplane"
   | "connections"
   | "settings";
 
@@ -38,6 +39,10 @@ const GROUPS: NavGroup[] = [
       { id: "evidence", label: "Evidence", icon: "evidence", paid: true },
       { id: "fleet", label: "Fleet", icon: "fleet", paid: true },
     ],
+  },
+  {
+    label: "Control plane",
+    items: [{ id: "controlplane", label: "On-prem aggregator", icon: "server", paid: true }],
   },
   {
     label: "Connect",

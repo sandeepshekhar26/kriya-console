@@ -11,6 +11,8 @@ import { ReportsView } from "./views/ReportsView";
 import { ConnectionsView } from "./views/ConnectionsView";
 import { SettingsView, type SettingsPane } from "./views/SettingsView";
 import { FleetView } from "./views/FleetView";
+import { ControlPlaneView } from "./views/ControlPlaneView";
+import { SAMPLE_AUDIT, SAMPLE_APPROVALS } from "./demo/seed";
 import { LicenseGate } from "./components/LicenseGate";
 import { loadAuditLog } from "./lib/receipts";
 import { summarizeBudget } from "./lib/budget";
@@ -143,6 +145,31 @@ export function App() {
     };
   }, []);
 
+  // Demo bootstrap (the browser / web build only): pre-load the real signed sample trail + approvals
+  // and unlock the paid cockpit, so the whole Console is alive for a walkthrough without a Tauri
+  // backend. The desktop app instead tails the live ~/.kriya/audit directory (the effect above).
+  useEffect(() => {
+    if (LIVE) return;
+    let cancelled = false;
+    void loadAuditLog(SAMPLE_AUDIT, "demo").then((next) => {
+      if (!cancelled) setRows((prev) => (prev.length ? prev : next));
+    });
+    setQueue((q) =>
+      q.pending.length || q.decided.length
+        ? q
+        : ingestPending(q, parsePendingApprovals(SAMPLE_APPROVALS, "demo")),
+    );
+    setLicense({
+      tier: "pro",
+      valid: true,
+      holder: "Acme Corp",
+      features: ["compliance-export", "fleet-correlation", "control-plane"],
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Persist the approval queue + RBAC across reloads.
   useEffect(() => {
     try {
@@ -220,6 +247,7 @@ export function App() {
       ["identity", "Identity & access", "users"],
       ["evidence", "Evidence", "evidence"],
       ["fleet", "Fleet", "fleet"],
+      ["controlplane", "On-prem aggregator", "server"],
       ["connections", "Connections", "link"],
       ["settings", "Settings", "settings"],
     ];
@@ -324,6 +352,17 @@ export function App() {
             <LicenseGate
               feature="Fleet correlation"
               blurb="Cross-machine, cross-app correlation of the signed trail — distinct signers, agents, and tamper signals across every governed app."
+              license={license}
+              onActivate={() => goSettings("license")}
+            />
+          ))}
+        {view === "controlplane" &&
+          (paid ? (
+            <ControlPlaneView />
+          ) : (
+            <LicenseGate
+              feature="On-prem aggregator"
+              blurb="Aggregate every device's signed evidence onto a box you control — inside your boundary, no egress. Coverage across the fleet + trustless re-verification of the exact signed bytes."
               license={license}
               onActivate={() => goSettings("license")}
             />

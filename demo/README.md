@@ -1,44 +1,37 @@
-# kriya control-plane pilot — demo
+# kriya — demo
 
-A ~65-second recording of the pilot running over the **real shipped binaries** (`kriyad` + `kriya-audit`),
-not a mockup. Every command is real; every adversarial moment is staged from genuinely signed bytes.
+Two recordings of the **real product**, for the pitch:
 
-![kriya pilot demo](kriya-pilot-demo.gif)
+## 1. GUI pitch walkthrough — `kriya-gui-demo.mp4`  ⭐
 
-- **`kriya-pilot-demo.mp4`** (2.5 MB) — the shareable recording.
-- **`kriya-pilot-demo.gif`** (4.7 MB) — for inline embedding.
-- **`STORY.md`** — the narrative + the honest boundary (what it proves, and what it deliberately does not).
-- **`story-demo.sh`** — the driver. **`kriya-demo.tape`** — the [VHS](https://github.com/charmbracelet/vhs) script.
+[![kriya GUI demo](kriya-gui-poster.png)](kriya-gui-demo.mp4)
 
-## The one-sentence claim
+A ~65-second captioned walkthrough of the actual app (driven by Playwright over the running build):
 
-> Every agent action is **device-signed** and **re-verified offline** at ingest, so forged, altered,
-> deleted, or tail-truncated **evidence** is detectable — by an independent auditor, **without trusting
-> the vendor or the network**. It proves *evidence integrity*, not that the action itself was safe; the
-> guarantee starts at the signing key.
+- **The on-device Console** — Monitor (every agent action a live, re-verified signed receipt), the
+  tamper-evident Audit log, human Approvals (RBAC), Policy (deny-by-default), and on-device Compliance
+  evidence.
+- **The on-prem control plane** — the *On-prem aggregator* dashboard: fleet **coverage** (current /
+  behind / silent), and **trustless re-verification** of a device's signed evidence. Then an attacker
+  tries to cheat — **forge a field**, **flip a byte**, **hide the newest receipt** — and every attack is
+  caught, live, by the real in-browser Ed25519 verifier (the same trust core, parity-tested against
+  Rust). Ends on: *signed at the source, re-verified on your box, provably nothing hidden.*
 
-## What the recording shows (10 beats)
+Reproduce: `npm run dev` (port 1420), then `node demo/record-walkthrough.mjs`, then convert
+`demo/video/*.webm` → mp4. The Console + Control Plane views render real signed sample data; the
+re-proof and the adversarial catches run real cryptography in the browser, not a mock.
 
-1. A device seals each batch of agent actions into an **Ed25519-signed** envelope (operator names HMAC-pseudonymized).
-2. The honest boundary, stated up front: the signature proves the **bytes** are authentic — not that the action was safe.
-3. `kriyad` **re-verifies every envelope offline**, then stores only signed metadata — zero outbound calls.
-4. **Attack — forge at ingest:** change one field after signing → `kriyad` rejects it (`accepted=0`).
-5. An **independent auditor** pulls the exact stored bytes (`/v1/verify`) and **re-proves** them offline.
-6. **Attack — tamper the read-back:** flip one byte → `kriya-audit` catches it (signature fails).
-7. **Attack — hide the newest receipt:** a malicious server drops seq 2 → the heartbeat **tail-truncation anchor** catches it.
-8. **Air-gap parity:** the same bytes on a USB stick verify identically on a disconnected box — sneaker-net == network.
-9. **Coverage:** who's reporting, who went dark (and the honest gap: a *never-enrolled* device is invisible, not absent).
-10. **Engine open, cockpit paid:** the free on-device build links **zero** control-plane code (the dormancy firewall).
+## 2. CLI / under-the-hood proof — `kriya-pilot-demo.mp4`
 
-## Reproduce
+The same trust guarantees shown over the **shipped binaries** (`kriyad` + `kriya-audit`): air-gap
+`ingest-file` → serve → `/v1/verify` → offline `kriya-audit --readback` (sig + chain + merkle + tail
+anchor). See [`STORY.md`](STORY.md) for the narrative + the honest boundary (tamper-**evidence**, not
+action approval), and [`story-demo.sh`](story-demo.sh) / [`kriya-demo.tape`](kriya-demo.tape) to
+reproduce.
 
-```bash
-# from the repo root
-bash demo/story-demo.sh          # run the narrated demo over the real binaries
-vhs demo/kriya-demo.tape         # re-record the GIF + MP4 (needs: vhs, ffmpeg)
-```
+---
 
-The driver builds `kriyad` + `kriya-audit`, starts a local `kriyad` (offline license, plain HTTP for the
-demo; mTLS is exercised by the `kriyd-ca` + tls tests), and runs the beats against it. Fixtures live in
-`src-tauri/crates/kriya-aggregator/test-fixtures/` (regenerate with
-`cargo test -p kriya-aggregator emit_pilot_fixtures -- --ignored`).
+**The honest claim both demos make:** every agent action is device-signed and re-verified offline, so
+forged, altered, deleted, or tail-truncated *evidence* is detectable — by an independent auditor,
+without trusting the vendor or the network. It proves *evidence integrity*, not that the action itself
+was safe; the guarantee starts at the device's signing key.
