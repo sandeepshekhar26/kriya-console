@@ -54,6 +54,8 @@ hmac = { version = "0.12", optional = true }
 # OS CSPRNG for minting the device evidence key + pseudonym pepper (1.8). Optional/feature-gated;
 # pinned to 0.3 to match the version already in the app's transitive tree (no new version added).
 getrandom = { version = "0.3", optional = true }
+# The mTLS push client (2.7). Optional + feature-gated, so the FREE build links no reqwest/rustls.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"], optional = true }
 
 [features]
 # Custom protocol is the default Tauri runtime; this mirrors the scaffolder's default.
@@ -63,7 +65,7 @@ dev-issuer = []
 # The on-prem control plane (Phase 1+). OFF by default: gates the device modules
 # (enrollment/redact/envelope/compiler/push) + their deps, so the free tier compiles none of it
 # (build-time half of the dormancy firewall; the runtime gate is enrollment::control_plane_active).
-control-plane = ["dep:hmac", "dep:getrandom"]
+control-plane = ["dep:hmac", "dep:getrandom", "dep:reqwest"]
 
 [dev-dependencies]
 # For the redaction-manifest gate (1.12) + the device e2e (1.19): sign receipts, re-verify envelopes,
