@@ -15,16 +15,24 @@
 
 mod canonical;
 mod classify;
+mod envelope;
 mod license;
 mod merkle;
 mod receipts;
+pub mod redact;
 mod sig;
 
-pub use canonical::{canonical_value, sha256_hex};
+pub use canonical::{canonical_json_bytes, canonical_value, sha256_hex};
 pub use classify::is_destructive;
+pub use envelope::{
+    envelope_canonical_bytes, envelope_chain_break, verify_envelope, AttestationEnvelope,
+    CompilerInfo, Counts, Integrity, NonEgress, OperatorRollup, SignedEnvelope, SignerRollup,
+    Window,
+};
 pub use license::{
     canonical_license_bytes, verify_token, LicensePayload, LicenseToken, ISSUER_PUBLIC_KEY_HEX,
 };
 pub use merkle::{merkle_proof, merkle_root, merkle_verify};
 pub use receipts::{chain_break, chain_continues_from, load_rows, verify_value, Actor, AuditRow};
+pub use redact::{minimize_window, Allowlist, MinimizedAction};
 pub use sig::verify_detached;
