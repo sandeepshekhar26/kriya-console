@@ -34,6 +34,9 @@ required-features = ["dev-issuer"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# The shared trust core (extracted across Phase 0): the Console links the SAME verifier the kriyad
+# server and the auditor CLI use, so a verdict comes from one audited implementation, not three.
+kriya-verify = { path = "crates/kriya-verify" }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

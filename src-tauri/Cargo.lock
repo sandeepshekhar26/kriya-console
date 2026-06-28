@@ -1674,12 +1674,17 @@ version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
  "hex",
+ "kriya-verify",
  "serde",
  "serde_json",
  "sha2",
  "tauri",
  "tauri-build",
 ]
+
+[[package]]
+name = "kriya-verify"
+version = "0.1.0"
 
 [[package]]
 name = "libappindicator"

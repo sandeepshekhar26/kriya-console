@@ -1,0 +1,11 @@
+[package]
+name = "kriya-verify"
+version = "0.1.0"
+description = "Shared, Tauri-free trust core for the kriya control plane: receipt/envelope/license verification, canonical JSON, the SHA-256 hash-chain, and the RFC-6962 Merkle tree."
+edition = "2021"
+rust-version = "1.77"
+publish = false
+
+# Empty scaffold (0.2). The trust-core dependencies (serde, serde_json, ed25519-dalek, sha2, hex)
+# arrive with the code in 0.3 — kept out until then so this stays a true empty starting point.
+[dependencies]
