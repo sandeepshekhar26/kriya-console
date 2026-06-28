@@ -10,11 +10,17 @@ mod store;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use std::collections::HashMap;
+
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
-use axum::{extract::State, Json, Router};
+use axum::{Json, Router};
 use serde::Serialize;
 use serde_json::{json, Value};
+
+/// `silent` when a device hasn't been seen for N·H (N=3, H=1h) — the coverage threshold (LLD §B.6).
+const SILENT_AFTER_MS: u64 = 3 * 60 * 60 * 1000;
 
 /// Prometheus counters (the SQLite store lands in 2.3).
 #[derive(Default)]
@@ -50,7 +56,35 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/metrics", get(metrics))
         .route("/v1/envelopes", post(post_envelopes))
         .route("/v1/heartbeat", post(post_heartbeat))
+        .route("/v1/coverage", get(get_coverage))
+        .route("/v1/verify", get(get_verify))
         .with_state(state)
+}
+
+/// GET /v1/coverage[?org_id=…] — per-device current/behind/silent.
+async fn get_coverage(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Json<Vec<store::DeviceCoverage>> {
+    let org = q.get("org_id").map(String::as_str);
+    Json(state.store.coverage(now_ms(), SILENT_AFTER_MS, org))
+}
+
+/// GET /v1/verify?device_pub=…&from_seq=…&to_seq=… — trustless read-back: the EXACT stored signed
+/// bytes for the contiguous slice + the device's most-recent signed heartbeat (the tail anchor).
+async fn get_verify(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<Json<store::Readback>, (StatusCode, String)> {
+    let device_pub = q
+        .get("device_pub")
+        .ok_or((StatusCode::BAD_REQUEST, "device_pub required\n".to_string()))?;
+    let from_seq = q.get("from_seq").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let to_seq = q
+        .get("to_seq")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(u64::MAX);
+    Ok(Json(state.store.read_back(device_pub, from_seq, to_seq)))
 }
 
 fn now_ms() -> u64 {

@@ -6,7 +6,8 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 use kriya_verify::{SignedEnvelope, SignedHeartbeat};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -17,6 +18,27 @@ pub struct Store {
 pub enum Ingest {
     Accepted,
     Duplicate,
+}
+
+/// One device's coverage row (the derived liveness/completeness view).
+#[derive(Debug, Serialize)]
+pub struct DeviceCoverage {
+    pub device_pub: String,
+    pub org_id: Option<String>,
+    pub business_unit: Option<String>,
+    pub last_seq: i64,
+    pub max_seq_seen: i64,
+    pub last_seen_ms: i64,
+    /// `current` · `behind` (a heartbeat claims a higher seq than is stored) · `silent` (stale).
+    pub status: String,
+}
+
+/// A trustless read-back: the EXACT stored signed bytes + the device's most-recent signed heartbeat
+/// (the tail-truncation anchor the auditor compares `returned_top_seq >= seq_seen` against).
+#[derive(Debug, Serialize)]
+pub struct Readback {
+    pub envelopes: Vec<String>,
+    pub heartbeat: Option<String>,
 }
 
 const MIGRATIONS: &str = r#"
@@ -225,6 +247,96 @@ impl Store {
         tx.commit().map_err(|x| x.to_string())?;
         Ok(())
     }
+
+    /// Per-device coverage (2.8). `status` = `silent` if `now − last_seen_ms > silent_after_ms`,
+    /// `behind` if a heartbeat claims a higher seq than is stored, else `current`. A gap is always a
+    /// visible cell, never a silent hole (subject to invariant 6b: a never-covered source is invisible).
+    pub fn coverage(
+        &self,
+        now_ms: u64,
+        silent_after_ms: u64,
+        org_filter: Option<&str>,
+    ) -> Vec<DeviceCoverage> {
+        let conn = self.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT device_pub, org_id, business_unit, COALESCE(last_seq,0), \
+                 COALESCE(max_seq_seen,0), COALESCE(last_seen_ms,0) FROM devices ORDER BY device_pub",
+            )
+            .expect("prepare coverage");
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, i64>(5)?,
+                ))
+            })
+            .expect("query coverage");
+        rows.filter_map(Result::ok)
+            .filter(|(_, org, ..)| org_filter.map_or(true, |o| org.as_deref() == Some(o)))
+            .map(
+                |(device_pub, org_id, business_unit, last_seq, max_seq_seen, last_seen_ms)| {
+                    let status = if now_ms.saturating_sub(last_seen_ms as u64) > silent_after_ms {
+                        "silent"
+                    } else if max_seq_seen > last_seq {
+                        "behind"
+                    } else {
+                        "current"
+                    };
+                    DeviceCoverage {
+                        device_pub,
+                        org_id,
+                        business_unit,
+                        last_seq,
+                        max_seq_seen,
+                        last_seen_ms,
+                        status: status.into(),
+                    }
+                },
+            )
+            .collect()
+    }
+
+    /// Trustless read-back (2.9): the EXACT stored signed bytes for a contiguous `from_seq..=to_seq`
+    /// slice (no re-render) + the device's most-recent signed heartbeat (the tail anchor). The caller
+    /// re-runs the offline verifier on these bytes and asserts `returned_top_seq >= heartbeat.seq_seen`.
+    pub fn read_back(&self, device_pub: &str, from_seq: u64, to_seq: u64) -> Readback {
+        let conn = self.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT signed_bytes FROM envelopes WHERE device_pub=?1 AND seq>=?2 AND seq<=?3 \
+                 ORDER BY seq",
+            )
+            .expect("prepare read_back");
+        let clamp = |s: u64| s.min(i64::MAX as u64) as i64;
+        let envelopes = stmt
+            .query_map(params![device_pub, clamp(from_seq), clamp(to_seq)], |r| {
+                let b: Vec<u8> = r.get(0)?;
+                Ok(String::from_utf8_lossy(&b).into_owned())
+            })
+            .expect("query read_back")
+            .filter_map(Result::ok)
+            .collect();
+        let heartbeat = conn
+            .query_row(
+                "SELECT signed_bytes FROM heartbeats WHERE device_pub=?1 ORDER BY id DESC LIMIT 1",
+                params![device_pub],
+                |r| {
+                    let b: Vec<u8> = r.get(0)?;
+                    Ok(String::from_utf8_lossy(&b).into_owned())
+                },
+            )
+            .optional()
+            .unwrap_or(None);
+        Readback {
+            envelopes,
+            heartbeat,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -331,5 +443,89 @@ mod tests {
             .unwrap();
         assert_eq!(max_seq, 7, "heartbeat anchors max_seq_seen");
         assert_eq!(last_seen, 5000);
+    }
+
+    fn sample() -> SignedEnvelope {
+        serde_json::from_value(
+            serde_json::from_str(include_str!("../../../../src/sample/sample-envelope.json"))
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn coverage_status_transitions() {
+        use kriya_verify::{Heartbeat, SignedHeartbeat};
+        let store = Store::open_in_memory().unwrap();
+        let signed = sample();
+        let dev = signed.envelope.device_pub.clone();
+        let line = serde_json::to_string(&signed).unwrap();
+        store
+            .insert_envelope(&signed, line.as_bytes(), 100_000)
+            .unwrap();
+
+        let cov = store.coverage(100_000, 10_800_000, None);
+        assert_eq!(cov.len(), 1);
+        assert_eq!(cov[0].status, "current", "fresh + caught up");
+
+        // A heartbeat claims a higher seq than is stored → behind.
+        let hb = SignedHeartbeat {
+            heartbeat: Heartbeat {
+                device_pub: dev.clone(),
+                seq_seen: 5,
+                ts_ms: 1,
+            },
+            public_key: dev.clone(),
+            signature: "0".into(),
+        };
+        store.insert_heartbeat(&hb, b"hb", 100_000).unwrap();
+        let cov = store.coverage(100_000, 10_800_000, None);
+        assert_eq!(cov[0].status, "behind");
+        assert_eq!(cov[0].max_seq_seen, 5);
+
+        // Far past the silence window → silent.
+        let cov = store.coverage(100_000 + 20_000_000, 10_800_000, None);
+        assert_eq!(cov[0].status, "silent");
+
+        // org filter excludes other orgs.
+        assert!(store
+            .coverage(100_000, 10_800_000, Some("other-org"))
+            .is_empty());
+    }
+
+    #[test]
+    fn read_back_returns_exact_bytes_and_heartbeat() {
+        use kriya_verify::{Heartbeat, SignedHeartbeat};
+        let store = Store::open_in_memory().unwrap();
+        let signed = sample();
+        let dev = signed.envelope.device_pub.clone();
+        let line = serde_json::to_string(&signed).unwrap();
+        store.insert_envelope(&signed, line.as_bytes(), 1).unwrap();
+        store
+            .insert_heartbeat(
+                &SignedHeartbeat {
+                    heartbeat: Heartbeat {
+                        device_pub: dev.clone(),
+                        seq_seen: 1,
+                        ts_ms: 1,
+                    },
+                    public_key: dev.clone(),
+                    signature: "0".into(),
+                },
+                b"hbline",
+                1,
+            )
+            .unwrap();
+
+        let rb = store.read_back(&dev, 0, u64::MAX);
+        assert_eq!(rb.envelopes.len(), 1);
+        // The returned bytes are EXACTLY what was stored, and re-verify offline (trustless).
+        assert_eq!(rb.envelopes[0], line);
+        let v: serde_json::Value = serde_json::from_str(&rb.envelopes[0]).unwrap();
+        assert!(
+            kriya_verify::verify_envelope(&v).is_ok(),
+            "read-back bytes must re-verify"
+        );
+        assert_eq!(rb.heartbeat.as_deref(), Some("hbline"));
     }
 }
