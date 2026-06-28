@@ -9,6 +9,7 @@
 //!
 //! Modules land across Phase 1: [`enrollment`] (1.3), [`envelope`] (1.8/1.10); redact/compiler/push next.
 
+pub mod compiler;
 pub mod enrollment;
 pub mod envelope;
 pub mod outbox;
