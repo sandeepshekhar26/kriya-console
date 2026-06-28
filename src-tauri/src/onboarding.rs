@@ -280,7 +280,11 @@ pub fn wire_claude_config(req: WireRequest) -> Result<WireResult, String> {
         let mut it = downstream.into_iter();
         let cmd = it.next().expect("downstream is non-empty (checked above)");
         let rest: Vec<String> = it.collect();
-        let name = req.app.as_deref().filter(|s| !s.trim().is_empty()).unwrap_or("server");
+        let name = req
+            .app
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("server");
         (format!("kriya-native-{}", slug(name)), cmd, rest)
     } else {
         let (gateway, _bundled) =
