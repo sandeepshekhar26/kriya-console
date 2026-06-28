@@ -10,11 +10,13 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
 
 use crate::control_plane::envelope::{build_signed_envelope, SourceWindow, WindowInput};
-use kriya_verify::{sha256_hex, SignedEnvelope};
+use kriya_verify::{
+    heartbeat_canonical_bytes, sha256_hex, Heartbeat, SignedEnvelope, SignedHeartbeat,
+};
 
 /// Default window length W — the pilot's 1h cadence (LLD §B.3.1). Boundary-aligned.
 pub const DEFAULT_WINDOW_MS: u64 = 60 * 60 * 1000;
@@ -183,6 +185,54 @@ pub fn compile_window(
     Ok((signed, next))
 }
 
+// ── Heartbeat H timer (1.17) ──────────────────────────────────────────────────────────────────────
+
+/// Default heartbeat interval H — the pilot's 1h cadence (LLD §B.3.1). Independent of the window timer.
+pub const DEFAULT_HEARTBEAT_MS: u64 = 60 * 60 * 1000;
+
+/// Fires on a fixed interval REGARDLESS of activity, so a fully-silent device shows up as a stale
+/// `last_seen` (a visible coverage gap) — an empty-window envelope alone can't prove liveness, since a
+/// withholding device simply stops emitting.
+pub struct HeartbeatTimer {
+    interval_ms: u64,
+    last_ms: Option<u64>,
+}
+
+impl HeartbeatTimer {
+    pub fn new(interval_ms: u64) -> Self {
+        Self {
+            interval_ms: interval_ms.max(1),
+            last_ms: None,
+        }
+    }
+
+    pub fn due(&self, now_ms: u64) -> bool {
+        self.last_ms
+            .map(|l| now_ms >= l.saturating_add(self.interval_ms))
+            .unwrap_or(true)
+    }
+
+    pub fn fired(&mut self, now_ms: u64) {
+        self.last_ms = Some(now_ms);
+    }
+}
+
+/// Build a signed heartbeat `{device_pub, seq_seen, ts_ms}` over the device evidence key.
+pub fn build_signed_heartbeat(seq_seen: u64, ts_ms: u64, key: &SigningKey) -> SignedHeartbeat {
+    let device_pub = hex::encode(key.verifying_key().to_bytes());
+    let heartbeat = Heartbeat {
+        device_pub: device_pub.clone(),
+        seq_seen,
+        ts_ms,
+    };
+    let signature = hex::encode(key.sign(&heartbeat_canonical_bytes(&heartbeat)).to_bytes());
+    SignedHeartbeat {
+        heartbeat,
+        public_key: device_pub,
+        signature,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,5 +350,22 @@ mod tests {
         assert_eq!(chain, None, "consecutive (incl. empty) windows chain");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn heartbeat_timer_fires_on_interval_and_signed_heartbeat_verifies() {
+        let mut t = HeartbeatTimer::new(1000);
+        assert!(t.due(0), "fires on first check (regardless of activity)");
+        t.fired(0);
+        assert!(!t.due(999), "not due within H");
+        assert!(t.due(1000), "fires again after H, even with no activity");
+
+        let key = SigningKey::from_bytes(&[8u8; 32]);
+        let signed = build_signed_heartbeat(7, 12345, &key);
+        assert_eq!(signed.heartbeat.seq_seen, 7);
+        assert!(
+            kriya_verify::verify_heartbeat(&serde_json::to_value(&signed).unwrap()).is_ok(),
+            "the device-signed heartbeat verifies with the shared verifier"
+        );
     }
 }

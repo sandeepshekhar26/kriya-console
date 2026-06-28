@@ -16,6 +16,7 @@
 mod canonical;
 mod classify;
 mod envelope;
+mod heartbeat;
 mod license;
 mod merkle;
 mod receipts;
@@ -29,6 +30,7 @@ pub use envelope::{
     CompilerInfo, Counts, Integrity, NonEgress, OperatorRollup, SignedEnvelope, SignerRollup,
     Window,
 };
+pub use heartbeat::{heartbeat_canonical_bytes, verify_heartbeat, Heartbeat, SignedHeartbeat};
 pub use license::{
     canonical_license_bytes, verify_token, LicensePayload, LicenseToken, ISSUER_PUBLIC_KEY_HEX,
 };
