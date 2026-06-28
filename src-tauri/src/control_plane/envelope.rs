@@ -366,6 +366,34 @@ mod builder_tests {
             vec!["notes.jsonl@1"]
         );
     }
+
+    /// Emits a compact, builder-produced (real merkle_root) signed envelope on one line — the auditor
+    /// CLI's envelope-mode artifact (1.13). Deterministic. Run:
+    ///   cargo test -p kriya-console --features control-plane print_builder_envelope -- --ignored --nocapture
+    #[test]
+    #[ignore = "emitter: prints a real builder envelope as one JSONL line for the audit CLI"]
+    fn print_builder_envelope() {
+        let host = SigningKey::from_bytes(&[42u8; 32]);
+        let l1 = signed_receipt_line(&host, "s1", "delete_note", "Jane Q. Operator", None);
+        let input = WindowInput {
+            org_id: "acme".into(),
+            business_unit: Some("enclave-7".into()),
+            window_from_ms: 1000,
+            window_to_ms: 2000,
+            seq: 1,
+            prev_envelope_hash: None,
+            produced_ms: 2000,
+            sources: vec![SourceWindow {
+                source: "notes.jsonl".into(),
+                lines: vec![l1],
+                prev_tail_hash: None,
+            }],
+        };
+        let signed =
+            build_signed_envelope(&input, &SigningKey::from_bytes(&[11u8; 32]), &[3u8; 32])
+                .unwrap();
+        println!("{}", serde_json::to_string(&signed).unwrap());
+    }
 }
 
 #[cfg(test)]
