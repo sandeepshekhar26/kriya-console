@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit",
     "tauri": "tauri",
     "release:bump": "bash scripts/bump-version.sh",
+    "capture": "node demo/capture/capture-shots.mjs",
     "demo:approvals": "node --experimental-strip-types demo/approvals-demo.mts",
     "demo:compliance": "node --experimental-strip-types demo/compliance-demo.mts"
   },

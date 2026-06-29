@@ -154,6 +154,41 @@ export function App() {
   useEffect(() => {
     if (LIVE || !__KRIYA_DEMO__) return;
     let cancelled = false;
+    const PRO: LicenseStatus = {
+      tier: "pro",
+      valid: true,
+      holder: "Demo Org",
+      features: ["compliance-export", "fleet-correlation", "control-plane"],
+    };
+
+    // Capture mode (?capture=1): load the clean, PII-free, genuinely-signed marketing dataset, with
+    // each governed app as its own source (grouped by the embedded `source`). Used only by the
+    // screenshot pipeline; both this branch and the seed below are tree-shaken from the shipped app.
+    if (new URLSearchParams(window.location.search).has("capture")) {
+      void import("./demo/capture-seed").then(async ({ CAPTURE_AUDIT, CAPTURE_APPROVALS }) => {
+        const bySource = new Map<string, string[]>();
+        for (const line of CAPTURE_AUDIT.trim().split("\n")) {
+          let src = "app";
+          try {
+            src = (JSON.parse(line) as { source?: string }).source ?? "app";
+          } catch {
+            /* skip malformed */
+          }
+          (bySource.get(src) ?? bySource.set(src, []).get(src)!).push(line);
+        }
+        const grouped = await Promise.all(
+          [...bySource.entries()].map(([src, ls]) => loadAuditLog(ls.join("\n"), src)),
+        );
+        if (cancelled) return;
+        setRows(grouped.flat());
+        setQueue((q) => ingestPending(q, parsePendingApprovals(CAPTURE_APPROVALS, "capture")));
+        setLicense(PRO);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+
     void import("./demo/seed").then(({ SAMPLE_AUDIT, SAMPLE_APPROVALS }) => {
       if (cancelled) return;
       void loadAuditLog(SAMPLE_AUDIT, "demo").then((next) => {
@@ -164,12 +199,7 @@ export function App() {
           ? q
           : ingestPending(q, parsePendingApprovals(SAMPLE_APPROVALS, "demo")),
       );
-      setLicense({
-        tier: "pro",
-        valid: true,
-        holder: "Acme Corp",
-        features: ["compliance-export", "fleet-correlation", "control-plane"],
-      });
+      setLicense({ ...PRO, holder: "Acme Corp" });
     });
     return () => {
       cancelled = true;
