@@ -47,6 +47,42 @@ else
   echo "==> Kriya Console $VERSION ($ARCH) — Developer ID + notarized"
 fi
 
+# Create the one-time stable self-signed code-signing identity in the login keychain (only used by
+# --self-signed). Imports with -A/-T codesign so subsequent codesign runs don't re-prompt. This touches
+# YOUR keychain, so it only runs when YOU invoke --self-signed (it may pop one keychain 'allow' dialog).
+create_self_identity() {
+  echo "==> Creating one-time self-signed identity '$SELF_IDENTITY' (approve the keychain prompt if it appears)."
+  local TMP; TMP="$(mktemp -d)"
+  cat > "$TMP/openssl.cnf" <<CNF
+[ req ]
+distinguished_name = dn
+x509_extensions = v3
+prompt = no
+[ dn ]
+CN = $SELF_IDENTITY
+[ v3 ]
+keyUsage = critical, digitalSignature
+extendedKeyUsage = critical, codeSigning
+basicConstraints = critical, CA:false
+CNF
+  openssl req -x509 -newkey rsa:2048 -nodes -keyout "$TMP/key.pem" -out "$TMP/cert.pem" -days 3650 -config "$TMP/openssl.cnf" >/dev/null 2>&1
+  openssl pkcs12 -export -inkey "$TMP/key.pem" -in "$TMP/cert.pem" -name "$SELF_IDENTITY" -out "$TMP/identity.p12" -passout pass: >/dev/null 2>&1
+  security import "$TMP/identity.p12" -k "$HOME/Library/Keychains/login.keychain-db" -P "" -T /usr/bin/codesign -A
+  rm -rf "$TMP"
+}
+
+# Build a compressed, drag-to-Applications dmg from a .app via hdiutil — no Finder/AppleScript, so it
+# works headless and won't fail the way Tauri's bundle_dmg.sh does.
+make_dmg() {  # $1 = .app path, $2 = output .dmg path
+  local app="$1" out="$2" stage
+  stage="$(mktemp -d)"
+  cp -R "$app" "$stage/"
+  ln -s /Applications "$stage/Applications"
+  rm -f "$out"
+  hdiutil create -volname "Kriya Console" -srcfolder "$stage" -ov -format UDZO "$out" >/dev/null
+  rm -rf "$stage"
+}
+
 # 1) Build + stage the gateway sidecar (externalBin Tauri embeds).
 scripts/bundle-gateway.sh release
 [ -f "$SIDECAR" ] || { echo "ERROR: staged sidecar not found: $SIDECAR" >&2; exit 1; }
@@ -54,9 +90,7 @@ scripts/bundle-gateway.sh release
 # 2) Resolve the signing identity + verify creds.
 if [ "$SELF_SIGNED" -eq 1 ]; then
   if ! security find-certificate -c "$SELF_IDENTITY" >/dev/null 2>&1; then
-    echo "ERROR: self-signed identity '$SELF_IDENTITY' not in the keychain." >&2
-    echo "       Run scripts/macos/sign-stable-identity.sh once to create it." >&2
-    exit 1
+    create_self_identity
   fi
   SIGN_ID="$SELF_IDENTITY"
 else
@@ -79,30 +113,35 @@ echo "==> Signing sidecar with '$SIGN_ID'"
 codesign --force --timestamp --options runtime \
   --entitlements src-tauri/entitlements.plist --sign "$SIGN_ID" "$SIDECAR"
 
-# 4) Build app + dmg. Exporting APPLE_SIGNING_IDENTITY makes Tauri sign the bundle; in PROPER mode the
-#    notarization env (present from step 2) also triggers Apple notarization during the build.
+# 4) Build the .app ONLY. We package the dmg ourselves with hdiutil (step 5) — Tauri's bundle_dmg.sh
+#    drives Finder/AppleScript to lay out the dmg window and is flaky / headless-hostile.
 export APPLE_SIGNING_IDENTITY="$SIGN_ID"
-npm run tauri build -- --bundles app,dmg
+npm run tauri build -- --bundles app
+APP="src-tauri/target/release/bundle/macos/Kriya Console.app"
+[ -d "$APP" ] || { echo "ERROR: .app not produced at $APP" >&2; exit 1; }
 
-# 5) Locate the produced dmg (newest under the bundle dir).
-DMG="$(ls -t "src-tauri/target/release/bundle/dmg/"*.dmg 2>/dev/null | head -1 || true)"
-[ -n "$DMG" ] || { echo "ERROR: no .dmg produced under src-tauri/target/release/bundle/dmg/" >&2; exit 1; }
-echo "==> Built: $DMG"
+# 5) Package a clean drag-to-Applications dmg from the signed .app (no Finder automation).
+OUT="dist-macos"; mkdir -p "$OUT"
+FINAL="$OUT/KriyaConsole-$VERSION-$ARCH.dmg"
+echo "==> Packaging dmg via hdiutil"
+make_dmg "$APP" "$FINAL"
+echo "==> Built: $FINAL"
 
-# 6) Staple + verify (proper mode only; a self-signed dmg has no notarization ticket to staple).
+# 6) Notarize + staple (proper mode only). notarytool notarizes the dmg's contents; staple pins the
+#    ticket so Gatekeeper passes offline. Self-signed builds skip this (no ticket to staple).
 if [ "$SELF_SIGNED" -eq 0 ]; then
-  echo "==> Stapling + verifying notarization"
-  xcrun stapler staple "$DMG"
-  spctl -a -vvv -t open --context context:primary-signature "$DMG"
-  xcrun stapler validate "$DMG"
-  hdiutil verify "$DMG" >/dev/null && echo "    hdiutil verify: ok"
+  echo "==> Notarizing $FINAL (this can take a few minutes)…"
+  if [ -n "${APPLE_API_KEY:-}" ]; then
+    xcrun notarytool submit "$FINAL" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait
+  else
+    xcrun notarytool submit "$FINAL" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+  fi
+  xcrun stapler staple "$FINAL"
+  spctl -a -vvv -t open --context context:primary-signature "$FINAL" || true
+  xcrun stapler validate "$FINAL"
 fi
 
-# 7) Versioned name + SHA-256 (what the website /download page verifies against).
-OUT="dist-macos"
-mkdir -p "$OUT"
-FINAL="$OUT/KriyaConsole-$VERSION-$ARCH.dmg"
-cp "$DMG" "$FINAL"
+# 7) SHA-256 (what the website /download page verifies against).
 ( cd "$OUT" && shasum -a 256 "KriyaConsole-$VERSION-$ARCH.dmg" | tee "KriyaConsole-$VERSION-$ARCH.dmg.sha256" )
 echo "==> Artifact: $FINAL (+ .sha256)"
 

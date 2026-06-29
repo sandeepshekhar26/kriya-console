@@ -25,3 +25,7 @@ Thumbs.db
 
 # R29 dev license-issuer PRIVATE seed — never commit (production issuer key lives offline)
 dev-keys/
+
+# macOS release artifacts (large; reproduced by scripts/macos/release.sh)
+dist-macos/
+scripts/icon/icon-source.png

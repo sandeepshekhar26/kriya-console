@@ -50,11 +50,12 @@ basicConstraints = critical, CA:false
 CNF
   openssl req -x509 -newkey rsa:2048 -nodes \
     -keyout "$TMP/key.pem" -out "$TMP/cert.pem" -days 3650 -config "$TMP/openssl.cnf"
-  openssl pkcs12 -export -inkey "$TMP/key.pem" -in "$TMP/cert.pem" \
-    -name "$IDENTITY" -out "$TMP/identity.p12" -passout pass:
-  security import "$TMP/identity.p12" \
-    -k "$HOME/Library/Keychains/login.keychain-db" \
-    -P "" -T /usr/bin/codesign -A
+  # Import cert and key separately — avoids OpenSSL 3 PKCS12 MAC incompatibility with macOS
+security import "$TMP/cert.pem" \
+  -k "$HOME/Library/Keychains/login.keychain-db" -A
+security import "$TMP/key.pem" \
+  -k "$HOME/Library/Keychains/login.keychain-db" \
+  -T /usr/bin/codesign -A
   echo "==> Imported '$IDENTITY'. (You may need to set it to 'Always Trust' in Keychain Access for"
   echo "    a clean codesign --verify, but signing works regardless.)"
 fi
