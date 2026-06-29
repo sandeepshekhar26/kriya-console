@@ -178,7 +178,10 @@ function LicensePane({ license, onLicenseChange }: { license: LicenseStatus | nu
           <div className="set-row" style={{ display: "block" }}>
             <div className="set-row-main" style={{ marginBottom: 10 }}>
               <b>Activate a license</b>
-              <span>Paste a license token to unlock Evidence export + Fleet correlation.</span>
+              <span>
+                Paste a license token to unlock Evidence export + Fleet correlation. The free tier (live
+                monitor, offline verification, connections, guided setup) stays fully usable without one.
+              </span>
             </div>
             {!live ? (
               <p className="muted small">Activation runs in the desktop app — the token is verified offline in the compiled backend.</p>
@@ -198,6 +201,11 @@ function LicensePane({ license, onLicenseChange }: { license: LicenseStatus | nu
             )}
             {err && <p className="warn-text small">{err}</p>}
             {license?.reason && <p className="warn-text small">Installed license rejected: {license.reason}</p>}
+            <p className="field-hint" style={{ marginTop: 10 }}>
+              Don't have a license? It isn't self-serve yet — email{" "}
+              <a href="mailto:kriyanative@gmail.com?subject=kriya%20Console%20license">kriyanative@gmail.com</a>{" "}
+              to request one. It's verified entirely offline; nothing is uploaded.
+            </p>
           </div>
         </>
       )}

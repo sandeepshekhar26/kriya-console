@@ -12,7 +12,7 @@ import { ConnectionsView } from "./views/ConnectionsView";
 import { SettingsView, type SettingsPane } from "./views/SettingsView";
 import { FleetView } from "./views/FleetView";
 import { ControlPlaneView } from "./views/ControlPlaneView";
-import { SAMPLE_AUDIT, SAMPLE_APPROVALS } from "./demo/seed";
+import { GetStartedView, ONBOARDED_KEY } from "./views/GetStartedView";
 import { LicenseGate } from "./components/LicenseGate";
 import { loadAuditLog } from "./lib/receipts";
 import { summarizeBudget } from "./lib/budget";
@@ -32,6 +32,7 @@ import {
   isTauri,
   licenseStatus,
   onAuditChanged,
+  onboardingStatus,
   readAudit,
   type LicenseStatus,
 } from "./lib/tauri";
@@ -145,26 +146,51 @@ export function App() {
     };
   }, []);
 
-  // Demo bootstrap (the browser / web build only): pre-load the real signed sample trail + approvals
-  // and unlock the paid cockpit, so the whole Console is alive for a walkthrough without a Tauri
-  // backend. The desktop app instead tails the live ~/.kriya/audit directory (the effect above).
+  // Demo bootstrap — DEV / WEB build ONLY, compiled out of the shipped desktop app. Behind the
+  // build-time `__KRIYA_DEMO__` flag (a `KRIYA_DEMO=1` web build) AND a dynamic import, so the sample
+  // seed + its fixtures are dead-code-eliminated from the production bundle: the shipped app never
+  // seeds sample data. In a demo build it pre-loads the signed sample trail + approvals and unlocks the
+  // cockpit for a walkthrough. The desktop app tails the live ~/.kriya/audit directory (effect above).
   useEffect(() => {
-    if (LIVE) return;
+    if (LIVE || !__KRIYA_DEMO__) return;
     let cancelled = false;
-    void loadAuditLog(SAMPLE_AUDIT, "demo").then((next) => {
-      if (!cancelled) setRows((prev) => (prev.length ? prev : next));
+    void import("./demo/seed").then(({ SAMPLE_AUDIT, SAMPLE_APPROVALS }) => {
+      if (cancelled) return;
+      void loadAuditLog(SAMPLE_AUDIT, "demo").then((next) => {
+        if (!cancelled) setRows((prev) => (prev.length ? prev : next));
+      });
+      setQueue((q) =>
+        q.pending.length || q.decided.length
+          ? q
+          : ingestPending(q, parsePendingApprovals(SAMPLE_APPROVALS, "demo")),
+      );
+      setLicense({
+        tier: "pro",
+        valid: true,
+        holder: "Acme Corp",
+        features: ["compliance-export", "fleet-correlation", "control-plane"],
+      });
     });
-    setQueue((q) =>
-      q.pending.length || q.decided.length
-        ? q
-        : ingestPending(q, parsePendingApprovals(SAMPLE_APPROVALS, "demo")),
-    );
-    setLicense({
-      tier: "pro",
-      valid: true,
-      holder: "Acme Corp",
-      features: ["compliance-export", "fleet-correlation", "control-plane"],
-    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // First run (desktop): if never onboarded and no connector is wired yet, open Get Started instead of
+  // Monitor so a brand-new user lands on the guided checklist. Onboarded users keep opening on Monitor.
+  useEffect(() => {
+    if (!LIVE) return;
+    try {
+      if (localStorage.getItem(ONBOARDED_KEY)) return;
+    } catch {
+      /* storage unavailable — fall through to the backend check */
+    }
+    let cancelled = false;
+    void onboardingStatus()
+      .then((s) => {
+        if (!cancelled && s.wiredServers.length === 0) setView("getstarted");
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -239,6 +265,7 @@ export function App() {
 
   const commands = useMemo<Command[]>(() => {
     const nav: [View, string, Command["icon"]][] = [
+      ["getstarted", "Get started", "play"],
       ["monitor", "Monitor", "monitor"],
       ["audit", "Audit log", "list"],
       ["approvals", "Approvals", "approvals"],
@@ -290,6 +317,9 @@ export function App() {
         liveDir={liveDir}
       />
       <main className="main">
+        {view === "getstarted" && (
+          <GetStartedView onNavigate={setView} goSettings={goSettings} />
+        )}
         {view === "monitor" && (
           <MonitorView
             rows={rows}

@@ -37,6 +37,8 @@
     "category": "DeveloperTool",
     "shortDescription": "On-device governance control-plane for AI agents",
     "longDescription": "Kriya Console — the on-device control plane for governed AI agents. Auto-discovers and tails the on-device signed-audit trail, walks the gateway setup (permissions + MCP client wiring), and turns the verified trail into compliance evidence. Paid features are gated by an offline license; nothing leaves the machine.",
-    "externalBin": ["binaries/kriya-gateway"]
+    "externalBin": [
+      "binaries/kriya-gateway"
+    ]
   }
 }

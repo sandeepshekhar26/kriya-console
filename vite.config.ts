@@ -9,6 +9,10 @@ const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
   plugins: [react()],
+  // Build-time demo flag. The shipped desktop app is built with KRIYA_DEMO unset → `false`, so the
+  // sample/demo seed (and its fixtures) are dead-code-eliminated from the bundle. The web walkthrough
+  // is built with `KRIYA_DEMO=1 vite build` → `true`. Never seed sample data into the shipped product.
+  define: { __KRIYA_DEMO__: JSON.stringify(process.env.KRIYA_DEMO === "1") },
   // Prevent Vite from obscuring Rust compiler errors during `tauri dev`.
   clearScreen: false,
   server: {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   isTauri,
   listCandidateApps,
@@ -61,6 +61,7 @@ const PREVIEW_STATUS: OnboardingStatus = {
   wiredServers: ["kriya-proxy", "kriya-Numbers"],
   auditDir: "~/.kriya/audit",
   auditLogs: 3,
+  policyPresent: true,
 };
 
 /**
@@ -158,6 +159,9 @@ export function ConnectionsView({
         New to this? The reach hierarchy goes <strong>kriya-native</strong> (most precise) →{" "}
         <strong>proxy</strong> → <strong>reach-in / computer-use</strong> (most universal). Permissions
         for desktop apps are managed in <button className="link" onClick={onOpenPermissions}>Settings → Permissions</button>.
+        {wired.length === 0 && (
+          <> Prefer a guided walkthrough? <button className="link" onClick={() => onNavigate("getstarted")}>Open Get started</button>.</>
+        )}
       </p>
 
       {draft && (
@@ -281,6 +285,7 @@ function ConnectionDrawer({
         </div>
 
         <div className="drawer-body">
+          <HowItWorks type={type} />
           {type === "kriya" && (
             <>
               <div className="field">
@@ -352,7 +357,16 @@ function ConnectionDrawer({
               <button className="btn small ghost" onClick={() => void navigator.clipboard.writeText(result.snippet)}>
                 <Icon name="copy" size={13} /> Copy snippet
               </button>
-              <p className="field-hint">Restart the MCP client to pick it up, then watch it in the <button className="link" onClick={() => onNavigate("monitor")}>Monitor</button>.</p>
+              <ol className="how-steps" style={{ margin: "10px 0 0", paddingLeft: 20, lineHeight: 1.5 }}>
+                <li>
+                  <b>Fully quit and reopen</b> your MCP client — it reads{" "}
+                  <code>{result.configPath.split("/").pop()}</code> only at launch.
+                </li>
+                <li>
+                  Drive the connected app, then watch the first signed receipt land in the{" "}
+                  <button className="link" onClick={() => onNavigate("monitor")}>Monitor</button>.
+                </li>
+              </ol>
             </div>
           )}
         </div>
@@ -366,6 +380,37 @@ function ConnectionDrawer({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Per-connector "How this works" — a short numbered explainer so the connector flow is legible inline. */
+function HowItWorks({ type }: { type: ConnType }) {
+  const steps: Record<ConnType, ReactNode[]> = {
+    kriya: [
+      <>Point it at a kriya-instrumented MCP server, e.g. <code>kriya-mcp --policy agent-policy.yaml</code>.</>,
+      <>It governs and signs its own real named actions in-process.</>,
+      <>Your MCP client launches it directly — no gateway wrapper needed.</>,
+    ],
+    proxy: [
+      <>Paste the existing MCP server's launch command (everything after <code>--</code>).</>,
+      <>The bundled gateway wraps it: every tool call routes through policy → approval → signed receipt.</>,
+      <>Zero changes to that server.</>,
+    ],
+    desktop: [
+      <><b>Reach-in</b> drives the app's macOS accessibility tree (named controls) — needs Accessibility.</>,
+      <><b>Computer-use</b> drives any app by pixels — needs Screen Recording.</>,
+      <><b>Router</b> combines the computer-use floor with one reach-in app. Grant the permissions below.</>,
+    ],
+  };
+  return (
+    <div className="field">
+      <label className="field-label">How this works</label>
+      <ol className="how-steps" style={{ margin: "4px 0 0", paddingLeft: 20, lineHeight: 1.5 }}>
+        {steps[type].map((s, i) => (
+          <li key={i} style={{ marginBottom: 4 }}>{s}</li>
+        ))}
+      </ol>
     </div>
   );
 }

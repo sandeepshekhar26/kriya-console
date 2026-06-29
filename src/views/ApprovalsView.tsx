@@ -97,14 +97,15 @@ export function ApprovalsView({
       {empty ? (
         <div className="empty">
           <div className="empty-ico"><Icon name="approvals" size={22} /></div>
-          <p className="empty-title">Queue clear</p>
+          <p className="empty-title">No approvals pending</p>
           <p>
-            Pending approvals from every governed app land here, risk-ranked. Import a{" "}
-            <code>pending-approvals.jsonl</code> queue to triage what your agents are waiting to do —
-            decisions stay on this machine.
+            High-risk actions from your governed apps queue here for review — risk-ranked, with the
+            decision and reason recorded in the signed trail. Connect an app to begin; decisions stay on
+            this machine.
           </p>
           <div className="page-actions">
-            <label className="btn primary">
+            <button className="btn primary" onClick={() => onNavigate("connections")}>Add a connection</button>
+            <label className="btn ghost">
               Load queue(s)
               <input
                 type="file"

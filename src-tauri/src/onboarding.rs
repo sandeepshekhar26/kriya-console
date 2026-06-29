@@ -27,6 +27,13 @@ pub struct OnboardingStatus {
     /// The standard audit dir + whether it already holds any logs (governance is already flowing).
     pub audit_dir: String,
     pub audit_logs: usize,
+    /// Whether an `agent-policy.yaml` exists where the runtime would load it (the working dir, or
+    /// `~/.kriya/agent-policy.yaml`) — the onboarding "author your first rule" step ticks on this.
+    ///
+    /// Note: Screen Recording TCC state is deliberately NOT exposed. Unlike Accessibility
+    /// (`AXIsProcessTrusted`, a no-arg read), macOS has no equivalent argument-free check, so the
+    /// onboarding wizard treats Screen Recording as "grant, then re-check" rather than auto-detected.
+    pub policy_present: bool,
 }
 
 /// Resolve the bundled `kriya-gateway` sidecar. In a packaged `.app` Tauri places external binaries
@@ -125,6 +132,17 @@ pub fn claude_config_path() -> PathBuf {
     }
 }
 
+/// Whether an `agent-policy.yaml` exists where the runtime would pick it up: the current working dir
+/// (the `--policy agent-policy.yaml` convention) or the standard `~/.kriya/agent-policy.yaml` location.
+fn policy_present() -> bool {
+    if Path::new("agent-policy.yaml").is_file() {
+        return true;
+    }
+    crate::audit::home_dir()
+        .map(|home| home.join(".kriya").join("agent-policy.yaml").is_file())
+        .unwrap_or(false)
+}
+
 /// Names of the `mcpServers` entries that launch our gateway (any command basename `kriya-gateway`).
 fn wired_kriya_servers(config: &serde_json::Value) -> Vec<String> {
     let mut out = Vec::new();
@@ -175,6 +193,7 @@ pub fn onboarding_status() -> OnboardingStatus {
         wired_servers: wired_kriya_servers(&config),
         audit_dir: audit_dir.to_string_lossy().into_owned(),
         audit_logs,
+        policy_present: policy_present(),
     }
 }
 

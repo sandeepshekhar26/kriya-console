@@ -30,6 +30,8 @@ export function PolicyView({
 
   const yaml = useMemo(() => policyToYaml(policy), [policy]);
   const warnings = useMemo(() => lintPolicy(policy), [policy]);
+  // First-run: the policy still has only the catch-all (no author-added rule yet).
+  const noCustomRules = policy.rules.every((r) => r.action === "*");
 
   const ungoverned = useMemo(
     () =>
@@ -149,6 +151,19 @@ export function PolicyView({
             <span className="muted small">evaluated top → bottom</span>
           </div>
 
+          {noCustomRules && (
+            <div className="suggestions" style={{ marginBottom: 12 }}>
+              <p className="muted small">
+                No rules yet, so every action is denied by default. Add rules top-to-bottom —{" "}
+                <b>first match wins</b> — and pick <b>allow</b> / <b>require-approval</b> / <b>deny</b> per
+                action pattern (an exact <code>action_id</code> or a <code>prefix_*</code>).
+              </p>
+              <button className="btn ghost add-rule" onClick={() => addRule()}>
+                + Add your first rule
+              </button>
+            </div>
+          )}
+
           <div className="rules">
             <div className="rule-head">
               <span>Order</span>
@@ -203,7 +218,7 @@ export function PolicyView({
           {ungoverned.length > 0 && (
             <div className="suggestions">
               <p className="muted small">
-                Observed in your audit logs, not explicitly governed — click to add a rule:
+                These ran but aren't governed yet — click to add a rule:
               </p>
               <div className="chips">
                 {ungoverned.map((a) => (
@@ -316,6 +331,11 @@ export function PolicyView({
               </button>
             </div>
             <pre className="well yaml">{yaml}</pre>
+            <p className="field-hint" style={{ marginTop: 8 }}>
+              Download this file and point the runtime at it —{" "}
+              <code>kriya-mcp --policy agent-policy.yaml</code> (or place it where your host reads it). The
+              editor authors the policy; the runtime enforces it.
+            </p>
           </article>
         </section>
       </div>

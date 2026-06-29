@@ -1,6 +1,7 @@
 import { Icon, type IconName } from "./Icon";
 
 export type View =
+  | "getstarted"
   | "monitor"
   | "audit"
   | "approvals"
@@ -17,6 +18,10 @@ type NavItem = { id: View; label: string; icon: IconName; paid?: boolean };
 type NavGroup = { label: string; items: NavItem[] };
 
 const GROUPS: NavGroup[] = [
+  {
+    label: "Start",
+    items: [{ id: "getstarted", label: "Get started", icon: "play" }],
+  },
   {
     label: "Monitor",
     items: [

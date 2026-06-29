@@ -48,6 +48,8 @@ export interface OnboardingStatus {
   wiredServers: string[];
   auditDir: string;
   auditLogs: number;
+  /** An `agent-policy.yaml` exists where the runtime loads it (cwd or ~/.kriya/). */
+  policyPresent: boolean;
 }
 export interface WireRequest {
   /** `kriya` = a kriya-instrumented server launched directly (bolt-on / serve). */
