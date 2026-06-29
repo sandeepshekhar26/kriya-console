@@ -29,3 +29,9 @@ dev-keys/
 # macOS release artifacts (large; reproduced by scripts/macos/release.sh)
 dist-macos/
 scripts/icon/icon-source.png
+
+# pitch deck — commit the source (OUTLINE.md + build/), not the generated artifacts
+deck/*.pptx
+deck/*.pdf
+deck/build/node_modules/
+deck/slide-*.jpg
