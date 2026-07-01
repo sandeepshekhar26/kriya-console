@@ -150,12 +150,19 @@ fi
 echo "==> Artifact: $FINAL (+ .sha256)"
 
 # 8) Optional: publish to a GitHub Release.
+#    IMPORTANT: publish to the PUBLIC runtime repo, NOT this private Console repo — so the free-tier
+#    download is publicly fetchable (no auth) AND GitHub meters every fetch (asset.downloadCount = the
+#    traction number; see docs/ideas/SHIP-ROADMAP.md HOST-1). `gh` defaults to the current repo's origin
+#    (private kriya-console), so we pass -R explicitly. Console releases are namespaced `console-v*` so
+#    they never collide with the runtime's own tags in the shared repo.
 if [ "$GH_RELEASE" -eq 1 ]; then
-  TAG="v$VERSION"
-  echo "==> Publishing $TAG to GitHub Releases"
-  gh release create "$TAG" "$FINAL" "$FINAL.sha256" \
-      --title "Kriya Console $VERSION" --notes "Kriya Console $VERSION ($ARCH)" \
-    || gh release upload "$TAG" "$FINAL" "$FINAL.sha256" --clobber
+  GH_RELEASE_REPO="${GH_RELEASE_REPO:-sandeepshekhar26/kriya}"
+  TAG="console-v$VERSION"
+  NOTES="Kriya Console $VERSION ($ARCH) — free tier. Signed with our Apple Developer ID, notarized + stapled by Apple, so it opens with no Gatekeeper prompt. The Console app is closed-source; the kriya runtime in this repo is MIT. Verify with the .sha256 asset."
+  echo "==> Publishing $TAG to GitHub Releases on $GH_RELEASE_REPO"
+  gh release create "$TAG" "$FINAL" "$FINAL.sha256" -R "$GH_RELEASE_REPO" \
+      --title "Kriya Console $VERSION" --notes "$NOTES" \
+    || gh release upload "$TAG" "$FINAL" "$FINAL.sha256" --clobber -R "$GH_RELEASE_REPO"
 fi
 
 if [ "$SELF_SIGNED" -eq 1 ]; then
