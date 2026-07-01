@@ -10,6 +10,8 @@
 # (and once before `tauri dev`, since externalBin must exist).
 #
 # Override the gateway repo path with KRIYA_REPO=/path/to/experiment1.
+# Set KRIYA_UNIVERSAL=1 to build a UNIVERSAL sidecar (aarch64 + x86_64 lipo'd into one binary named
+# kriya-gateway-universal-apple-darwin) — required by `tauri build --target universal-apple-darwin`.
 
 set -euo pipefail
 
@@ -24,18 +26,39 @@ if [ ! -d "$CRATE_DIR" ]; then
 fi
 
 [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
-TRIPLE="$(rustc -vV | sed -n 's/host: //p')"
 PROFILE="${1:-release}"
+DEST_DIR="$CONSOLE_DIR/src-tauri/binaries"
+mkdir -p "$DEST_DIR"
 
-echo "==> Building kriya-gateway ($PROFILE, all macOS fronts) for $TRIPLE"
 BUILD_FLAGS=(--no-default-features --features mcp-client,reach-in,computer-use,router --bin kriya-gateway)
 if [ "$PROFILE" = "release" ]; then BUILD_FLAGS+=(--release); fi
-cargo build --manifest-path "$CRATE_DIR/Cargo.toml" "${BUILD_FLAGS[@]}"
 
-SRC="$CRATE_DIR/target/$PROFILE/kriya-gateway"
-DEST_DIR="$CONSOLE_DIR/src-tauri/binaries"
-DEST="$DEST_DIR/kriya-gateway-$TRIPLE"
-mkdir -p "$DEST_DIR"
-cp "$SRC" "$DEST"
-chmod +x "$DEST"
-echo "==> Staged sidecar: $DEST"
+# Build the gateway for one target triple; echo the resulting binary path on stdout (progress → stderr).
+build_for() {
+  echo "==> Building kriya-gateway ($PROFILE, all macOS fronts) for $1" >&2
+  cargo build --manifest-path "$CRATE_DIR/Cargo.toml" --target "$1" "${BUILD_FLAGS[@]}" >&2
+  echo "$CRATE_DIR/target/$1/$PROFILE/kriya-gateway"
+}
+
+if [ "${KRIYA_UNIVERSAL:-0}" = "1" ]; then
+  # `tauri build --target universal-apple-darwin` needs BOTH: the two per-arch sidecars
+  # (kriya-gateway-<arch>-apple-darwin, resolved during each per-arch app compile) AND a lipo'd
+  # kriya-gateway-universal-apple-darwin (copied into the app at the final bundle step). Stage all three.
+  for T in aarch64-apple-darwin x86_64-apple-darwin; do
+    SRC="$(build_for "$T")"
+    cp "$SRC" "$DEST_DIR/kriya-gateway-$T"
+    chmod +x "$DEST_DIR/kriya-gateway-$T"
+    echo "==> Staged sidecar: kriya-gateway-$T"
+  done
+  lipo -create "$DEST_DIR/kriya-gateway-aarch64-apple-darwin" "$DEST_DIR/kriya-gateway-x86_64-apple-darwin" \
+    -output "$DEST_DIR/kriya-gateway-universal-apple-darwin"
+  chmod +x "$DEST_DIR/kriya-gateway-universal-apple-darwin"
+  echo "==> Staged UNIVERSAL sidecar: kriya-gateway-universal-apple-darwin ($(lipo -info "$DEST_DIR/kriya-gateway-universal-apple-darwin" | sed 's/.*are: *//'))"
+else
+  TRIPLE="$(rustc -vV | sed -n 's/host: //p')"
+  SRC="$(build_for "$TRIPLE")"
+  DEST="$DEST_DIR/kriya-gateway-$TRIPLE"
+  cp "$SRC" "$DEST"
+  chmod +x "$DEST"
+  echo "==> Staged sidecar: $DEST"
+fi

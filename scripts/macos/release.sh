@@ -22,10 +22,12 @@ set -euo pipefail
 
 SELF_SIGNED=0
 GH_RELEASE=0
+UNIVERSAL=0
 for arg in "$@"; do
   case "$arg" in
     --self-signed) SELF_SIGNED=1 ;;
     --gh-release)  GH_RELEASE=1 ;;
+    --universal)   UNIVERSAL=1 ;;
     -h|--help)     sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "unknown arg: $arg (try --help)" >&2; exit 1 ;;
   esac
@@ -35,11 +37,22 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
 
-TRIPLE="$(rustc -vV | sed -n 's/host: //p')"
-ARCH="${TRIPLE%%-*}"                                  # aarch64 | x86_64
 VERSION="$(node -e 'console.log(require("./src-tauri/tauri.conf.json").version)')"
-SIDECAR="src-tauri/binaries/kriya-gateway-$TRIPLE"
 SELF_IDENTITY="${IDENTITY:-Kriya Dev}"
+# --universal → one fat dmg (Intel + Apple Silicon) via `tauri build --target universal-apple-darwin`,
+# which needs a lipo'd universal sidecar and reads its output from target/universal-apple-darwin/.
+if [ "$UNIVERSAL" -eq 1 ]; then
+  ARCH="universal"
+  SIDECARS=(src-tauri/binaries/kriya-gateway-aarch64-apple-darwin src-tauri/binaries/kriya-gateway-x86_64-apple-darwin src-tauri/binaries/kriya-gateway-universal-apple-darwin)
+  TAURI_TARGET_ARGS=(--target universal-apple-darwin)
+  APP_BASE="src-tauri/target/universal-apple-darwin/release"
+else
+  TRIPLE="$(rustc -vV | sed -n 's/host: //p')"
+  ARCH="${TRIPLE%%-*}"                                # aarch64 | x86_64
+  SIDECARS=(src-tauri/binaries/kriya-gateway-$TRIPLE)
+  TAURI_TARGET_ARGS=()
+  APP_BASE="src-tauri/target/release"
+fi
 
 if [ "$SELF_SIGNED" -eq 1 ]; then
   echo "==> Kriya Console $VERSION ($ARCH) — SELF-SIGNED (interim, not notarized)"
@@ -83,9 +96,9 @@ make_dmg() {  # $1 = .app path, $2 = output .dmg path
   rm -rf "$stage"
 }
 
-# 1) Build + stage the gateway sidecar (externalBin Tauri embeds).
-scripts/bundle-gateway.sh release
-[ -f "$SIDECAR" ] || { echo "ERROR: staged sidecar not found: $SIDECAR" >&2; exit 1; }
+# 1) Build + stage the gateway sidecar (externalBin Tauri embeds). Universal → lipo'd fat sidecar.
+KRIYA_UNIVERSAL=$UNIVERSAL scripts/bundle-gateway.sh release
+for s in "${SIDECARS[@]}"; do [ -f "$s" ] || { echo "ERROR: staged sidecar not found: $s" >&2; exit 1; }; done
 
 # 2) Resolve the signing identity + verify creds.
 if [ "$SELF_SIGNED" -eq 1 ]; then
@@ -109,15 +122,17 @@ fi
 
 # 3) Sign the staged sidecar with hardened runtime BEFORE tauri build. This is the documented mitigation
 #    for the v2 sidecar-notarization invalidation (tauri-apps/tauri#11992); harmless for self-signed.
-echo "==> Signing sidecar with '$SIGN_ID'"
-codesign --force --timestamp --options runtime \
-  --entitlements src-tauri/entitlements.plist --sign "$SIGN_ID" "$SIDECAR"
+echo "==> Signing sidecar(s) with '$SIGN_ID'"
+for s in "${SIDECARS[@]}"; do
+  codesign --force --timestamp --options runtime \
+    --entitlements src-tauri/entitlements.plist --sign "$SIGN_ID" "$s"
+done
 
 # 4) Build the .app ONLY. We package the dmg ourselves with hdiutil (step 5) — Tauri's bundle_dmg.sh
 #    drives Finder/AppleScript to lay out the dmg window and is flaky / headless-hostile.
 export APPLE_SIGNING_IDENTITY="$SIGN_ID"
-npm run tauri build -- --bundles app
-APP="src-tauri/target/release/bundle/macos/Kriya Console.app"
+npm run tauri build -- "${TAURI_TARGET_ARGS[@]}" --bundles app
+APP="$APP_BASE/bundle/macos/Kriya Console.app"
 [ -d "$APP" ] || { echo "ERROR: .app not produced at $APP" >&2; exit 1; }
 
 # 5) Package a clean drag-to-Applications dmg from the signed .app (no Finder automation).
