@@ -1,0 +1,5 @@
+# Build artifacts from build-static.sh — regenerable, large; never committed (like the macOS dmg).
+# The shipping skins (SHIP-BOX / SHIP-IMG / SHIP-AIR) regenerate dist/ before packaging.
+target/
+dist/
+.cargo-registry/
