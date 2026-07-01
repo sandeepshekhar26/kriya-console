@@ -127,9 +127,13 @@ echo "==> Packaging dmg via hdiutil"
 make_dmg "$APP" "$FINAL"
 echo "==> Built: $FINAL"
 
-# 6) Notarize + staple (proper mode only). notarytool notarizes the dmg's contents; staple pins the
-#    ticket so Gatekeeper passes offline. Self-signed builds skip this (no ticket to staple).
+# 6) Sign + notarize + staple (proper mode only). The dmg is code-signed with the Developer ID FIRST
+#    (Apple's recommended flow — an unsigned-but-notarized dmg staples fine but `spctl --assess` reports
+#    "no usable signature"), THEN notarytool notarizes its contents, THEN staple pins the ticket so
+#    Gatekeeper passes offline. Self-signed builds skip this (no ticket to staple).
 if [ "$SELF_SIGNED" -eq 0 ]; then
+  echo "==> Signing dmg with '$SIGN_ID'"
+  codesign --force --timestamp --sign "$SIGN_ID" "$FINAL"
   echo "==> Notarizing $FINAL (this can take a few minutes)…"
   if [ -n "${APPLE_API_KEY:-}" ]; then
     xcrun notarytool submit "$FINAL" --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait
