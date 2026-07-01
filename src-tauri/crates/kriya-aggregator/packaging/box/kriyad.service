@@ -1,0 +1,48 @@
+[Unit]
+Description=kriyad — kriya on-prem evidence aggregator (single-tenant, no egress)
+Documentation=https://github.com/sandeepshekhar26/kriya
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/kriyad
+EnvironmentFile=/etc/kriyad/kriyad.env
+Restart=on-failure
+RestartSec=2
+
+# --- Hardening -------------------------------------------------------------
+# kriyad handles signed evidence and makes NO outbound calls, so it can run with
+# almost nothing: a dynamic (transient) user, a read-only filesystem, no caps,
+# and a syscall allowlist. Binds :8443 (>1024), so no privileged-port capability
+# is needed and CapabilityBoundingSet can be empty.
+DynamicUser=yes
+StateDirectory=kriyad
+# ^ SQLite store lands in /var/lib/kriyad, owned by the transient user.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
