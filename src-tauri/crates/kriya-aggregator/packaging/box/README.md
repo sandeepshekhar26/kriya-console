@@ -26,11 +26,14 @@ sudo ./install.sh
 ```sh
 systemctl is-active kriyad                 # active
 systemd-analyze security kriyad            # should NOT read UNSAFE
-curl -k https://localhost:8443/healthz     # ok
+
+# mTLS gates every route (incl. /healthz) — present a client cert chaining to the pinned CA:
+CERTS="--cacert /etc/kriyad/ca/ca.pem --cert /etc/kriyad/ca/client-1.pem --key /etc/kriyad/ca/client-1.key"
+curl $CERTS https://localhost:8443/healthz  # ok
 
 # End-to-end (air-gap side-load → serve → re-prove), mirrors scripts/e2e-pilot.sh:
-kriyad ingest-file /path/to/outbox.ndjson  # offline re-verify + ingest
-curl -k https://localhost:8443/v1/coverage # the device shows `current`
+kriyad ingest-file /path/to/outbox.ndjson   # offline re-verify + ingest
+curl $CERTS https://localhost:8443/v1/coverage  # the device shows `current`
 ```
 
 ## Config
