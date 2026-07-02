@@ -1,0 +1,183 @@
+# kriyad-release — SHIP-REL: one tag → every kriyaD shipping skin, trust spine gated, host-verified.
+#
+# Triggers:
+#   • push tag `kriyad-v*`         → full build + verify + create a release on THIS PRIVATE repo
+#     (kriyaD is the paid product — its artifacts are never published publicly; design partners
+#      get them from here or hand-delivered. The public repo only ever gets the free Console/CLI.)
+#   • workflow_dispatch            → same pipeline; set `publish` to also create/refresh the release
+#   • push to ci/kriyad-release-test → CI-iteration branch (no publish)  [temporary, remove when stable]
+#
+# Secrets (optional until the first signed release):
+#   KRIYA_RELEASE_KEY_B64       base64 of the cosign PRIVATE key (user-held; never committed)
+#   KRIYA_RELEASE_KEY_PASSWORD  its passphrase
+# Without them the air-gap bundle step is SKIPPED with a warning (box/image still build).
+#
+# The `box-systemd-verify` job is the SHIP-BOX host acceptance the dev Mac could never run:
+# GitHub's ubuntu runners boot systemd as PID 1, so `systemctl` / `systemd-analyze security`
+# run against the real hardened unit on a real Linux host.
+name: kriyad release
+
+on:
+  push:
+    tags: ["kriyad-v*"]
+    branches: ["ci/kriyad-release-test"] # temporary CI-iteration trigger
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Create/refresh the GitHub release from this run"
+        type: boolean
+        default: false
+      helm:
+        description: "Also build the K8S/Helm skin (SHIP-K8S — demand-pulled, off until a partner asks)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  AGG: src-tauri/crates/kriya-aggregator
+
+jobs:
+  trust-spine:
+    name: trust spine (cargo + TS↔Rust parity)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: cargo test — kriya-verify + kriya-aggregator + kriya-audit-cli
+        run: cargo test --manifest-path src-tauri/Cargo.toml -p kriya-verify -p kriya-aggregator -p kriya-audit-cli
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: npm test — the TS↔Rust canonical-parity spine
+        run: |
+          npm ci
+          npm test
+
+  build-skins:
+    name: build skins (static → box → image → air-gap)
+    runs-on: ubuntu-latest
+    needs: trust-spine
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache the musl crate registry
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.AGG }}/build/.cargo-registry
+          key: kriyad-musl-registry-${{ hashFiles('src-tauri/Cargo.lock') }}
+      - name: Static musl build (x86_64 + aarch64)
+        run: make -C "$AGG/packaging" static
+      - name: BOX tarballs (both arches)
+        run: make -C "$AGG/packaging" box
+      - name: Distroless OCI image (linux/amd64) + saved tar
+        run: make -C "$AGG/packaging" image
+      - name: Helm / K8S skin (demand-pulled)
+        if: ${{ inputs.helm }}
+        run: echo "::warning::SHIP-K8S is demand-pulled and not built yet — gated behind a design partner (SHIP-ROADMAP Phase E)."
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+      - name: Air-gap bundle (cosign key-signed, offline verify)
+        env:
+          COSIGN_KEY_B64: ${{ secrets.KRIYA_RELEASE_KEY_B64 }}
+          COSIGN_PASSWORD: ${{ secrets.KRIYA_RELEASE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$COSIGN_KEY_B64" ]; then
+            echo "::warning::KRIYA_RELEASE_KEY_B64 secret not set — skipping the signed air-gap bundle (box + image still built)."
+            exit 0
+          fi
+          umask 077
+          echo "$COSIGN_KEY_B64" | base64 -d > "$RUNNER_TEMP/kriya-release.key"
+          COSIGN_KEY="$RUNNER_TEMP/kriya-release.key" make -C "$AGG/packaging" airgap
+          rm -f "$RUNNER_TEMP/kriya-release.key"
+          # offline re-verify against the pinned public key — a tampered byte must fail
+          BUNDLE=$(ls "$AGG"/build/dist/kriyad-*-airgap-*.tar.zst)
+          bash "$AGG/packaging/airgap/verify-bundle.sh" "$BUNDLE" "$BUNDLE.cosign.bundle" "$AGG/build/dist/kriya-release.pub"
+      - name: Top-level RELEASE-SHA256SUMS
+        run: make -C "$AGG/packaging" sums
+      - name: Prune non-assets from dist (keep tarballs, image tar, bundle, sums)
+        run: |
+          cd "$AGG/build/dist"
+          rm -rf x86_64-unknown-linux-musl aarch64-unknown-linux-musl SHA256SUMS
+          ls -la
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kriyad-dist
+          path: ${{ env.AGG }}/build/dist/
+          retention-days: 7
+
+  box-systemd-verify:
+    name: BOX on real systemd (the SHIP-BOX host acceptance)
+    runs-on: ubuntu-latest
+    needs: build-skins
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: kriyad-dist
+          path: dist
+      - name: Install the BOX skin exactly as a customer would (§BOX)
+        run: |
+          tar -xzf dist/kriyad-*-box-x86_64.tar.gz
+          sudo ./kriyad-*-box-x86_64/install.sh
+          sudo install -m 0640 "$AGG/fixtures/dev-control-plane-license.json" /etc/kriyad/kriyad-license.json
+          sudo bash /usr/local/share/kriyad/kriyd-ca.sh /etc/kriyad/ca 1
+      - name: systemctl start + is-active
+        run: |
+          sudo systemctl enable --now kriyad
+          for i in $(seq 1 30); do systemctl is-active --quiet kriyad && break; sleep 1; done
+          systemctl is-active kriyad
+      - name: systemd-analyze security — must not be UNSAFE
+        run: |
+          systemd-analyze security kriyad | tee /tmp/kriyad-security.txt
+          grep -E 'Overall exposure level' /tmp/kriyad-security.txt
+          ! grep -q 'UNSAFE' /tmp/kriyad-security.txt
+      - name: mTLS end-to-end over the running service (healthz → envelopes → heartbeat → coverage → read-back)
+        run: |
+          sudo cp /etc/kriyad/ca/ca.pem /etc/kriyad/ca/client-1.pem /etc/kriyad/ca/client-1.key .
+          sudo chown "$(id -u)" ca.pem client-1.pem client-1.key
+          CURL="curl -fsS --cacert ca.pem --cert client-1.pem --key client-1.key"
+          $CURL https://127.0.0.1:8443/healthz
+          $CURL -X POST --data-binary @"$AGG/test-fixtures/pilot-outbox.ndjson" https://127.0.0.1:8443/v1/envelopes | tee /tmp/ingest.json
+          grep -q '"accepted":2' /tmp/ingest.json
+          $CURL -X POST --data-binary @"$AGG/test-fixtures/pilot-heartbeat.json" https://127.0.0.1:8443/v1/heartbeat
+          DEVICE=$(tr -d '[:space:]' < "$AGG/test-fixtures/pilot-device-pub.txt")
+          $CURL "https://127.0.0.1:8443/v1/coverage" | tee /tmp/coverage.json
+          grep -q "$DEVICE" /tmp/coverage.json
+          $CURL "https://127.0.0.1:8443/v1/verify?device_pub=$DEVICE" > /tmp/readback.json
+          ./kriyad-*-box-x86_64/kriya-audit --readback /tmp/readback.json
+      - name: ingest-file smoke (air-gap side-load path, own store)
+        run: |
+          KRIYAD_DB="$RUNNER_TEMP/smoke.sqlite" \
+          KRIYAD_LICENSE="$AGG/fixtures/dev-control-plane-license.json" \
+          ./kriyad-*-box-x86_64/kriyad ingest-file "$AGG/test-fixtures/pilot-outbox.ndjson"
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          systemctl status kriyad --no-pager || true
+          sudo journalctl -u kriyad --no-pager | tail -80 || true
+          sudo ls -laR /etc/kriyad || true
+
+  release:
+    name: create the private release
+    runs-on: ubuntu-latest
+    needs: box-systemd-verify
+    if: startsWith(github.ref, 'refs/tags/kriyad-v') || inputs.publish
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: kriyad-dist
+          path: dist
+      - name: gh release create (this PRIVATE repo — kriyaD is never a public download)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then TAG="${GITHUB_REF_NAME}"; else TAG="kriyad-v$(ls dist/kriyad-*-box-x86_64.tar.gz | sed 's/.*kriyad-\(.*\)-box.*/\1/')-manual"; fi
+          gh release create "$TAG" dist/* -R "$GITHUB_REPOSITORY" \
+            --title "kriyaD $TAG (design-partner build)" \
+            --notes "kriyaD shipping skins — BOX (systemd tarball, x86_64+aarch64), distroless OCI image (amd64), cosign key-signed air-gap bundle (when the release key secret is configured). Trust spine + real-systemd BOX acceptance ran green in CI. Install guide: src-tauri/crates/kriya-aggregator/INSTALL.md. Private per the honest-listing rule — kriyaD has no public download." \
+            || gh release upload "$TAG" dist/* --clobber -R "$GITHUB_REPOSITORY"
