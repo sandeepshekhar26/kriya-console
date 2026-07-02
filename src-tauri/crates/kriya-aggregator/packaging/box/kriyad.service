@@ -8,6 +8,16 @@ Wants=network-online.target
 Type=simple
 ExecStart=/usr/local/bin/kriyad
 EnvironmentFile=/etc/kriyad/kriyad.env
+# The license + mTLS material live in root-owned /etc/kriyad, which the DynamicUser sandbox
+# (correctly) cannot read — PROVEN on a real host: the service died with EACCES on the license
+# (CI kriyad-release run, 2026-07-02). LoadCredential= is the systemd-native fix: PID 1 reads
+# them as root and exposes read-only copies to the sandboxed service under
+# $CREDENTIALS_DIRECTORY (%d). Needs systemd ≥ 250 (directory credentials) — Ubuntu 22.04+,
+# Debian 12+, RHEL 9+. On older hosts fall back to a static `kriyad` system user owning the files.
+LoadCredential=license:/etc/kriyad/kriyad-license.json
+LoadCredential=ca:/etc/kriyad/ca
+Environment=KRIYAD_LICENSE=%d/license
+Environment=KRIYAD_CA_DIR=%d/ca
 Restart=on-failure
 RestartSec=2
 

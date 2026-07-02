@@ -30,7 +30,7 @@ SQLite, and exposes:
 It refuses to start ingest without a valid **`control-plane`** license (verified on-device against the
 pinned issuer key — no phone-home).
 
-**The entire config surface is four environment variables** (`kriyad.env` — no other file, no flags):
+**The entire config surface is four environment variables** (no other file, no flags):
 
 | Variable | Default | What |
 |---|---|---|
@@ -38,6 +38,15 @@ pinned issuer key — no phone-home).
 | `KRIYAD_DB` | `/var/lib/kriyad/kriyad.sqlite` | the append-only SQLite store |
 | `KRIYAD_LICENSE` | `/etc/kriyad/kriyad-license.json` | the offline `control-plane` license (start gate) |
 | `KRIYAD_CA_DIR` | `/etc/kriyad/ca` | mTLS material — `{server.pem, server.key, ca.pem}` |
+
+> **Under the BOX systemd unit**, `KRIYAD_BIND` + `KRIYAD_DB` come from `/etc/kriyad/kriyad.env`,
+> while `KRIYAD_LICENSE` + `KRIYAD_CA_DIR` are wired through **systemd credentials**
+> (`LoadCredential=` in `kriyad.service`): the hardened service runs as a sandboxed `DynamicUser`
+> that cannot read root-owned `/etc/kriyad`, so PID 1 reads the license + CA as root and passes
+> read-only copies to the service. You still drop the files at exactly the default paths above —
+> the unit does the wiring. (Proven necessary on a real host: without it the service dies with
+> `Permission denied` on the license — CI `kriyad release` run, 2026-07-02. Needs systemd ≥ 250;
+> on older hosts use a static `kriyad` system user that owns the files instead.)
 
 **mTLS is on when `KRIYAD_CA_DIR` holds those three files** (BOX + K8S + online modes). It requires *every*
 client — including `/healthz` — to present a cert chaining to the pinned CA (`ca.pem`). If the directory

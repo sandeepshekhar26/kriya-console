@@ -126,11 +126,13 @@ jobs:
           sudo ./kriyad-*-box-x86_64/install.sh
           sudo install -m 0640 "$AGG/fixtures/dev-control-plane-license.json" /etc/kriyad/kriyad-license.json
           sudo bash /usr/local/share/kriyad/kriyd-ca.sh /etc/kriyad/ca 1
-      - name: systemctl start + is-active
+      - name: systemctl start + stays-active (a crash-looping unit reads "active" transiently)
         run: |
           sudo systemctl enable --now kriyad
           for i in $(seq 1 30); do systemctl is-active --quiet kriyad && break; sleep 1; done
+          sleep 3
           systemctl is-active kriyad
+          test "$(systemctl show -p NRestarts --value kriyad)" = "0"
       - name: systemd-analyze security — must not be UNSAFE
         run: |
           systemd-analyze security kriyad | tee /tmp/kriyad-security.txt
