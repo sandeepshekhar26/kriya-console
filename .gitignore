@@ -35,3 +35,4 @@ deck/*.pptx
 deck/*.pdf
 deck/build/node_modules/
 deck/slide-*.jpg
+dist-audit/
