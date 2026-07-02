@@ -10,14 +10,21 @@ ExecStart=/usr/local/bin/kriyad
 EnvironmentFile=/etc/kriyad/kriyad.env
 # The license + mTLS material live in root-owned /etc/kriyad, which the DynamicUser sandbox
 # (correctly) cannot read — PROVEN on a real host: the service died with EACCES on the license
-# (CI kriyad-release run, 2026-07-02). LoadCredential= is the systemd-native fix: PID 1 reads
+# (CI kriyad-release run 1, 2026-07-02). LoadCredential= is the systemd-native fix: PID 1 reads
 # them as root and exposes read-only copies to the sandboxed service under
-# $CREDENTIALS_DIRECTORY (%d). Needs systemd ≥ 250 (directory credentials) — Ubuntu 22.04+,
-# Debian 12+, RHEL 9+. On older hosts fall back to a static `kriyad` system user owning the files.
+# $CREDENTIALS_DIRECTORY (%d). The three cert files are loaded INDIVIDUALLY (run 2 proved a
+# directory credential flattens to `ca_<file>`, not `ca/<file>`), under exactly the filenames
+# kriyad expects, so KRIYAD_CA_DIR is the credentials root itself. Consequence: under systemd
+# the CA files are REQUIRED at start (bootstrap with kriyd-ca.sh before `systemctl start`) —
+# a production box must never silently fall back to plain HTTP anyway; the plain-HTTP dev mode
+# remains available in manual runs. Needs systemd ≥ 247 — Ubuntu 22.04+, Debian 12+, RHEL 9+.
+# On older hosts fall back to a static `kriyad` system user owning the files.
 LoadCredential=license:/etc/kriyad/kriyad-license.json
-LoadCredential=ca:/etc/kriyad/ca
+LoadCredential=server.pem:/etc/kriyad/ca/server.pem
+LoadCredential=server.key:/etc/kriyad/ca/server.key
+LoadCredential=ca.pem:/etc/kriyad/ca/ca.pem
 Environment=KRIYAD_LICENSE=%d/license
-Environment=KRIYAD_CA_DIR=%d/ca
+Environment=KRIYAD_CA_DIR=%d
 Restart=on-failure
 RestartSec=2
 
