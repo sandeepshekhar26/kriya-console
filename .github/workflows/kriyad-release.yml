@@ -5,7 +5,11 @@
 #     (kriyaD is the paid product — its artifacts are never published publicly; design partners
 #      get them from here or hand-delivered. The public repo only ever gets the free Console/CLI.)
 #   • workflow_dispatch            → same pipeline; set `publish` to also create/refresh the release
-#   • push to ci/kriyad-release-test → CI-iteration branch (no publish)  [temporary, remove when stable]
+#
+# Went green on run 4 (2026-07-02) after the real-systemd BOX job caught three genuine ship
+# blockers the container smoke never could: DynamicUser EACCES on root-owned /etc/kriyad
+# (→ LoadCredential=), directory credentials flattening to ca_<file> (→ individual credentials),
+# and kriyd-ca.sh minting x509 v1 client certs that webpki rejects (→ v3 extensions).
 #
 # Secrets (optional until the first signed release):
 #   KRIYA_RELEASE_KEY_B64       base64 of the cosign PRIVATE key (user-held; never committed)
@@ -20,7 +24,6 @@ name: kriyad release
 on:
   push:
     tags: ["kriyad-v*"]
-    branches: ["ci/kriyad-release-test"] # temporary CI-iteration trigger
   workflow_dispatch:
     inputs:
       publish:
