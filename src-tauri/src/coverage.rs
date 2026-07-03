@@ -758,6 +758,31 @@ mod tests {
         );
     }
 
+    /// W1-8 fixture generator — run explicitly to (re)mint the committed TS-parity fixture:
+    /// `cargo test --lib coverage::tests::generate_ts_parity_fixture -- --ignored`
+    /// Writes two REAL console-signed snapshots (fresh key, chained) to
+    /// `test/fixtures/coverage-sample.jsonl`; `test/coverage-fixture.test.ts` then proves the TS
+    /// verifier re-derives byte-identical signed bytes for console-signed receipts. Ignored so the
+    /// normal suite never touches the repo tree.
+    #[test]
+    #[ignore]
+    fn generate_ts_parity_fixture() {
+        let dir = tmp("fixture");
+        let keys = dir.join("keys");
+        std::fs::create_dir_all(&keys).unwrap();
+        // A map with real variety: one green lane via a fresh receipt, the rest grey.
+        write_log(&dir, "claude-code.jsonl", &[line("claude-code__bash", NOW - HOUR)]);
+        let lanes = classify(&dir, None, NOW, WINDOW);
+        emit_snapshot(&dir, &keys, &lanes, 24, NOW).unwrap();
+        emit_snapshot(&dir, &keys, &lanes, 24, NOW + 3600_000).unwrap();
+
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../test/fixtures/coverage-sample.jsonl");
+        std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+        std::fs::copy(dir.join("coverage.jsonl"), &out).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn seed_recovers_last_emitted_state_from_the_chain_tail() {
         let dir = tmp("seed");
