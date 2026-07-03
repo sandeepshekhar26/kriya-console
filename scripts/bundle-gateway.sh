@@ -30,7 +30,10 @@ PROFILE="${1:-release}"
 DEST_DIR="$CONSOLE_DIR/src-tauri/binaries"
 mkdir -p "$DEST_DIR"
 
-BUILD_FLAGS=(--no-default-features --features mcp-client,reach-in,computer-use,router --bin kriya-gateway)
+# mcp-http adds the broker's remote (HTTP/SSE) upstream transport (W2-2) so the shipped Console can
+# govern hosted MCP servers, not just local stdio ones. Pulls in the same ureq client the runtime
+# already uses; no macOS FFI.
+BUILD_FLAGS=(--no-default-features --features mcp-client,mcp-http,reach-in,computer-use,router --bin kriya-gateway)
 if [ "$PROFILE" = "release" ]; then BUILD_FLAGS+=(--release); fi
 
 # Build the gateway for one target triple; echo the resulting binary path on stdout (progress → stderr).
