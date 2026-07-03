@@ -3,6 +3,7 @@ import { Icon, type IconName } from "./Icon";
 export type View =
   | "getstarted"
   | "monitor"
+  | "coverage"
   | "audit"
   | "approvals"
   | "policy"
@@ -26,6 +27,7 @@ const GROUPS: NavGroup[] = [
     label: "Monitor",
     items: [
       { id: "monitor", label: "Monitor", icon: "monitor" },
+      { id: "coverage", label: "Coverage", icon: "coverage" },
       { id: "audit", label: "Audit log", icon: "list" },
       { id: "approvals", label: "Approvals", icon: "approvals" },
     ],

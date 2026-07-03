@@ -37,6 +37,24 @@ export const auditLocation = () => invoke<AuditLocation>("audit_location");
 export const readAudit = () => invoke<AuditRow[]>("read_audit");
 export const readAuditFile = (path: string) => invoke<AuditRow[]>("read_audit_file", { path });
 
+// ── Coverage Map (free, W1) ──────────────────────────────────────────────────
+export type LaneState = "green" | "amber" | "grey";
+export interface LaneInfo {
+  state: LaneState;
+  /** The seam providing this lane's evidence (e.g. "hook.claude-code", "gateway"). */
+  source?: string | null;
+  lastReceiptMs?: number | null;
+  files: number;
+}
+export interface CoverageStatus {
+  windowH: number;
+  lanes: Record<string, LaneInfo>;
+  lastSnapshotMs?: number | null;
+  snapshotChainOk: boolean;
+  snapshots: number;
+}
+export const coverageStatus = () => invoke<CoverageStatus>("coverage_status");
+
 // ── Onboarding (free) ────────────────────────────────────────────────────────
 export interface OnboardingStatus {
   gatewayPresent: boolean;
