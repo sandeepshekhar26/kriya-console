@@ -203,7 +203,8 @@ pub fn classify(
 
     // One pass over the dir, bucketing files by lane family.
     let mut claude_code: Option<Scan> = None;
-    let mut gateway: Vec<Scan> = Vec::new(); // per-server proxy logs (+ broker.jsonl when W2 lands)
+    let mut gateway: Vec<Scan> = Vec::new(); // per-server proxy logs
+    let mut broker: Option<Scan> = None; // the W2 aggregator: one endpoint, N upstreams
     let mut desktop: Vec<Scan> = Vec::new();
     let mut watch: Vec<Scan> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(audit_dir) {
@@ -219,6 +220,7 @@ pub fn classify(
             match name.as_str() {
                 "coverage.jsonl" => {} // the map itself is not a lane
                 "claude-code.jsonl" => claude_code = Some(scan_file(&path)),
+                "broker.jsonl" => broker = Some(scan_file(&path)),
                 "computer_use.jsonl" | "router.jsonl" => desktop.push(scan_file(&path)),
                 n if n.starts_with("reach-in-") => desktop.push(scan_file(&path)),
                 n if n.starts_with("watch-") => watch.push(scan_file(&path)),
@@ -245,21 +247,28 @@ pub fn classify(
         );
     }
 
-    // remote-mcp — today: MCP servers observed through the Claude Code hook
-    // (`claude-code__mcp__*`). Prior mcp__ receipts count as "configured" the same way a present
-    // chain file does for the claude-code lane (the seam demonstrably records; hooks may live in
-    // managed/project settings this detector can't see). The W2 broker upgrades this lane to
-    // per-upstream fidelity and covers hook-less clients (Claude Desktop).
+    // remote-mcp — MCP servers reached outside a per-server gateway: via the Claude Code hook
+    // (`claude-code__mcp__*`) OR the W2 broker (one endpoint, N upstreams, incl. hook-less clients
+    // like Claude Desktop). Either seam greens the lane; the broker is the higher-fidelity path.
     {
-        let last = claude_code.as_ref().and_then(|s| s.last_cc_mcp);
-        let configured = hook || last.is_some();
+        let hook_last = claude_code.as_ref().and_then(|s| s.last_cc_mcp);
+        let broker_last = broker.as_ref().and_then(|s| s.last_any);
+        let last = hook_last.max(broker_last);
+        let configured = hook || hook_last.is_some() || broker.is_some();
+        let source = if broker.is_some() {
+            Some("broker".into())
+        } else if hook || hook_last.is_some() {
+            Some("hook.claude-code".into())
+        } else {
+            None
+        };
         lanes.insert(
             "remote-mcp".into(),
             LaneInfo {
                 state: state_of(fresh(last), configured),
-                source: configured.then(|| "hook.claude-code".into()),
+                source,
                 last_receipt_ms: last,
-                files: usize::from(last.is_some()),
+                files: usize::from(hook_last.is_some()) + usize::from(broker.is_some()),
             },
         );
     }
@@ -642,6 +651,20 @@ mod tests {
         write_log(&dir, "claude-code.jsonl", &[line("claude-code__bash", NOW - 30 * HOUR)]);
         let lanes = classify(&dir, None, NOW, WINDOW);
         assert_eq!(lanes["claude-code-tools"].state, LaneState::Amber);
+    }
+
+    #[test]
+    fn broker_receipts_green_the_remote_mcp_lane() {
+        let dir = tmp("broker");
+        // The W2 broker writes one broker.jsonl for all upstreams; a fresh receipt greens remote-mcp
+        // even with no Claude Code hook in sight (Claude Desktop has no hook seam).
+        write_log(&dir, "broker.jsonl", &[line("github__list_issues", NOW - HOUR)]);
+        let lanes = classify(&dir, None, NOW, WINDOW);
+        assert_eq!(lanes["remote-mcp"].state, LaneState::Green);
+        assert_eq!(lanes["remote-mcp"].source.as_deref(), Some("broker"));
+        // The broker is not a Claude Code lane nor a per-server gateway (local-stdio) lane.
+        assert_eq!(lanes["claude-code-tools"].state, LaneState::Grey);
+        assert_eq!(lanes["local-stdio-mcp"].state, LaneState::Grey);
     }
 
     #[test]
