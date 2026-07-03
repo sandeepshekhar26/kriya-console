@@ -69,6 +69,29 @@ tamper-*proofing*:
 These boundaries are shared with the open runtime's threat model and are not unique to the paid
 tier; we publish them rather than paper over them.
 
+## Coverage — what is (and isn't) being recorded, as a signed metric
+
+Signatures prove a *retained* receipt is authentic; they cannot prove an event **no source
+observed** ever produced a receipt. The Console makes that boundary a first-class, verifiable
+surface instead of a footnote — the **Coverage Map**:
+
+- **Six lanes, three states.** Claude Code tools · remote/attached MCP · local stdio MCP ·
+  desktop apps · raw file & exec · raw egress — each classified **GREEN** (configured, with
+  receipts or a live watcher heartbeat inside the window), **AMBER** (configured but silent), or
+  **GREY** (uncovered: events there leave *no* receipt). The window is stated on the map itself.
+- **The map is itself evidence.** On every lane-state change (and at least daily) the Console
+  signs a `kriya.coverage.snapshot` receipt into its own hash chain
+  (`~/.kriya/audit/coverage.jsonl`), verifiable by the same offline verifiers as any receipt.
+  So "we were covered all quarter" is a *checkable chain of signed statements*, and a silenced
+  Console, a stopped watcher, or a deleted stretch of history is **visible by absence** — a gap in
+  the heartbeat chain, not a quiet nothing.
+- **What a GREEN lane does NOT claim.** GREEN means the configured source was alive and recording
+  in the window — not that every event in that lane was captured (a watcher can be stopped *before*
+  an action and restarted after; the heartbeat bounds the gap in time but cannot manufacture the
+  missing event), and never that payload content was read (recording is metadata: action, actor,
+  time, outcome — no TLS payloads). A GREY lane is the honest statement that nothing would have
+  been recorded there at all.
+
 ## Why on-device matters here
 
 For local and regulated apps, the audit cannot live in a cloud gateway — the data and the human are
