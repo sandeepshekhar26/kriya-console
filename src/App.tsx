@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Sidebar, type View } from "./components/Sidebar";
 import { CommandPalette, type Command } from "./components/CommandPalette";
 import { MonitorView } from "./views/MonitorView";
+import { CoverageView } from "./views/CoverageView";
 import { AuditView } from "./views/AuditView";
 import { PolicyView } from "./views/PolicyView";
 import { ApprovalsView } from "./views/ApprovalsView";
@@ -297,6 +298,7 @@ export function App() {
     const nav: [View, string, Command["icon"]][] = [
       ["getstarted", "Get started", "play"],
       ["monitor", "Monitor", "monitor"],
+      ["coverage", "Coverage", "coverage"],
       ["audit", "Audit log", "list"],
       ["approvals", "Approvals", "approvals"],
       ["policy", "Policy", "policy"],
@@ -361,6 +363,7 @@ export function App() {
             live={LIVE ? liveDir : undefined}
           />
         )}
+        {view === "coverage" && <CoverageView onNavigate={setView} />}
         {view === "audit" && (
           <AuditView
             rows={rows}

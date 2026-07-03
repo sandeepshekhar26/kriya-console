@@ -9,7 +9,8 @@ export type IconName =
   | "gauge" | "users" | "evidence" | "fleet" | "link" | "settings" | "key"
   | "check" | "clock" | "ring" | "search" | "chevron-right" | "chevron-up" | "chevron-down" | "arrow-right"
   | "x" | "sun" | "moon" | "lock" | "plus" | "copy" | "download" | "refresh"
-  | "external" | "pause" | "play" | "server" | "desktop" | "bolt" | "info" | "folder" | "alert";
+  | "external" | "pause" | "play" | "server" | "desktop" | "bolt" | "info" | "folder" | "alert"
+  | "coverage";
 
 const P: Record<IconName, JSX.Element> = {
   "shield-check": <><path d="M12 3 19 6v5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V6z" /><path d="m9 11.5 2 2 4-4.5" /></>,
@@ -50,6 +51,7 @@ const P: Record<IconName, JSX.Element> = {
   info: <><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" /></>,
   folder: <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />,
   alert: <><path d="M12 4 21 19H3z" /><path d="M12 10v4M12 17h.01" /></>,
+  coverage: <><rect x="4" y="4.5" width="7" height="6.5" rx="1.2" /><rect x="13" y="4.5" width="7" height="6.5" rx="1.2" /><rect x="4" y="13" width="7" height="6.5" rx="1.2" /><path d="M13.5 16.5 15.5 18.5 19.5 14" /></>,
 };
 
 export function Icon({
