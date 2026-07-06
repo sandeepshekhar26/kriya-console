@@ -7,6 +7,7 @@ import { Icon, type IconName } from "../components/Icon";
 import type { View } from "../components/Sidebar";
 
 const REPORTS: { key: string; js: string; title: string; scope: string; icon: IconName }[] = [
+  { key: "NIST-800-171", js: "NIST 800-171", title: "NIST 800-171 (CMMC L2)", scope: "Audit & accountability — AU family 3.3.1–3.3.9", icon: "shield-check" },
   { key: "EU-AI-Act", js: "EU AI Act", title: "EU AI Act", scope: "Record-keeping, human oversight & traceability — Art. 12–14", icon: "evidence" },
   { key: "SOC2", js: "SOC 2", title: "SOC 2", scope: "Security monitoring & tamper detection — CC7.2", icon: "shield-check" },
   { key: "ISO42001", js: "ISO 42001", title: "ISO 42001", scope: "AI operation controls — A.9", icon: "policy" },
@@ -71,7 +72,7 @@ export function ReportsView({
         <header className="page-head">
           <div>
             <h1>Evidence</h1>
-            <p className="page-sub">Turn the verified trail into auditor-ready evidence — SOC 2, ISO 42001, and EU AI Act controls, mapped to what your agents actually did.</p>
+            <p className="page-sub">Turn the verified trail into auditor-ready evidence — NIST 800-171 (CMMC), SOC 2, ISO 42001, and EU AI Act controls, mapped to what your agents actually did.</p>
           </div>
         </header>
         <div className="empty">

@@ -131,3 +131,69 @@ describe("renderers", () => {
     expect(md).toContain("Art. 12");
   });
 });
+
+describe("buildEvidence — NIST 800-171 AU family (R1-1)", () => {
+  // A pre-verified in-memory row (signature checked elsewhere) so status rules can be exercised
+  // without real crypto — same pattern as the R24 gateway-provenance block above.
+  function row(action_id: string, opts: { ok?: boolean; actor?: { agent: string; user: string } } = {}): AuditRow {
+    return {
+      source: "test-app",
+      lineNo: 1,
+      raw: "",
+      receipt: {
+        step_id: "s",
+        action_id,
+        params: {},
+        success: true,
+        ts_ms: AT,
+        public_key: "pk",
+        signature: "sig",
+        actor: opts.actor,
+      } as SignedReceipt,
+      outcome: opts.ok === false ? { ok: false, reason: "bad signature" } : { ok: true },
+    };
+  }
+
+  it("maps all 9 AU-family practices", async () => {
+    const b = await bundle();
+    const nist = b.controls.filter((c) => c.framework === "NIST 800-171");
+    expect(nist.length).toBe(9);
+  });
+
+  it("3.3.8 is satisfied and 3.3.9 is a deliberate gap on a clean, fully-verified trail", () => {
+    const rows: AuditRow[] = [
+      row("create_note", { actor: { agent: "claude-desktop", user: "alice" } }),
+      row("categorize_transaction", { actor: { agent: "claude-desktop", user: "alice" } }),
+    ];
+    const b = buildEvidence(rows, defaultPolicy(), { generatedAt: AT, organization: "Acme" });
+    const c338 = b.controls.find((c) => c.control.startsWith("3.3.8"));
+    const c339 = b.controls.find((c) => c.control.startsWith("3.3.9"));
+    expect(c338?.status).toBe("satisfied");
+    expect(c339?.status).toBe("gap");
+  });
+
+  it("3.3.9 stays a gap even on that same clean trail's evidence text (never fabricated satisfied)", () => {
+    const rows: AuditRow[] = [row("create_note", { actor: { agent: "claude-desktop", user: "alice" } })];
+    const b = buildEvidence(rows, defaultPolicy(), { generatedAt: AT, organization: "Acme" });
+    const c339 = b.controls.find((c) => c.control.startsWith("3.3.9"));
+    expect(c339?.status).toBe("gap");
+    expect(c339?.evidence).toMatch(/self-asserted|privileged/i);
+  });
+
+  it("3.3.8 drops to partial and names detection when a row fails verification", () => {
+    const rows: AuditRow[] = [
+      row("create_note", { actor: { agent: "claude-desktop", user: "alice" } }),
+      row("delete_note", { ok: false, actor: { agent: "claude-desktop", user: "alice" } }),
+    ];
+    const b = buildEvidence(rows, defaultPolicy(), { generatedAt: AT, organization: "Acme" });
+    const c338 = b.controls.find((c) => c.control.startsWith("3.3.8"));
+    expect(c338?.status).toBe("partial");
+    expect(c338?.evidence).toMatch(/detect/i);
+  });
+
+  it("renderMarkdown includes the NIST framework and the non-certification footer", async () => {
+    const md = renderMarkdown(await bundle());
+    expect(md).toContain("NIST 800-171");
+    expect(md).toContain("evidence, not a certification");
+  });
+});
