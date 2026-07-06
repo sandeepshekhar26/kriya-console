@@ -274,6 +274,20 @@ pub fn export_compliance(framework: String) -> Result<ComplianceBundle, String> 
     let attestations = rows.iter().filter(|r| r.is_attestation).count();
     let destructive = rows.iter().filter(|r| is_destructive(&r.action_id)).count();
     let integrity_ok = failed == 0 && chains.values().all(|b| b.is_none());
+    // Attribution coverage (mirrors the TS bundle's `attribution.coveragePct`): a verified receipt
+    // whose signed bytes carried BOTH actor fields counts as attributed.
+    let attributed = rows
+        .iter()
+        .filter(|r| r.verified && r.actor_agent.is_some() && r.actor_user.is_some())
+        .count();
+    // Distinct verified action types (excluding the attestation marker) — used by the NIST 3.3.3
+    // "review logged events" row; not policy-derived, just a count over what collect() already saw.
+    let distinct_actions = rows
+        .iter()
+        .filter(|r| r.verified && !r.is_attestation)
+        .map(|r| r.action_id.as_str())
+        .collect::<BTreeSet<_>>()
+        .len();
 
     let status = |cond: bool, partial: bool| -> &'static str {
         if cond {
@@ -287,7 +301,7 @@ pub fn export_compliance(framework: String) -> Result<ComplianceBundle, String> 
 
     // Evidence-derived controls. The framework label selects the framing; the underlying evidence is
     // the same signed trail.
-    let controls = vec![
+    let mut controls = vec![
         Control {
             id: "AUDIT-1".into(),
             name: "Tamper-evident activity log".into(),
@@ -327,12 +341,26 @@ pub fn export_compliance(framework: String) -> Result<ComplianceBundle, String> 
             ),
         },
     ];
+    let generic_count = controls.len();
+    controls.extend(framework_controls(
+        &framework,
+        rows.len(),
+        verified,
+        failed,
+        apps.len(),
+        distinct_actions,
+        attributed,
+        operators.len(),
+        destructive,
+        integrity_ok,
+    ));
 
     let generated_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
 
+    let (generic_controls, extra_controls) = controls.split_at(generic_count);
     let markdown = render_markdown(
         &framework,
         rows.len(),
@@ -344,7 +372,8 @@ pub fn export_compliance(framework: String) -> Result<ComplianceBundle, String> 
         attestations,
         destructive,
         integrity_ok,
-        &controls,
+        generic_controls,
+        extra_controls,
         &chains,
     );
 
@@ -384,6 +413,198 @@ pub fn export_compliance(framework: String) -> Result<ComplianceBundle, String> 
     })
 }
 
+/// Per-framework control rows, mirroring the TS mapping in `src/lib/compliance.ts` so the desktop
+/// export carries the same rows the web preview shows (R1-1 closed the drift where the shipped
+/// bundle had only the four generic controls above). Derives only from facts already computed in
+/// [`export_compliance`] — there is no `Policy` object on this side, so the two rows that would be
+/// policy-derived (SOC2 CC8.1, and NIST oversight-flavored rows) are honestly capped at `partial`
+/// with wording that says so, rather than fabricating a policy fact this function doesn't have.
+/// Unknown `framework` keys return an empty vec (today's behavior: generic controls only).
+#[allow(clippy::too_many_arguments)]
+fn framework_controls(
+    framework: &str,
+    total: usize,
+    verified: usize,
+    failed: usize,
+    distinct_apps: usize,
+    distinct_actions: usize,
+    attributed: usize,
+    operators: usize,
+    destructive: usize,
+    integrity_ok: bool,
+) -> Vec<Control> {
+    let has_rows = total > 0;
+    let coverage_pct = if verified == 0 { 0 } else { (attributed * 100) / verified };
+
+    let integrity_status = || -> &'static str {
+        if !has_rows {
+            "gap"
+        } else if integrity_ok {
+            "satisfied"
+        } else {
+            "partial"
+        }
+    };
+    let attribution_status = || -> &'static str {
+        if coverage_pct == 100 {
+            "satisfied"
+        } else if coverage_pct > 0 {
+            "partial"
+        } else {
+            "gap"
+        }
+    };
+    // Several rows describe an organizational/OS-level process (review cadence, alerting, clock
+    // sync, change-authorization policy) kriya can surface signal for but never itself complete —
+    // capped at partial, never satisfied, exactly like the TS `partialWhenReceipts` helper.
+    let partial_when_rows = || -> &'static str { if has_rows { "partial" } else { "gap" } };
+
+    match framework {
+        "NIST-800-171" => vec![
+            Control {
+                id: "AU.L2-3.3.1".into(),
+                name: "Audit record creation & retention (AU-2/3/12)".into(),
+                status: integrity_status().into(),
+                evidence: if has_rows {
+                    format!(
+                        "{total} signed receipt(s) retained across {distinct_apps} app(s) as a hash-chained local JSONL log{}; each record carries action id, parameters, timestamp, outcome, and signer.",
+                        if failed > 0 { format!("; {failed} failed verification") } else { String::new() }
+                    )
+                } else {
+                    "No audit records present in this trail.".into()
+                },
+            },
+            Control {
+                id: "AU.L2-3.3.2".into(),
+                name: "Individual accountability (AU-3)".into(),
+                status: attribution_status().into(),
+                evidence: format!(
+                    "{coverage_pct}% of verified receipts carry a signed agent + individual-operator identity ({operators} distinct operator(s))."
+                ),
+            },
+            Control {
+                id: "AU.L2-3.3.3".into(),
+                name: "Review & update logged events (AU-2)".into(),
+                status: partial_when_rows().into(),
+                evidence: if has_rows {
+                    format!(
+                        "{distinct_actions} distinct action type(s) captured; the periodic review and update of which events to log is an organizational process outside kriya."
+                    )
+                } else {
+                    "No logged events to review yet.".into()
+                },
+            },
+            Control {
+                id: "AU.L2-3.3.4".into(),
+                name: "Audit logging process failure alerting (AU-5)".into(),
+                status: partial_when_rows().into(),
+                evidence: if has_rows {
+                    "Per-receipt verification failures and hash-chain breaks surface live in the Console, and the Coverage Map flags silent lanes; no external paging/alerting integration exists.".into()
+                } else {
+                    "No audit logging process to alert on yet.".into()
+                },
+            },
+            Control {
+                id: "AU.L2-3.3.5".into(),
+                name: "Correlate audit review & analysis (AU-6(3))".into(),
+                status: partial_when_rows().into(),
+                evidence: if has_rows {
+                    format!(
+                        "Cross-app correlation on this machine (across {distinct_apps} app(s)) plus tamper flags support investigation; this is single-machine correlation, not cross-machine SIEM aggregation."
+                    )
+                } else {
+                    "No audit records to correlate yet.".into()
+                },
+            },
+            Control {
+                id: "AU.L2-3.3.6".into(),
+                name: "Audit record reduction & report generation (AU-7)".into(),
+                status: (if has_rows { "satisfied" } else { "gap" }).into(),
+                evidence: if has_rows {
+                    "This evidence bundle (Markdown + JSON) is itself the reduction/report artifact, generated on-demand from the signed trail and independently re-verifiable offline via kriya-audit.".into()
+                } else {
+                    "No audit records to reduce or report on yet.".into()
+                },
+            },
+            Control {
+                id: "AU.L2-3.3.7".into(),
+                name: "Clock synchronization for time stamps (AU-8)".into(),
+                status: partial_when_rows().into(),
+                evidence: if has_rows {
+                    "Every receipt carries a host timestamp; clock synchronization against an authoritative source is OS-provided (NTP), outside kriya's control — this control is capped at partial regardless of trail size.".into()
+                } else {
+                    "No timestamped receipts present.".into()
+                },
+            },
+            Control {
+                id: "AU.L2-3.3.8".into(),
+                name: "Protect audit information & tools (AU-9)".into(),
+                status: integrity_status().into(),
+                evidence: if !has_rows {
+                    "No audit information to protect yet.".into()
+                } else if integrity_ok {
+                    "Every receipt is Ed25519-signed and hash-chained; modification or deletion is detectable, not prevented, and independently re-verifiable offline.".into()
+                } else {
+                    format!(
+                        "{failed} receipt(s) failed verification or the hash chain broke — tampering detected; the detection control is functioning as intended, investigate the flagged record(s)."
+                    )
+                },
+            },
+            Control {
+                id: "AU.L2-3.3.9".into(),
+                name: "Limit audit-logging management to privileged users (AU-9(4))".into(),
+                status: "gap".into(),
+                evidence: "kriya's audit tooling runs under the operator's own OS account, and in-app roles are self-asserted (see docs/TRUST.md) — kriya enforces no privileged-user restriction on who can manage audit logging; this must be enforced by an OS-level or organizational access control.".into(),
+            },
+        ],
+        "SOC2" => vec![
+            Control {
+                id: "CC7.3".into(),
+                name: "Security event evaluation".into(),
+                status: partial_when_rows().into(),
+                evidence: if has_rows {
+                    "Per-receipt verification failures and hash-chain-break flags surface the security-event signal; the evaluation and response process itself is organizational, outside kriya.".into()
+                } else {
+                    "No security-event signal available yet.".into()
+                },
+            },
+            Control {
+                id: "CC8.1".into(),
+                name: "Change management".into(),
+                status: partial_when_rows().into(),
+                evidence: format!(
+                    "{destructive} destructive/financial action(s) recorded under policy governance; confirming the authorization posture (deny-by-default, approval gates) requires the policy view — not re-derived here."
+                ),
+            },
+        ],
+        "ISO42001" => vec![Control {
+            id: "A.6.2.6".into(),
+            name: "Operation and monitoring".into(),
+            status: integrity_status().into(),
+            evidence: if has_rows {
+                format!(
+                    "The signed receipt stream is the operation/monitoring log ({verified} verified of {total}), surfaced live in the Console Monitor."
+                )
+            } else {
+                "No operation log present yet.".into()
+            },
+        }],
+        "EU-AI-Act" => vec![Control {
+            id: "Art.26(6)".into(),
+            name: "Deployer log retention".into(),
+            status: partial_when_rows().into(),
+            evidence: if has_rows {
+                format!(
+                    "{total} receipt(s) retained locally as JSONL under the deployer's own control; kriya does not enforce or verify a specific retention schedule (e.g. the six-month minimum) — that is the deployer's responsibility."
+                )
+            } else {
+                "No logs retained yet.".into()
+            },
+        }],
+        _ => vec![],
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_markdown(
     framework: &str,
@@ -396,7 +617,8 @@ fn render_markdown(
     attestations: usize,
     destructive: usize,
     integrity_ok: bool,
-    controls: &[Control],
+    generic_controls: &[Control],
+    extra_controls: &[Control],
     chains: &BTreeMap<String, Option<usize>>,
 ) -> String {
     let mut s = String::new();
@@ -429,13 +651,23 @@ fn render_markdown(
             "BROKEN — see integrity section"
         }
     ));
-    s.push_str("## Controls\n\n");
+    s.push_str("## Core evidence\n\n");
     s.push_str("| Control | Status | Evidence |\n|---|---|---|\n");
-    for c in controls {
+    for c in generic_controls {
         s.push_str(&format!(
             "| {} — {} | {} | {} |\n",
             c.id, c.name, c.status, c.evidence
         ));
+    }
+    if !extra_controls.is_empty() {
+        s.push_str(&format!("\n## {framework} control mapping\n\n"));
+        s.push_str("| Control | Status | Evidence |\n|---|---|---|\n");
+        for c in extra_controls {
+            s.push_str(&format!(
+                "| {} — {} | {} | {} |\n",
+                c.id, c.name, c.status, c.evidence
+            ));
+        }
     }
     s.push_str("\n## Integrity (hash-chain per log)\n\n");
     for (file, brk) in chains {
@@ -449,4 +681,76 @@ fn render_markdown(
         s.push_str(&format!("- {app}\n"));
     }
     s
+}
+
+#[cfg(test)]
+mod framework_controls_tests {
+    use super::*;
+
+    // A small synthetic "fully verified, fully attributed" fact set: 10 receipts across 2 apps, 5
+    // distinct action types, all attributed, 3 destructive actions, an intact hash chain.
+    fn healthy() -> Vec<Control> {
+        framework_controls("NIST-800-171", 10, 10, 0, 2, 5, 10, 3, 3, true)
+    }
+
+    #[test]
+    fn nist_800_171_returns_all_nine_au_family_rows() {
+        assert_eq!(healthy().len(), 9);
+    }
+
+    #[test]
+    fn practice_3_3_9_is_always_a_gap() {
+        // Privileged-user restriction on audit-logging management is never provided by kriya
+        // itself — the status must read "gap" regardless of how clean the rest of the trail is.
+        for integrity_ok in [true, false] {
+            let rows = framework_controls("NIST-800-171", 10, 10, 0, 2, 5, 10, 3, 3, integrity_ok);
+            let c = rows.iter().find(|c| c.id == "AU.L2-3.3.9").unwrap();
+            assert_eq!(c.status, "gap");
+        }
+    }
+
+    #[test]
+    fn practice_3_3_8_is_satisfied_only_when_integrity_ok_and_rows_exist() {
+        let clean = healthy();
+        assert_eq!(
+            clean.iter().find(|c| c.id == "AU.L2-3.3.8").unwrap().status,
+            "satisfied"
+        );
+
+        let tampered = framework_controls("NIST-800-171", 10, 8, 2, 2, 5, 8, 3, 3, false);
+        let c = tampered.iter().find(|c| c.id == "AU.L2-3.3.8").unwrap();
+        assert_eq!(c.status, "partial");
+        assert!(
+            c.evidence.to_lowercase().contains("detect"),
+            "3.3.8 evidence should name detection when tampering is present: {}",
+            c.evidence
+        );
+
+        let empty = framework_controls("NIST-800-171", 0, 0, 0, 0, 0, 0, 0, 0, false);
+        assert_eq!(
+            empty.iter().find(|c| c.id == "AU.L2-3.3.8").unwrap().status,
+            "gap"
+        );
+    }
+
+    #[test]
+    fn empty_trail_is_every_row_gap() {
+        let rows = framework_controls("NIST-800-171", 0, 0, 0, 0, 0, 0, 0, 0, false);
+        assert_eq!(rows.len(), 9);
+        for c in &rows {
+            assert_eq!(c.status, "gap", "{} should be gap on an empty trail", c.id);
+        }
+    }
+
+    #[test]
+    fn soc2_iso42001_eu_ai_act_each_add_one_row() {
+        assert_eq!(framework_controls("SOC2", 10, 10, 0, 2, 5, 10, 3, 3, true).len(), 2);
+        assert_eq!(framework_controls("ISO42001", 10, 10, 0, 2, 5, 10, 3, 3, true).len(), 1);
+        assert_eq!(framework_controls("EU-AI-Act", 10, 10, 0, 2, 5, 10, 3, 3, true).len(), 1);
+    }
+
+    #[test]
+    fn unknown_framework_key_returns_no_extra_controls_without_panicking() {
+        assert!(framework_controls("FEDRAMP", 10, 10, 0, 2, 5, 10, 3, 3, true).is_empty());
+    }
 }

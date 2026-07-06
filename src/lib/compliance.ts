@@ -1,8 +1,11 @@
 // Compliance-evidence export (R7) — turn a verified signed-audit trail into the artifacts an
 // auditor asks for: an integrity attestation, an attribution + oversight summary, and a mapping
-// of the evidence to named controls (SOC 2 / ISO 42001 / EU AI Act). The EU AI Act's logging
-// (Art. 12) and human-oversight (Art. 14) duties begin to bite as enforcement opens in 2026, and
-// "show me your agent's audit trail" is exactly what a kriya deployment already has — signed.
+// of the evidence to named controls (NIST 800-171 rev 2 / CMMC L2 AU family, SOC 2, ISO 42001, EU
+// AI Act). The near-dated hook is CMMC Phase 2 (Nov 10, 2026), when DoD solicitations begin
+// requiring a CMMC L2 assessment; the EU AI Act's Annex III high-risk obligations (incl. Art. 12
+// logging, Art. 14 oversight) are deferred to Dec 2, 2027 pending the Digital Omnibus's final
+// adoption — later than this file's earlier "enforcement opens in 2026" framing assumed. "Show me
+// your agent's audit trail" is exactly what a kriya deployment already has — signed.
 //
 // Pure + framework-free; renders to JSON (machine) and Markdown (human). The view is a shell.
 
@@ -134,11 +137,12 @@ export function buildEvidence(
     actionInventory,
   };
 
-  return { ...bundle, controls: mapControls(bundle) };
+  const distinctApps = new Set(withReceipt.map((r) => r.source)).size;
+  return { ...bundle, controls: mapControls(bundle, { distinctApps }) };
 }
 
 /** Derive control-by-control status from the computed facts. */
-function mapControls(b: Omit<EvidenceBundle, "controls">): EvidenceControl[] {
+function mapControls(b: Omit<EvidenceBundle, "controls">, meta: { distinctApps: number }): EvidenceControl[] {
   const { integrity, attribution, onDevice, humanOversight } = b;
   const hasReceipts = integrity.totalReceipts > 0;
   const allVerified = hasReceipts && integrity.failed === 0;
@@ -153,6 +157,10 @@ function mapControls(b: Omit<EvidenceBundle, "controls">): EvidenceControl[] {
         ? "partial"
         : "gap";
   const onDeviceStatus: ControlStatus = onDevice.attestations > 0 ? "satisfied" : "gap";
+  // Several NIST/SOC2 controls describe an organizational or OS-level process (review cadence,
+  // alerting/paging, clock-sync policy) that kriya can surface signal for but never itself
+  // complete — so evidence alone can push these to "partial", never "satisfied".
+  const partialWhenReceipts: ControlStatus = hasReceipts ? "partial" : "gap";
 
   return [
     {
@@ -173,10 +181,19 @@ function mapControls(b: Omit<EvidenceBundle, "controls">): EvidenceControl[] {
     },
     {
       framework: "EU AI Act",
-      control: "Art. 13 — Traceability",
-      requirement: "Operation must be traceable to the actor responsible.",
+      control: "Art. 12(2) — Traceability",
+      requirement: "Logging shall enable the traceability of the AI system's functioning appropriate to its intended purpose.",
       evidence: `${attribution.coveragePct}% of verified receipts attributed to an agent + operator (agents: ${attribution.agents.join(", ") || "—"}).`,
       status: attributionStatus,
+    },
+    {
+      framework: "EU AI Act",
+      control: "Art. 26(6) — Deployer log retention",
+      requirement: "Deployers of high-risk AI systems keep the automatically generated logs for an appropriate period (at least six months).",
+      evidence: hasReceipts
+        ? `${integrity.totalReceipts} receipt(s) retained locally as JSONL under the deployer's own control; kriya does not enforce or verify a specific retention schedule (e.g. the six-month minimum) — that is the deployer's responsibility.`
+        : "No logs retained yet.",
+      status: partialWhenReceipts,
     },
     {
       framework: "SOC 2",
@@ -190,11 +207,38 @@ function mapControls(b: Omit<EvidenceBundle, "controls">): EvidenceControl[] {
       status: integrityStatus,
     },
     {
+      framework: "SOC 2",
+      control: "CC7.3 — Security event evaluation",
+      requirement: "The entity evaluates security events to determine whether they could or have resulted in a failure to meet objectives and, if so, takes action.",
+      evidence: hasReceipts
+        ? "Per-receipt verification failures and hash-chain-break flags surface the security-event signal; the evaluation and response process itself is organizational, outside kriya."
+        : "No security-event signal available yet.",
+      status: partialWhenReceipts,
+    },
+    {
+      framework: "SOC 2",
+      control: "CC8.1 — Change management",
+      requirement: "The entity authorizes, designs, tests, approves, and implements changes.",
+      evidence: humanOversight.approvalGatedActions.length
+        ? `${humanOversight.approvalGatedActions.length} agent-driven change action(s) require human approval before execution: ${humanOversight.approvalGatedActions.join(", ")}. Deny-by-default: ${humanOversight.denyByDefault ? "yes" : "no"}.`
+        : `Deny-by-default: ${humanOversight.denyByDefault ? "yes" : "no"}; no approval-gated change actions observed.`,
+      status: oversightStatus,
+    },
+    {
       framework: "ISO 42001",
       control: "A.9 — Operation controls",
       requirement: "Operate the AI system under defined controls (policy, limits, oversight).",
       evidence: `Deny-by-default policy with ${b.actionInventory.length} action(s) observed; budget cap ${humanOversight.budgetCapPerMinute ?? "none"}${humanOversight.budgetCapPerMinute ? "/min" : ""}.`,
       status: oversightStatus,
+    },
+    {
+      framework: "ISO 42001",
+      control: "A.6.2.6 — Operation and monitoring",
+      requirement: "Define and implement the elements necessary for the ongoing operation and monitoring of the AI system, including logging.",
+      evidence: hasReceipts
+        ? `The signed receipt stream is the operation/monitoring log (${integrity.verified} verified of ${integrity.totalReceipts}), surfaced live in the Console Monitor.`
+        : "No operation log present yet.",
+      status: integrityStatus,
     },
     {
       framework: "Data residency",
@@ -207,6 +251,89 @@ function mapControls(b: Omit<EvidenceBundle, "controls">): EvidenceControl[] {
           "."
         : "No on-device attestations in this trail.",
       status: onDeviceStatus,
+    },
+    // NIST SP 800-171 rev 2, AU family (3.3.1–3.3.9) — CMMC L2 practice ids + NIST SP 800-53
+    // crosswalk in the control label. The ICP is DIB/CMMC L2, so this is the headline mapping;
+    // 3.3.9 is a deliberate, permanent gap (see below) — the honest ✗ is a credibility asset with
+    // assessors, not a bug to hide.
+    {
+      framework: "NIST 800-171",
+      control: "3.3.1 (AU.L2-3.3.1 · AU-2/3/12) — Audit record creation & retention",
+      requirement: "Create and retain system audit logs/records to enable monitoring, analysis, investigation, and reporting of unlawful or unauthorized activity.",
+      evidence: hasReceipts
+        ? `${integrity.totalReceipts} signed receipt(s) retained across ${meta.distinctApps} app(s) as a hash-chained local JSONL log${integrity.failed ? `; ${integrity.failed} failed verification` : ""}; each record carries action id, parameters, timestamp, outcome, and signer.`
+        : "No audit records present in this trail.",
+      status: integrityStatus,
+    },
+    {
+      framework: "NIST 800-171",
+      control: "3.3.2 (AU.L2-3.3.2 · AU-3) — Individual accountability",
+      requirement: "Ensure the actions of individual system users can be uniquely traced to those users so they can be held accountable.",
+      evidence: `${attribution.coveragePct}% of verified receipts carry a signed agent + individual-operator identity (operators: ${attribution.users.join(", ") || "—"}).`,
+      status: attributionStatus,
+    },
+    {
+      framework: "NIST 800-171",
+      control: "3.3.3 (AU.L2-3.3.3 · AU-2) — Review & update logged events",
+      requirement: "Review and update logged events.",
+      evidence: hasReceipts
+        ? `${b.actionInventory.length} distinct action type(s) captured across policy tiers (allow/approval/deny); the periodic review and update of which events to log is an organizational process outside kriya.`
+        : "No logged events to review yet.",
+      status: partialWhenReceipts,
+    },
+    {
+      framework: "NIST 800-171",
+      control: "3.3.4 (AU.L2-3.3.4 · AU-5) — Audit logging process failure alerting",
+      requirement: "Alert in the event of an audit logging process failure.",
+      evidence: hasReceipts
+        ? "Per-receipt verification failures and hash-chain breaks surface live in the Console, and the Coverage Map flags silent lanes; no external paging/alerting integration exists."
+        : "No audit logging process to alert on yet.",
+      status: partialWhenReceipts,
+    },
+    {
+      framework: "NIST 800-171",
+      control: "3.3.5 (AU.L2-3.3.5 · AU-6(3)) — Correlate audit review & analysis",
+      requirement: "Correlate audit record review, analysis, and reporting processes for investigation and response to indications of suspicious activity.",
+      evidence: hasReceipts
+        ? `Cross-app correlation on this machine (Audit view filtering across ${meta.distinctApps} app(s)) plus tamper flags support investigation; this is single-machine correlation, not cross-machine SIEM aggregation.`
+        : "No audit records to correlate yet.",
+      status: partialWhenReceipts,
+    },
+    {
+      framework: "NIST 800-171",
+      control: "3.3.6 (AU.L2-3.3.6 · AU-7) — Audit record reduction & report generation",
+      requirement: "Provide audit record reduction and report generation to support on-demand analysis and reporting.",
+      evidence: hasReceipts
+        ? "This Markdown + JSON evidence bundle is itself the reduction/report artifact, generated on-demand from the signed trail and independently re-verifiable offline via kriya-audit."
+        : "No audit records to reduce or report on yet.",
+      status: hasReceipts ? "satisfied" : "gap",
+    },
+    {
+      framework: "NIST 800-171",
+      control: "3.3.7 (AU.L2-3.3.7 · AU-8) — Clock synchronization for time stamps",
+      requirement: "Provide a system capability that compares and synchronizes internal system clocks with an authoritative source for audit-record time stamps.",
+      evidence: hasReceipts
+        ? "Every receipt carries a host timestamp (ts_ms); clock synchronization against an authoritative source is OS-provided (NTP), outside kriya's control — this control is capped at partial regardless of trail size."
+        : "No timestamped receipts present.",
+      status: partialWhenReceipts,
+    },
+    {
+      framework: "NIST 800-171",
+      control: "3.3.8 (AU.L2-3.3.8 · AU-9) — Protect audit information & tools",
+      requirement: "Protect audit information and audit logging tools from unauthorized access, modification, and deletion.",
+      evidence: allVerified
+        ? "Every receipt is Ed25519-signed and hash-chained; modification or deletion is detectable, not prevented, and independently re-verifiable offline."
+        : hasReceipts
+          ? `${integrity.failed} receipt(s) failed verification — tampering detected; the detection control is functioning as intended, investigate the flagged record(s).`
+          : "No audit information to protect yet.",
+      status: integrityStatus,
+    },
+    {
+      framework: "NIST 800-171",
+      control: "3.3.9 (AU.L2-3.3.9 · AU-9(4)) — Limit audit-logging management to privileged users",
+      requirement: "Limit management of audit logging functionality to a subset of privileged users.",
+      evidence: "kriya's audit tooling runs under the operator's own OS account, and in-app roles are self-asserted (see docs/TRUST.md) — kriya enforces no privileged-user restriction on who can manage audit logging; this must be enforced by an OS-level or organizational access control.",
+      status: "gap",
     },
   ];
 }

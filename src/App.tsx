@@ -403,7 +403,7 @@ export function App() {
           ) : (
             <LicenseGate
               feature="Compliance evidence"
-              blurb="Turn the verified trail into a SOC 2 / ISO 42001 / EU AI Act evidence bundle — generated on-device in compiled Rust."
+              blurb="Turn the verified trail into a NIST 800-171 (CMMC L2) / SOC 2 / ISO 42001 / EU AI Act evidence bundle — generated on-device in compiled Rust."
               license={license}
               onActivate={() => goSettings("license")}
             />
