@@ -131,7 +131,10 @@ done
 # 4) Build the .app ONLY. We package the dmg ourselves with hdiutil (step 5) — Tauri's bundle_dmg.sh
 #    drives Finder/AppleScript to lay out the dmg window and is flaky / headless-hostile.
 export APPLE_SIGNING_IDENTITY="$SIGN_ID"
-npm run tauri build -- "${TAURI_TARGET_ARGS[@]}" --bundles app
+# The `${arr[@]+"${arr[@]}"}` guard (not plain "${arr[@]}") is required because macOS ships bash 3.2
+# by default, where an EMPTY array expanded under `set -u` throws "unbound variable" — a behavior
+# bash 4+ doesn't have. TAURI_TARGET_ARGS is empty on every non-`--universal` build.
+npm run tauri build -- ${TAURI_TARGET_ARGS[@]+"${TAURI_TARGET_ARGS[@]}"} --bundles app
 APP="$APP_BASE/bundle/macos/Kriya Console.app"
 [ -d "$APP" ] || { echo "ERROR: .app not produced at $APP" >&2; exit 1; }
 
