@@ -128,6 +128,55 @@ export const governableSurface = () => invoke<GovernableSurface>("governable_sur
 export const installHook = (agent: string) => invoke<HookResult>("install_hook", { agent });
 export const uninstallHook = (agent: string) => invoke<HookResult>("uninstall_hook", { agent });
 
+// ── Govern-all orchestrator (free, GA-1) ─────────────────────────────────────
+/** One planned/performed change. Mirrors Rust `govern::GovernAction`. */
+export interface GovernAction {
+  targetId: string;
+  agent: string;
+  /** `hook` | `gateway`. */
+  seam: string;
+  /** `install-hook` | `wrap-mcp-server` (govern) · `uninstall-hook` | `unwrap-mcp-server` (revert). */
+  action: string;
+  serverKey?: string | null;
+  configPath?: string | null;
+  detail: string;
+}
+export interface GovernError {
+  targetId: string;
+  message: string;
+}
+/** The dry-run plan (`govern_preview`). Mirrors Rust `govern::GovernPlan`. */
+export interface GovernPlan {
+  wire: GovernAction[];
+  needsPermission: GovernTarget[];
+  outOfScopeCloud: GovernTarget[];
+  alreadyGoverned: GovernTarget[];
+  blocked: GovernTarget[];
+  hookAvailable: boolean;
+  gatewayAvailable: boolean;
+}
+/** The result of a `govern_all`. Mirrors Rust `govern::GovernAllReport`. */
+export interface GovernAllReport {
+  wired: GovernAction[];
+  needsPermission: GovernTarget[];
+  outOfScopeCloud: GovernTarget[];
+  alreadyGoverned: GovernTarget[];
+  errors: GovernError[];
+}
+/** The result of an `ungovern_all` / `ungovern`. Mirrors Rust `govern::RevertReport`. */
+export interface RevertReport {
+  reverted: GovernAction[];
+  errors: GovernError[];
+}
+export interface GovernOpts {
+  /** Restrict the run to these target ids (the per-item toggle). Omit to govern the whole surface. */
+  only?: string[];
+}
+export const governPreview = () => invoke<GovernPlan>("govern_preview");
+export const governAll = (opts?: GovernOpts) => invoke<GovernAllReport>("govern_all", { opts: opts ?? null });
+export const ungovernAll = () => invoke<RevertReport>("ungovern_all");
+export const ungovern = (target: string) => invoke<RevertReport>("ungovern", { target });
+
 // ── License (R29) ────────────────────────────────────────────────────────────
 export interface LicenseStatus {
   tier: "free" | "pro";

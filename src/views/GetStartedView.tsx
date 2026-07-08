@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Icon } from "../components/Icon";
 import {
+  governableSurface,
   isTauri,
   licenseStatus,
   onboardingStatus,
+  type GovernableSurface,
   type LicenseStatus,
   type OnboardingStatus,
 } from "../lib/tauri";
@@ -51,11 +53,13 @@ export function GetStartedView({
 }) {
   const live = isTauri();
   const [status, setStatus] = useState<OnboardingStatus | null>(live ? null : PREVIEW_STATUS);
+  const [surface, setSurface] = useState<GovernableSurface | null>(null);
   const [license, setLicense] = useState<LicenseStatus | null>(null);
 
   const refresh = useCallback(() => {
     if (!live) return;
     void onboardingStatus().then(setStatus).catch(() => {});
+    void governableSurface().then(setSurface).catch(() => {});
     void licenseStatus().then(setLicense).catch(() => {});
   }, [live]);
 
@@ -64,7 +68,11 @@ export function GetStartedView({
   }, [refresh]);
 
   const access = status?.accessibilityTrusted === true;
-  const hasConnector = (status?.wiredServers?.length ?? 0) > 0;
+  // Step 2 is "at least one lane governed" (GA-1): a Claude Code hook, a wrapped MCP server, or any
+  // governed target across agents — not just the legacy gateway-wrapped Claude Desktop servers.
+  const hasConnector =
+    (surface?.targets.some((t) => t.state === "governed") ?? false) ||
+    (status?.wiredServers?.length ?? 0) > 0;
   const hasPolicy = status?.policyPresent === true;
   const isPro = license?.tier === "pro";
   const requiredDone = access && hasConnector && hasPolicy;
@@ -97,16 +105,16 @@ export function GetStartedView({
     },
     {
       n: 2,
-      title: "Add your first connector",
+      title: "Govern everything (one click)",
       done: hasConnector,
-      ctaLabel: "Add a connection",
+      ctaLabel: "Govern everything",
       onCta: () => onNavigate("connections"),
       body: (
         <>
-          Connect an app to govern. The reach hierarchy goes <strong>kriya-native</strong> (most precise) →{" "}
-          <strong>proxy</strong> any MCP server → <strong>reach-in / computer-use</strong> (most universal).
-          The Console wires your MCP client for you; restart it, then watch the first signed receipt in the
-          Monitor.
+          Kriya detects every governable agent on this machine — Claude Code (the hook), Claude Desktop and
+          Hermes (local MCP servers) — and wires each through its seam in one click. You'll preview exactly
+          what changes first; nothing is written until you confirm, and every step is reversible. Then watch
+          the first signed receipts land in the Monitor.
         </>
       ),
     },

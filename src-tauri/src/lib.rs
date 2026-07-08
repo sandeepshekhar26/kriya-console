@@ -57,6 +57,11 @@ pub fn run() {
             govern::governable_surface,
             govern::install_hook,
             govern::uninstall_hook,
+            // Free: govern-all orchestrator (GA-1) — preview → apply → revert, idempotent.
+            govern::govern_preview,
+            govern::govern_all,
+            govern::ungovern_all,
+            govern::ungovern,
             // License (R29).
             license::license_status,
             license::install_license,

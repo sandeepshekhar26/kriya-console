@@ -129,10 +129,13 @@ fn read_config(path: &Path, fmt: Fmt) -> Value {
 }
 
 fn serialize_config(fmt: Fmt, v: &Value) -> Result<String, String> {
-    match fmt {
-        Fmt::Json => serde_json::to_string_pretty(v).map_err(|e| e.to_string()),
-        Fmt::Yaml => serde_yaml::to_string(v).map_err(|e| e.to_string()),
-    }
+    let body = match fmt {
+        Fmt::Json => serde_json::to_string_pretty(v).map_err(|e| e.to_string())?,
+        Fmt::Yaml => serde_yaml::to_string(v).map_err(|e| e.to_string())?,
+    };
+    // Exactly one trailing newline (POSIX text-file convention; keeps `git diff` clean). serde_json's
+    // pretty printer emits none, serde_yaml one — normalize both so writes are format-stable.
+    Ok(format!("{}\n", body.trim_end_matches('\n')))
 }
 
 fn write_config(path: &Path, fmt: Fmt, v: &Value) -> Result<(), String> {
@@ -234,8 +237,6 @@ fn is_local_stdio(entry: &Value) -> bool {
 /// Wrap a local stdio server entry so its `tools/call`s route through the gateway (policy → approval
 /// → signed receipt). Preserves every sibling key (`env`, …); only `command`/`args` change. Returns
 /// `None` when the entry is not a wrappable local stdio server.
-// Consumed by `govern_all` (GA-1); exercised by the wrap/unwrap round-trip tests today.
-#[allow(dead_code)]
 fn wrap_entry(entry: &Value, gateway: &str, actor: &str, approval: &str) -> Option<Value> {
     if !is_local_stdio(entry) {
         return None;
@@ -266,8 +267,6 @@ fn wrap_entry(entry: &Value, gateway: &str, actor: &str, approval: &str) -> Opti
 /// Reverse [`wrap_entry`]: reconstruct the original `command`/`args` from everything after `--`.
 /// Only unwraps gateway `proxy` entries (never a reach-in/computer-use desktop front). Preserves
 /// sibling keys, so a wrap→unwrap round-trips a canonical entry byte-for-byte.
-// Consumed by `ungovern_all` (GA-1); exercised by the wrap/unwrap round-trip tests today.
-#[allow(dead_code)]
 fn unwrap_entry(entry: &Value) -> Option<Value> {
     if gateway_subcommand(entry).as_deref() != Some("proxy") {
         return None;
@@ -612,9 +611,9 @@ fn on_path(bin: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Detect and return the local governable surface (GA-0). Pure read — no writes.
-#[tauri::command]
-pub fn governable_surface() -> GovernableSurface {
+/// Read the real machine state into the governable-surface inventory (GA-0). The shared entry point
+/// under [`governable_surface`], [`govern_preview`], and [`govern_all`].
+fn detect_surface() -> GovernableSurface {
     let clients = read_client_states();
     let ax = crate::onboarding::accessibility_trusted();
     let candidates = crate::onboarding::list_candidate_apps();
@@ -625,6 +624,12 @@ pub fn governable_surface() -> GovernableSurface {
         resolve_hook().is_some(),
         resolve_gateway().is_some(),
     )
+}
+
+/// Detect and return the local governable surface (GA-0). Pure read — no writes.
+#[tauri::command]
+pub fn governable_surface() -> GovernableSurface {
+    detect_surface()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -686,6 +691,337 @@ pub fn uninstall_hook(agent: String) -> Result<HookResult, String> {
         hook_path: String::new(),
         installed: false,
     })
+}
+
+// ---------------------------------------------------------------------------------------------
+// GA-1 — the govern-all orchestrator: preview → apply → revert, idempotent + reversible.
+// ---------------------------------------------------------------------------------------------
+
+/// One planned (or performed) change to a governable target.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GovernAction {
+    /// The [`GovernTarget::id`] this acts on.
+    pub target_id: String,
+    pub agent: String,
+    /// `hook` | `gateway`.
+    pub seam: String,
+    /// `install-hook` | `wrap-mcp-server` (govern) · `uninstall-hook` | `unwrap-mcp-server` (revert).
+    pub action: String,
+    /// The mcpServers key for a `wrap-mcp-server`/`unwrap-mcp-server` action.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_path: Option<String>,
+    /// Human-readable "what this does".
+    pub detail: String,
+}
+
+/// A per-target failure (honest — a wire that could not be applied is surfaced, never swallowed).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GovernError {
+    pub target_id: String,
+    pub message: String,
+}
+
+/// The dry-run plan (`govern_preview`) — exactly what a `govern_all` would change, with nothing
+/// written. `wire` is the set that gets governed; the other buckets are honest non-actions.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GovernPlan {
+    /// Ungoverned, wireable targets that `govern_all` will govern.
+    pub wire: Vec<GovernAction>,
+    /// Targets that need a macOS grant first (the desktop-app lane) — never auto-wired.
+    pub needs_permission: Vec<GovernTarget>,
+    /// Off-device surfaces (remote MCP) — an on-device receipt is physically impossible.
+    pub out_of_scope_cloud: Vec<GovernTarget>,
+    /// Already governed — nothing to do (the source of idempotency).
+    pub already_governed: Vec<GovernTarget>,
+    /// Ungoverned but the seam binary (`kriya-hook`/`kriya-gateway`) isn't bundled — can't wire.
+    pub blocked: Vec<GovernTarget>,
+    pub hook_available: bool,
+    pub gateway_available: bool,
+}
+
+/// The result of a `govern_all` — what actually changed, plus the honest non-actions.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GovernAllReport {
+    pub wired: Vec<GovernAction>,
+    pub needs_permission: Vec<GovernTarget>,
+    pub out_of_scope_cloud: Vec<GovernTarget>,
+    pub already_governed: Vec<GovernTarget>,
+    pub errors: Vec<GovernError>,
+}
+
+/// The result of an `ungovern_all` / `ungovern` — what was un-wired.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RevertReport {
+    pub reverted: Vec<GovernAction>,
+    pub errors: Vec<GovernError>,
+}
+
+/// Options for [`govern_all`]. `only` restricts the run to specific target ids (the per-item toggle);
+/// `None`/absent governs the whole ungoverned surface.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GovernOpts {
+    pub only: Option<Vec<String>>,
+}
+
+/// The mcpServers key encoded in an `<agent>:mcp-server:<key>` target id (key may contain ':').
+fn mcp_key_of(id: &str) -> Option<&str> {
+    let mut parts = id.splitn(3, ':');
+    let _agent = parts.next()?;
+    match parts.next()? {
+        "mcp-server" => parts.next(),
+        _ => None,
+    }
+}
+
+/// The govern action a wireable target maps to (pure).
+fn action_for(t: &GovernTarget) -> Option<GovernAction> {
+    match t.kind.as_str() {
+        "hook" => Some(GovernAction {
+            target_id: t.id.clone(),
+            agent: t.agent.clone(),
+            seam: "hook".into(),
+            action: "install-hook".into(),
+            server_key: None,
+            config_path: t.config_path.clone(),
+            detail:
+                "Install the kriya-hook block (record-only) so every native tool + attached MCP call signs a receipt."
+                    .into(),
+        }),
+        "mcp-server" => {
+            let key = mcp_key_of(&t.id)?.to_string();
+            Some(GovernAction {
+                target_id: t.id.clone(),
+                agent: t.agent.clone(),
+                seam: "gateway".into(),
+                action: "wrap-mcp-server".into(),
+                server_key: Some(key.clone()),
+                config_path: t.config_path.clone(),
+                detail: format!(
+                    "Wrap {key} with kriya-gateway — policy → approval → signed receipt on every tool call."
+                ),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Classify a detected surface into the govern-all plan (pure — no writes). The desktop-app lane is
+/// never auto-wired (it needs a specific app + Screen Recording the Console can't verify); it always
+/// lands in `needs_permission` with the honest reason.
+fn classify_plan(surface: &GovernableSurface) -> GovernPlan {
+    let mut plan = GovernPlan {
+        hook_available: surface.hook_available,
+        gateway_available: surface.gateway_available,
+        ..GovernPlan::default()
+    };
+    for t in &surface.targets {
+        if t.kind == "desktop-apps" {
+            plan.needs_permission.push(t.clone());
+            continue;
+        }
+        match t.state.as_str() {
+            "governed" => plan.already_governed.push(t.clone()),
+            "out-of-scope-cloud" => plan.out_of_scope_cloud.push(t.clone()),
+            "needs-permission" => plan.needs_permission.push(t.clone()),
+            "ungoverned" => {
+                let available = match t.kind.as_str() {
+                    "hook" => surface.hook_available,
+                    "mcp-server" => surface.gateway_available,
+                    _ => false,
+                };
+                match action_for(t).filter(|_| available) {
+                    Some(a) => plan.wire.push(a),
+                    None => plan.blocked.push(t.clone()),
+                }
+            }
+            _ => {}
+        }
+    }
+    plan
+}
+
+fn resolve_gateway_path() -> String {
+    resolve_gateway()
+        .map(|(p, _)| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+fn resolve_hook_path() -> String {
+    resolve_hook()
+        .map(|(p, _)| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Apply one govern action to the relevant client config (file IO). Merge-safe + idempotent.
+fn apply_action(action: &GovernAction, gateway: &str, hook: &str) -> Result<(), String> {
+    let client =
+        Client::from_agent(&action.agent).ok_or_else(|| format!("unknown agent '{}'", action.agent))?;
+    let path = client.config_path();
+    let mut config = read_config(&path, client.fmt());
+    match action.action.as_str() {
+        "install-hook" => {
+            if hook.is_empty() {
+                return Err("the bundled kriya-hook binary could not be located".into());
+            }
+            install_hook_block(&mut config, &shell_quote(hook));
+        }
+        "wrap-mcp-server" => {
+            if gateway.is_empty() {
+                return Err("the bundled kriya-gateway binary could not be located".into());
+            }
+            let key = action.server_key.as_deref().ok_or("wrap action missing server key")?;
+            let servers = servers_mut(&mut config);
+            let entry = servers
+                .get(key)
+                .cloned()
+                .ok_or_else(|| format!("server '{key}' no longer present"))?;
+            let wrapped = wrap_entry(&entry, gateway, client.agent_id(), "gui")
+                .ok_or_else(|| format!("server '{key}' is not a wrappable local stdio server"))?;
+            servers.insert(key.to_string(), wrapped);
+        }
+        other => return Err(format!("unknown govern action '{other}'")),
+    }
+    write_config(&path, client.fmt(), &config)
+}
+
+/// Revert one governed target to its pre-govern state (file IO). The exact inverse of the govern
+/// actions, so a govern→ungovern of the same targets restores each config byte-for-byte.
+fn revert_target(target: &GovernTarget, gateway: &str, hook: &str) -> Result<GovernAction, String> {
+    let client =
+        Client::from_agent(&target.agent).ok_or_else(|| format!("unknown agent '{}'", target.agent))?;
+    let path = client.config_path();
+    let mut config = read_config(&path, client.fmt());
+    let (verb, server_key, detail) = match target.kind.as_str() {
+        "hook" => {
+            uninstall_hook_block(&mut config);
+            (
+                "uninstall-hook",
+                None,
+                "Remove the kriya-hook block from the agent's settings.".to_string(),
+            )
+        }
+        "mcp-server" => {
+            let key = mcp_key_of(&target.id)
+                .ok_or_else(|| format!("malformed target id '{}'", target.id))?
+                .to_string();
+            let servers = servers_mut(&mut config);
+            let entry = servers
+                .get(&key)
+                .cloned()
+                .ok_or_else(|| format!("server '{key}' no longer present"))?;
+            let orig = unwrap_entry(&entry)
+                .ok_or_else(|| format!("server '{key}' is not a kriya-gateway proxy wrap"))?;
+            servers.insert(key.clone(), orig);
+            (
+                "unwrap-mcp-server",
+                Some(key.clone()),
+                format!("Unwrap {key} — restore its original launch command."),
+            )
+        }
+        other => return Err(format!("cannot revert target kind '{other}'")),
+    };
+    let _ = (gateway, hook);
+    write_config(&path, client.fmt(), &config)?;
+    Ok(GovernAction {
+        target_id: target.id.clone(),
+        agent: target.agent.clone(),
+        seam: target.seam.clone(),
+        action: verb.into(),
+        server_key,
+        config_path: target.config_path.clone(),
+        detail,
+    })
+}
+
+/// Dry-run: the exact changes a `govern_all` would make, nothing written (GA-1).
+#[tauri::command]
+pub fn govern_preview() -> GovernPlan {
+    classify_plan(&detect_surface())
+}
+
+/// Govern the ungoverned surface: wire every wireable target through its seam. Idempotent (a second
+/// run wires nothing — everything is already governed). `opts.only` restricts to specific target ids
+/// (the per-item toggle). Never wires desktop apps or cloud surfaces — those are surfaced honestly.
+#[tauri::command]
+pub fn govern_all(opts: Option<GovernOpts>) -> GovernAllReport {
+    let surface = detect_surface();
+    let mut plan = classify_plan(&surface);
+    if let Some(only) = opts.and_then(|o| o.only) {
+        plan.wire.retain(|a| only.contains(&a.target_id));
+    }
+    let gateway = resolve_gateway_path();
+    let hook = resolve_hook_path();
+    let mut wired = Vec::new();
+    let mut errors = Vec::new();
+    for action in &plan.wire {
+        match apply_action(action, &gateway, &hook) {
+            Ok(()) => wired.push(action.clone()),
+            Err(message) => errors.push(GovernError {
+                target_id: action.target_id.clone(),
+                message,
+            }),
+        }
+    }
+    GovernAllReport {
+        wired,
+        needs_permission: plan.needs_permission,
+        out_of_scope_cloud: plan.out_of_scope_cloud,
+        already_governed: plan.already_governed,
+        errors,
+    }
+}
+
+/// Revert everything govern-all governed: remove kriya-hook blocks and unwrap gateway-proxied MCP
+/// servers across all clients. Only touches kriya wiring; leaves every other config entry intact.
+#[tauri::command]
+pub fn ungovern_all() -> RevertReport {
+    let surface = detect_surface();
+    let gateway = resolve_gateway_path();
+    let hook = resolve_hook_path();
+    let mut reverted = Vec::new();
+    let mut errors = Vec::new();
+    for target in surface.targets.iter().filter(|t| t.state == "governed") {
+        match revert_target(target, &gateway, &hook) {
+            Ok(a) => reverted.push(a),
+            Err(message) => errors.push(GovernError {
+                target_id: target.id.clone(),
+                message,
+            }),
+        }
+    }
+    RevertReport { reverted, errors }
+}
+
+/// Revert one governed target by its id (the per-item toggle-off).
+#[tauri::command]
+pub fn ungovern(target: String) -> RevertReport {
+    let surface = detect_surface();
+    let gateway = resolve_gateway_path();
+    let hook = resolve_hook_path();
+    match surface.targets.iter().find(|t| t.id == target) {
+        Some(t) => match revert_target(t, &gateway, &hook) {
+            Ok(a) => RevertReport { reverted: vec![a], errors: vec![] },
+            Err(message) => RevertReport {
+                reverted: vec![],
+                errors: vec![GovernError { target_id: target, message }],
+            },
+        },
+        None => RevertReport {
+            reverted: vec![],
+            errors: vec![GovernError {
+                target_id: target,
+                message: "target not found in the current surface".into(),
+            }],
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1028,5 +1364,159 @@ mod tests {
             keys,
             ["agent", "configPath", "detail", "id", "kind", "label", "seam", "state"]
         );
+    }
+
+    // --- GA-1: the govern-all orchestrator ---------------------------------------------------
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn surface_of(targets: Vec<GovernTarget>, hook_av: bool, gw_av: bool) -> GovernableSurface {
+        GovernableSurface {
+            targets,
+            hook_available: hook_av,
+            gateway_available: gw_av,
+            ax_trusted: Some(true),
+            desktop_candidates: vec![],
+        }
+    }
+
+    #[test]
+    fn mcp_key_parses_from_target_id() {
+        assert_eq!(mcp_key_of("claude-desktop:mcp-server:github"), Some("github"));
+        assert_eq!(mcp_key_of("hermes:mcp-server:a:b"), Some("a:b"), "keys may contain ':'");
+        assert_eq!(mcp_key_of("claude-code:hook"), None);
+    }
+
+    #[test]
+    fn classify_plan_buckets_targets_and_builds_actions() {
+        let targets = vec![
+            GovernTarget::new("claude-code:hook", "claude-code", "hook", "hook", "ungoverned", Some("cc".into()), "l", "d"),
+            GovernTarget::new("claude-desktop:mcp-server:github", "claude-desktop", "mcp-server", "gateway", "ungoverned", Some("cd".into()), "l", "d"),
+            GovernTarget::new("claude-desktop:mcp-server:done", "claude-desktop", "mcp-server", "gateway", "governed", Some("cd".into()), "l", "d"),
+            GovernTarget::new("claude-desktop:mcp-server:remote", "claude-desktop", "mcp-server", "gateway", "out-of-scope-cloud", Some("cd".into()), "l", "d"),
+            GovernTarget::new("desktop:desktop-apps", "desktop", "desktop-apps", "reach-in/computer-use", "needs-permission", None, "l", "d"),
+        ];
+        let plan = classify_plan(&surface_of(targets, true, true));
+        let wire_ids: Vec<&str> = plan.wire.iter().map(|a| a.target_id.as_str()).collect();
+        assert_eq!(wire_ids, ["claude-code:hook", "claude-desktop:mcp-server:github"]);
+        assert_eq!(plan.wire[0].action, "install-hook");
+        assert_eq!(plan.wire[1].action, "wrap-mcp-server");
+        assert_eq!(plan.wire[1].server_key.as_deref(), Some("github"));
+        assert_eq!(plan.already_governed.len(), 1);
+        assert_eq!(plan.out_of_scope_cloud.len(), 1);
+        assert_eq!(plan.needs_permission.len(), 1, "desktop lane needs a grant");
+        assert!(plan.blocked.is_empty());
+    }
+
+    #[test]
+    fn classify_plan_blocks_ungoverned_when_binary_unavailable() {
+        let targets = vec![
+            GovernTarget::new("claude-code:hook", "claude-code", "hook", "hook", "ungoverned", None, "l", "d"),
+            GovernTarget::new("claude-desktop:mcp-server:x", "claude-desktop", "mcp-server", "gateway", "ungoverned", None, "l", "d"),
+        ];
+        // hook binary missing → the hook target is blocked; gateway present → the wrap is wired.
+        let plan = classify_plan(&surface_of(targets, false, true));
+        assert_eq!(plan.wire.len(), 1);
+        assert_eq!(plan.wire[0].action, "wrap-mcp-server");
+        assert_eq!(plan.blocked.len(), 1);
+        assert_eq!(plan.blocked[0].kind, "hook");
+    }
+
+    #[test]
+    fn report_and_plan_shapes_serialize_camel_case() {
+        let v = serde_json::to_value(GovernPlan::default()).unwrap();
+        for k in ["wire", "needsPermission", "outOfScopeCloud", "alreadyGoverned", "blocked", "hookAvailable", "gatewayAvailable"] {
+            assert!(v.get(k).is_some(), "GovernPlan missing {k}");
+        }
+        let v = serde_json::to_value(GovernAllReport::default()).unwrap();
+        for k in ["wired", "needsPermission", "outOfScopeCloud", "alreadyGoverned", "errors"] {
+            assert!(v.get(k).is_some(), "GovernAllReport missing {k}");
+        }
+        let v = serde_json::to_value(RevertReport::default()).unwrap();
+        for k in ["reverted", "errors"] {
+            assert!(v.get(k).is_some(), "RevertReport missing {k}");
+        }
+        // GovernAction omits server_key/config_path when None (skip_serializing_if).
+        let action = GovernAction {
+            target_id: "x".into(),
+            agent: "a".into(),
+            seam: "hook".into(),
+            action: "install-hook".into(),
+            server_key: None,
+            config_path: None,
+            detail: "d".into(),
+        };
+        let v = serde_json::to_value(&action).unwrap();
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort();
+        assert_eq!(keys, ["action", "agent", "detail", "seam", "targetId"]);
+    }
+
+    /// End-to-end (the apply/revert pipeline over real files, HOME redirected): govern the surface,
+    /// prove it's governed + idempotent, then ungovern and prove every config is restored
+    /// **byte-for-byte** — the GA-1 acceptance. Bypasses the `#[tauri::command]` wrappers only to
+    /// skip the osascript candidate scan; it drives the same detect→classify→apply→revert code.
+    #[test]
+    fn govern_all_then_ungovern_all_round_trips_configs_byte_for_byte() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!("kriya-govern-e2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::create_dir_all(home.join("Library/Application Support/Claude")).unwrap();
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &home);
+
+        let desktop_path = Client::ClaudeDesktop.config_path();
+        let cc_path = Client::ClaudeCode.config_path();
+        write_config(
+            &desktop_path,
+            Fmt::Json,
+            &json!({ "mcpServers": { "github": { "command": "npx", "args": ["-y", "server-github"] } } }),
+        )
+        .unwrap();
+        write_config(&cc_path, Fmt::Json, &json!({ "permissions": { "allow": ["Read"] } })).unwrap();
+        let desktop_before = std::fs::read_to_string(&desktop_path).unwrap();
+        let cc_before = std::fs::read_to_string(&cc_path).unwrap();
+
+        // Build the surface from the on-disk configs (pretend both sidecars are bundled), classify,
+        // and apply the wire plan — the govern_all pipeline minus osascript.
+        let gw = "/opt/kriya-gateway";
+        let hook = "/opt/kriya-hook";
+        let plan = classify_plan(&detect(&read_client_states(), Some(true), &[], true, true));
+        let wire_ids: Vec<String> = plan.wire.iter().map(|a| a.target_id.clone()).collect();
+        for a in &plan.wire {
+            apply_action(a, gw, hook).unwrap();
+        }
+        // github wrapped; hook installed (coverage would detect it).
+        assert!(is_gateway_wrapped(&read_config(&desktop_path, Fmt::Json)["mcpServers"]["github"]));
+        assert!(hook_configured(Some(&cc_path)));
+
+        // preview == the set actually wired.
+        assert_eq!(
+            wire_ids,
+            vec!["claude-code:hook".to_string(), "claude-desktop:mcp-server:github".to_string()]
+        );
+
+        // Idempotent: re-detect → nothing left to wire.
+        let plan2 = classify_plan(&detect(&read_client_states(), Some(true), &[], true, true));
+        assert!(plan2.wire.is_empty(), "second run wires nothing");
+        assert_eq!(plan2.already_governed.len(), 2, "both targets now already-governed");
+
+        // Revert everything governed → byte-for-byte originals.
+        for t in detect(&read_client_states(), Some(true), &[], true, true)
+            .targets
+            .iter()
+            .filter(|t| t.state == "governed")
+        {
+            revert_target(t, gw, hook).unwrap();
+        }
+        assert_eq!(std::fs::read_to_string(&desktop_path).unwrap(), desktop_before, "desktop config restored byte-for-byte");
+        assert_eq!(std::fs::read_to_string(&cc_path).unwrap(), cc_before, "claude code settings restored byte-for-byte");
+
+        match prev_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

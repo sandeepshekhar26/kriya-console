@@ -39,7 +39,12 @@ tauri-build = { version = "2", features = [] }
 kriya-verify = { path = "crates/kriya-verify" }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order` keeps `serde_json::Value` maps in insertion order (indexmap-backed) instead of
+# re-sorting keys alphabetically. Load-bearing for govern-all (GA-1): reading → editing → writing a
+# user's real agent config must be surgical — add/remove only our own entries and leave every other
+# key in its original position, so an install→revert restores the file byte-for-byte. (Signing still
+# canonicalizes explicitly via kriya-verify::canonical_value, so this never affects signed bytes.)
+serde_json = { version = "1", features = ["preserve_order"] }
 # The govern-all multi-client writer edits Hermes' `~/.hermes/config.yaml` (YAML) alongside the two
 # JSON client configs. All merge logic runs on a `serde_json::Value`; serde_yaml only (de)serializes
 # the YAML file at the edges. Matches the runtime's pinned 0.9.
