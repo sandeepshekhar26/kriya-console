@@ -19,7 +19,7 @@ import { loadAuditLog } from "./lib/receipts";
 import { summarizeBudget } from "./lib/budget";
 import { defaultRbac, summarizeIdentities, type RbacModel } from "./lib/identity";
 import type { AuditRow } from "./lib/types";
-import { defaultPolicy, lintPolicy, type Policy } from "./lib/policy";
+import { defaultPolicy, lintPolicy, parsePolicyYaml, policyToYaml, type Policy } from "./lib/policy";
 import {
   decide,
   ingestPending,
@@ -32,9 +32,11 @@ import {
   auditLocation,
   isTauri,
   licenseStatus,
+  loadAgentPolicy,
   onAuditChanged,
   onboardingStatus,
   readAudit,
+  saveAgentPolicy,
   type LicenseStatus,
 } from "./lib/tauri";
 const QUEUE_KEY = "kriya-console:approvals";
@@ -242,6 +244,41 @@ export function App() {
       /* non-fatal */
     }
   }, [rbac]);
+
+  // Restore the last-saved policy on launch (live mode only — browser/demo has no Tauri backend).
+  // Without this, relaunching silently reset to defaultPolicy() every time, diverging from what
+  // ~/.kriya/agent-policy.yaml — the file every hook/gateway install actually enforces — holds.
+  useEffect(() => {
+    if (!LIVE) return;
+    let cancelled = false;
+    void loadAgentPolicy()
+      .then((yaml) => {
+        if (cancelled || !yaml) return;
+        setPolicy(parsePolicyYaml(yaml));
+      })
+      .catch(() => {
+        /* backend not ready yet, or nothing saved — keep the in-memory default */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Auto-save the authored policy to ~/.kriya/agent-policy.yaml (B0) — debounced so every
+  // keystroke in a rule's action-pattern input doesn't trigger a write. No explicit "Save" button:
+  // one would reintroduce the exact failure mode this fix closes ("I edited but forgot to save, so
+  // my deny rule was never enforced"). install_hook/govern_all always point --policy at this same
+  // file, so a save here takes effect the moment the hook or gateway process is next invoked — no
+  // restart needed.
+  useEffect(() => {
+    if (!LIVE) return;
+    const t = setTimeout(() => {
+      void saveAgentPolicy(policyToYaml(policy)).catch(() => {
+        /* non-fatal — the next edit retries; the file starts from the permissive default anyway */
+      });
+    }, 500);
+    return () => clearTimeout(t);
+  }, [policy]);
 
   // Manual import — the "open a file" path for loading a real signed trail in the browser build;
   // in the desktop app the live ~/.kriya/audit tail supplies rows with no import.
