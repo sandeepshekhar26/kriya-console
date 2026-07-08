@@ -73,6 +73,7 @@ const PREVIEW_STATUS: OnboardingStatus = {
 const PREVIEW_SURFACE: GovernableSurface = {
   targets: [
     { id: "claude-code:hook", agent: "claude-code", kind: "hook", seam: "hook", state: "ungoverned", configPath: "~/.claude/settings.json", label: "Claude Code — native tools + attached MCP", detail: "One hook governs the whole local Claude Code lane — native tools and every attached MCP server." },
+    { id: "hermes:hook", agent: "hermes", kind: "hook", seam: "hook", state: "ungoverned", configPath: "~/.hermes/config.yaml", label: "Hermes — native tools + attached MCP", detail: "One hook governs the whole local Hermes lane — native tools (terminal, files, computer-use) and every attached MCP server." },
     { id: "claude-desktop:mcp-server:github", agent: "claude-desktop", kind: "mcp-server", seam: "gateway", state: "ungoverned", configPath: "~/Library/Application Support/Claude/claude_desktop_config.json", label: "github (MCP)", detail: "Local stdio server — wrap it with kriya-gateway to sign every tool call." },
     { id: "claude-desktop:mcp-server:filesystem", agent: "claude-desktop", kind: "mcp-server", seam: "gateway", state: "governed", configPath: "~/Library/Application Support/Claude/claude_desktop_config.json", label: "filesystem (MCP)", detail: "Wrapped by kriya-gateway — every tool call is policy-gated and signed." },
     { id: "claude-desktop:mcp-server:linear", agent: "claude-desktop", kind: "mcp-server", seam: "gateway", state: "out-of-scope-cloud", configPath: "~/Library/Application Support/Claude/claude_desktop_config.json", label: "linear (remote MCP)", detail: "Runs off-device (remote/SSE/HTTP) — an on-device receipt is physically impossible." },
@@ -81,21 +82,24 @@ const PREVIEW_SURFACE: GovernableSurface = {
   ],
   hookAvailable: true,
   gatewayAvailable: true,
+  hermesHookAvailable: true,
   axTrusted: false,
   desktopCandidates: ["Numbers", "Notes"],
 };
 const PREVIEW_PLAN: GovernPlan = {
   wire: [
     { targetId: "claude-code:hook", agent: "claude-code", seam: "hook", action: "install-hook", detail: "Install the kriya-hook block (record-only) so every native tool + attached MCP call signs a receipt." },
+    { targetId: "hermes:hook", agent: "hermes", seam: "hook", action: "install-hook", detail: "Install the kriya-hermes-hook block (record-only) so every native tool + attached MCP call signs a receipt." },
     { targetId: "claude-desktop:mcp-server:github", agent: "claude-desktop", seam: "gateway", action: "wrap-mcp-server", serverKey: "github", detail: "Wrap github with kriya-gateway — policy → approval → signed receipt on every tool call." },
     { targetId: "hermes:mcp-server:fs", agent: "hermes", seam: "gateway", action: "wrap-mcp-server", serverKey: "fs", detail: "Wrap fs with kriya-gateway — policy → approval → signed receipt on every tool call." },
   ],
-  needsPermission: [PREVIEW_SURFACE.targets[5]!],
-  outOfScopeCloud: [PREVIEW_SURFACE.targets[3]!],
-  alreadyGoverned: [PREVIEW_SURFACE.targets[2]!],
+  needsPermission: [PREVIEW_SURFACE.targets[6]!],
+  outOfScopeCloud: [PREVIEW_SURFACE.targets[4]!],
+  alreadyGoverned: [PREVIEW_SURFACE.targets[3]!],
   blocked: [],
   hookAvailable: true,
   gatewayAvailable: true,
+  hermesHookAvailable: true,
 };
 
 /**

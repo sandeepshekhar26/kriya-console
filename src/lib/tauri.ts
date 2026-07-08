@@ -131,6 +131,9 @@ export interface GovernableSurface {
   hookAvailable: boolean;
   /** Is `kriya-gateway` bundled/resolvable? */
   gatewayAvailable: boolean;
+  /** Is `kriya-hermes-hook` bundled/resolvable? A distinct binary/availability from
+   *  `hookAvailable` — Claude Code and Hermes each have their own hook adapter. */
+  hermesHookAvailable: boolean;
   /** macOS Accessibility trust for the desktop lane (`null`/absent off macOS). */
   axTrusted?: boolean | null;
   /** Running desktop-app names (reach-in/computer-use candidates) — for the Advanced drawer. */
@@ -172,6 +175,7 @@ export interface GovernPlan {
   blocked: GovernTarget[];
   hookAvailable: boolean;
   gatewayAvailable: boolean;
+  hermesHookAvailable: boolean;
 }
 /** The result of a `govern_all`. Mirrors Rust `govern::GovernAllReport`. */
 export interface GovernAllReport {

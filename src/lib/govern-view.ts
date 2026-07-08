@@ -42,10 +42,14 @@ export interface SurfaceSummary {
   total: number;
 }
 
-/** Can this target be wired now (ungoverned AND its seam binary is available)? */
+/** Can this target be wired now (ungoverned AND its seam binary is available)? Keyed on
+ *  (kind, agent), not kind alone — Claude Code and Hermes each have their own independent hook
+ *  binary/availability. */
 export function isWireable(target: GovernTarget, surface: GovernableSurface): boolean {
   if (target.state !== "ungoverned") return false;
-  if (target.kind === "hook") return surface.hookAvailable;
+  if (target.kind === "hook") {
+    return target.agent === "hermes" ? surface.hermesHookAvailable : surface.hookAvailable;
+  }
   if (target.kind === "mcp-server") return surface.gatewayAvailable;
   return false;
 }

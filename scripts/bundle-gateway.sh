@@ -37,11 +37,12 @@ mkdir -p "$DEST_DIR"
 #  • gateway: mcp-http adds the broker's remote (HTTP/SSE) upstream transport (W2-2) so the shipped
 #    Console can govern hosted MCP servers, not just local stdio; reach-in/computer-use/router are the
 #    desktop fronts. Same ureq client the runtime already uses; no extra FFI.
-#  • hook: mcp-client alone (it reuses Policy/ApprovalGate/Signer; the macOS GuiApproval needs no extra
-#    feature). std-only, tiny.
+#  • hook / hermes-hook: mcp-client alone (both reuse Policy/ApprovalGate/Signer; the macOS
+#    GuiApproval needs no extra feature). std-only, tiny.
 SIDECAR_SPECS=(
   "kriya-gateway:mcp-client,mcp-http,reach-in,computer-use,router"
   "kriya-hook:mcp-client"
+  "kriya-hermes-hook:mcp-client"
 )
 
 # Build one binary for one target triple; echo the resulting binary path on stdout (progress → stderr).

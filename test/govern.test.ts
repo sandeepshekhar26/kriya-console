@@ -18,10 +18,11 @@ const VALID_STATES: GovernState[] = ["governed", "ungoverned", "needs-permission
 describe("govern-all TS↔Rust serialized-shape parity", () => {
   it("the surface fixture is assignable to GovernableSurface with the expected top-level keys", () => {
     expect(Object.keys(surface).sort()).toEqual(
-      ["axTrusted", "desktopCandidates", "gatewayAvailable", "hookAvailable", "targets"].sort(),
+      ["axTrusted", "desktopCandidates", "gatewayAvailable", "hookAvailable", "hermesHookAvailable", "targets"].sort(),
     );
     expect(surface.hookAvailable).toBe(true);
     expect(surface.gatewayAvailable).toBe(true);
+    expect(surface.hermesHookAvailable).toBe(true);
     expect(surface.axTrusted).toBe(false);
     expect(surface.desktopCandidates).toEqual(["Numbers"]);
   });

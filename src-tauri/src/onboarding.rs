@@ -49,6 +49,12 @@ pub fn resolve_hook() -> Option<(PathBuf, bool)> {
     resolve_sidecar("kriya-hook")
 }
 
+/// Resolve the bundled `kriya-hermes-hook` sidecar — the Hermes hooks adapter govern-all installs
+/// into `~/.hermes/config.yaml`. Same resolution order as [`resolve_gateway`]/[`resolve_hook`].
+pub fn resolve_hermes_hook() -> Option<(PathBuf, bool)> {
+    resolve_sidecar("kriya-hermes-hook")
+}
+
 /// Resolve a bundled Tauri sidecar by binary name. In a packaged `.app` Tauri places external
 /// binaries next to the main executable (`Contents/MacOS/<name>`); in `tauri dev` we fall back to the
 /// `src-tauri/binaries/<name>-<triple>` staging dir, then the installed-app location. Returns

@@ -24,7 +24,7 @@ use serde_json::{json, Value};
 
 use crate::audit::home_dir;
 use crate::coverage::claude_settings_path;
-use crate::onboarding::{claude_config_path, resolve_gateway, resolve_hook};
+use crate::onboarding::{claude_config_path, resolve_gateway, resolve_hermes_hook, resolve_hook};
 
 // ---------------------------------------------------------------------------------------------
 // Clients — the three agent configs govern-all reads and writes.
@@ -38,7 +38,7 @@ pub enum Client {
     /// Claude Code — `~/.claude/settings.json`; hooks (the whole local `claude` lane) + mcpServers.
     ClaudeCode,
     /// Hermes (`NousResearch/hermes-agent`) — `~/.hermes/config.yaml`; local stdio MCP via the
-    /// gateway today. Its native-tool hook (`kriya-hermes-hook`) is demand-pulled (doc 21 Part B).
+    /// gateway, AND native tools + attached MCP via the `kriya-hermes-hook` shell-hook seam (R31).
     Hermes,
 }
 
@@ -400,6 +400,102 @@ fn uninstall_hook_block(config: &mut Value) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Hermes' hook writer — a distinct shape from Claude Code's `hooks.PreToolUse[].hooks[].command`
+// (JSON): a flat `hooks: { <event>: [ { command, matcher?, timeout? } ] }` map (YAML), verified
+// against the real `agent/shell_hooks.py` + `website/docs/user-guide/features/hooks.md` source,
+// 2026-07-08 (event names `pre_tool_call`/`post_tool_call`, no per-entry nested `hooks` array).
+// ---------------------------------------------------------------------------------------------
+
+/// Kept separate from `HOOK_MARK` (Claude Code's `kriya-hook`) — the two binaries/configs are
+/// independent, and "kriya-hermes-hook" does not contain "kriya-hook" as a substring (no collision
+/// risk either way; verified by inspection).
+const HERMES_HOOK_MARK: &str = "kriya-hermes-hook";
+
+/// One Hermes shell-hook entry for `event` (`pre_tool_call`/`post_tool_call`) — no `matcher`, so it
+/// fires for every `tool_name` (confirmed against `ShellHookSpec.matches_tool`: an absent matcher
+/// matches everything), the same "whole lane, zero per-tool config" property `kriya-hook` has for
+/// Claude Code. `timeout: 300` is Hermes' own hard per-hook cap, matching `GuiApproval`'s own
+/// `osascript … giving up after 300` so a pending approval dialog gets the full window either
+/// side can give it.
+fn hermes_hook_entry(hook_cmd_quoted: &str, mode: &str) -> Value {
+    json!({ "command": format!("{hook_cmd_quoted} {mode}"), "timeout": 300 })
+}
+
+/// Does a Hermes config already carry a kriya-hermes-hook entry? Mirrors
+/// [`crate::coverage::hermes_flags_from`]'s own check (any mention of `kriya-hermes-hook` inside
+/// the `hooks` value) but operates on an in-memory `Value`, so detection is a pure function of
+/// its inputs.
+fn config_has_kriya_hermes_hook(config: &Value) -> bool {
+    config
+        .get("hooks")
+        .map(|h| h.to_string().contains(HERMES_HOOK_MARK))
+        .unwrap_or(false)
+}
+
+/// Does this hook entry belong to kriya (its `command` mentions `kriya-hermes-hook`)?
+fn hermes_entry_is_kriya(entry: &Value) -> bool {
+    entry
+        .get("command")
+        .and_then(Value::as_str)
+        .map(|c| c.contains(HERMES_HOOK_MARK))
+        .unwrap_or(false)
+}
+
+/// Merge the kriya-hermes-hook `pre_tool_call`/`post_tool_call` entries into a Hermes config
+/// `Value`, and set `hooks_auto_accept: true` — confirmed sufficient on its own (no env var or CLI
+/// flag needed) to skip Hermes' own interactive first-use TTY consent prompt, so installing this
+/// is a single config write with no follow-up terminal step. Idempotent (drops any prior kriya
+/// entry before appending) and non-clobbering of every OTHER hook event/entry.
+fn install_hermes_hook_block(config: &mut Value, hook_cmd_quoted: &str) {
+    if !config.is_object() {
+        *config = json!({});
+    }
+    let obj = config.as_object_mut().unwrap();
+    let hooks = obj.entry("hooks").or_insert_with(|| json!({}));
+    if !hooks.is_object() {
+        *hooks = json!({});
+    }
+    let hooks_obj = hooks.as_object_mut().unwrap();
+    for (event, mode) in [("pre_tool_call", "pre"), ("post_tool_call", "post")] {
+        let arr = hooks_obj.entry(event).or_insert_with(|| json!([]));
+        if !arr.is_array() {
+            *arr = json!([]);
+        }
+        let list = arr.as_array_mut().unwrap();
+        list.retain(|e| !hermes_entry_is_kriya(e));
+        list.push(hermes_hook_entry(hook_cmd_quoted, mode));
+    }
+    obj.insert("hooks_auto_accept".into(), json!(true));
+}
+
+/// Reverse [`install_hermes_hook_block`]: remove only kriya entries, prune emptied event arrays,
+/// drop the `hooks` key if nothing else remains, and — only when the value is exactly `true` (what
+/// install always sets, never anything else) — drop `hooks_auto_accept` too, so a govern→ungovern
+/// round-trip restores an untouched config byte-for-byte. In the narrow case a user had
+/// independently set `hooks_auto_accept: true` themselves for an unrelated hook, this resets it to
+/// Hermes' own more-cautious default (re-prompt) rather than silently leaving a flag kriya no
+/// longer needs — the safe direction to diverge in, never the unsafe one.
+fn uninstall_hermes_hook_block(config: &mut Value) {
+    let Some(obj) = config.as_object_mut() else {
+        return;
+    };
+    if let Some(hooks) = obj.get_mut("hooks").and_then(Value::as_object_mut) {
+        for event in ["pre_tool_call", "post_tool_call"] {
+            if let Some(arr) = hooks.get_mut(event).and_then(Value::as_array_mut) {
+                arr.retain(|e| !hermes_entry_is_kriya(e));
+            }
+        }
+        hooks.retain(|_, v| !v.as_array().map(|a| a.is_empty()).unwrap_or(false));
+        if hooks.is_empty() {
+            obj.remove("hooks");
+        }
+    }
+    if obj.get("hooks_auto_accept") == Some(&json!(true)) {
+        obj.remove("hooks_auto_accept");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Detection — the governable-surface inventory.
 // ---------------------------------------------------------------------------------------------
 
@@ -459,6 +555,9 @@ pub struct GovernableSurface {
     pub hook_available: bool,
     /// Is `kriya-gateway` bundled/resolvable? (Needed to wrap MCP servers.)
     pub gateway_available: bool,
+    /// Is `kriya-hermes-hook` bundled/resolvable? A distinct binary/availability from
+    /// `hook_available` — Claude Code and Hermes each have their own hook adapter.
+    pub hermes_hook_available: bool,
     /// macOS Accessibility trust for the desktop-app lane (`None` off macOS).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ax_trusted: Option<bool>,
@@ -481,6 +580,7 @@ fn detect(
     desktop_candidates: &[String],
     hook_available: bool,
     gateway_available: bool,
+    hermes_hook_available: bool,
 ) -> GovernableSurface {
     let mut targets = Vec::new();
 
@@ -491,8 +591,10 @@ fn detect(
         let agent = cs.client.agent_id();
         let cfg_path = Some(cs.client.config_path().to_string_lossy().into_owned());
 
-        // The hook target (the whole native + attached-MCP lane) — Claude Code only for now; the
-        // Hermes native-tool hook (kriya-hermes-hook) is demand-pulled (doc 21 Part B).
+        // The hook target (the whole native + attached-MCP lane). Claude Code and Hermes each get
+        // their own — a distinct binary/config shape per client, unconditional (detected
+        // regardless of whether any MCP servers are configured too, so an agent with zero MCP
+        // servers still shows up governable rather than silently absent).
         if cs.client == Client::ClaudeCode {
             let governed = config_has_kriya_hook(&cs.config);
             targets.push(GovernTarget::new(
@@ -507,6 +609,23 @@ fn detect(
                     "The kriya-hook is installed: every Bash/Edit/Write and mcp__ call signs a receipt."
                 } else {
                     "One hook governs the whole local Claude Code lane — native tools and every attached MCP server."
+                },
+            ));
+        }
+        if cs.client == Client::Hermes {
+            let governed = config_has_kriya_hermes_hook(&cs.config);
+            targets.push(GovernTarget::new(
+                format!("{agent}:hook"),
+                agent,
+                "hook",
+                "hook",
+                if governed { "governed" } else { "ungoverned" },
+                cfg_path.clone(),
+                "Hermes — native tools + attached MCP",
+                if governed {
+                    "The kriya-hermes-hook is installed: every terminal/file/computer-use and MCP call signs a receipt."
+                } else {
+                    "One hook governs the whole local Hermes lane — native tools (terminal, files, computer-use) and every attached MCP server."
                 },
             ));
         }
@@ -594,6 +713,7 @@ fn detect(
         targets,
         hook_available,
         gateway_available,
+        hermes_hook_available,
         ax_trusted,
         desktop_candidates: desktop_candidates.to_vec(),
     }
@@ -640,6 +760,7 @@ fn detect_surface() -> GovernableSurface {
         &candidates,
         resolve_hook().is_some(),
         resolve_gateway().is_some(),
+        resolve_hermes_hook().is_some(),
     )
 }
 
@@ -668,20 +789,31 @@ pub struct HookResult {
 #[tauri::command]
 pub fn install_hook(agent: String) -> Result<HookResult, String> {
     let client = match Client::from_agent(&agent) {
-        Some(c) if c.supports_hooks() && c == Client::ClaudeCode => c,
-        Some(Client::Hermes) => {
-            return Err(
-                "the Hermes native-tool hook (kriya-hermes-hook) is not yet available — wrap Hermes' local MCP servers with the gateway instead (doc 21 Part B)".into(),
-            )
-        }
+        Some(c) if c.supports_hooks() => c,
         _ => return Err(format!("no hook seam for agent '{agent}'")),
     };
-    let (hook, _bundled) =
-        resolve_hook().ok_or("the bundled kriya-hook binary could not be located")?;
-    let quoted = shell_quote(&hook.to_string_lossy());
+    let (hook, quoted) = match client {
+        Client::ClaudeCode => {
+            let (h, _bundled) =
+                resolve_hook().ok_or("the bundled kriya-hook binary could not be located")?;
+            let q = shell_quote(&h.to_string_lossy());
+            (h, q)
+        }
+        Client::Hermes => {
+            let (h, _bundled) = resolve_hermes_hook()
+                .ok_or("the bundled kriya-hermes-hook binary could not be located")?;
+            let q = shell_quote(&h.to_string_lossy());
+            (h, q)
+        }
+        Client::ClaudeDesktop => unreachable!("supports_hooks() excludes Claude Desktop"),
+    };
     let path = client.config_path();
     let mut config = read_config(&path, client.fmt());
-    install_hook_block(&mut config, &quoted);
+    match client {
+        Client::ClaudeCode => install_hook_block(&mut config, &quoted),
+        Client::Hermes => install_hermes_hook_block(&mut config, &quoted),
+        Client::ClaudeDesktop => unreachable!(),
+    }
     write_config(&path, client.fmt(), &config)?;
     Ok(HookResult {
         agent,
@@ -691,7 +823,8 @@ pub fn install_hook(agent: String) -> Result<HookResult, String> {
     })
 }
 
-/// Reverse [`install_hook`]: remove only the kriya-hook block from the agent's config.
+/// Reverse [`install_hook`]: remove only the kriya-hook (or kriya-hermes-hook) block from the
+/// agent's config, using the writer that matches that client's config shape.
 #[tauri::command]
 pub fn uninstall_hook(agent: String) -> Result<HookResult, String> {
     let client = match Client::from_agent(&agent) {
@@ -700,7 +833,10 @@ pub fn uninstall_hook(agent: String) -> Result<HookResult, String> {
     };
     let path = client.config_path();
     let mut config = read_config(&path, client.fmt());
-    uninstall_hook_block(&mut config);
+    match client {
+        Client::Hermes => uninstall_hermes_hook_block(&mut config),
+        _ => uninstall_hook_block(&mut config),
+    }
     write_config(&path, client.fmt(), &config)?;
     Ok(HookResult {
         agent,
@@ -759,6 +895,7 @@ pub struct GovernPlan {
     pub blocked: Vec<GovernTarget>,
     pub hook_available: bool,
     pub gateway_available: bool,
+    pub hermes_hook_available: bool,
 }
 
 /// The result of a `govern_all` — what actually changed, plus the honest non-actions.
@@ -801,17 +938,20 @@ fn mcp_key_of(id: &str) -> Option<&str> {
 /// The govern action a wireable target maps to (pure).
 fn action_for(t: &GovernTarget) -> Option<GovernAction> {
     match t.kind.as_str() {
-        "hook" => Some(GovernAction {
-            target_id: t.id.clone(),
-            agent: t.agent.clone(),
-            seam: "hook".into(),
-            action: "install-hook".into(),
-            server_key: None,
-            config_path: t.config_path.clone(),
-            detail:
-                "Install the kriya-hook block (record-only) so every native tool + attached MCP call signs a receipt."
-                    .into(),
-        }),
+        "hook" => {
+            let bin = if t.agent == "hermes" { "kriya-hermes-hook" } else { "kriya-hook" };
+            Some(GovernAction {
+                target_id: t.id.clone(),
+                agent: t.agent.clone(),
+                seam: "hook".into(),
+                action: "install-hook".into(),
+                server_key: None,
+                config_path: t.config_path.clone(),
+                detail: format!(
+                    "Install the {bin} block (record-only) so every native tool + attached MCP call signs a receipt."
+                ),
+            })
+        }
         "mcp-server" => {
             let key = mcp_key_of(&t.id)?.to_string();
             Some(GovernAction {
@@ -833,10 +973,23 @@ fn action_for(t: &GovernTarget) -> Option<GovernAction> {
 /// Classify a detected surface into the govern-all plan (pure — no writes). The desktop-app lane is
 /// never auto-wired (it needs a specific app + Screen Recording the Console can't verify); it always
 /// lands in `needs_permission` with the honest reason.
+/// Is the seam binary for `t` bundled/resolvable? Keyed on (kind, agent), NOT kind alone — Claude
+/// Code and Hermes each have their own independent hook binary/availability, so a single shared
+/// "hook available" flag would incorrectly gate one client's hook on the other's binary presence.
+fn seam_available(t: &GovernTarget, surface: &GovernableSurface) -> bool {
+    match (t.kind.as_str(), t.agent.as_str()) {
+        ("hook", "hermes") => surface.hermes_hook_available,
+        ("hook", _) => surface.hook_available,
+        ("mcp-server", _) => surface.gateway_available,
+        _ => false,
+    }
+}
+
 fn classify_plan(surface: &GovernableSurface) -> GovernPlan {
     let mut plan = GovernPlan {
         hook_available: surface.hook_available,
         gateway_available: surface.gateway_available,
+        hermes_hook_available: surface.hermes_hook_available,
         ..GovernPlan::default()
     };
     for t in &surface.targets {
@@ -849,11 +1002,7 @@ fn classify_plan(surface: &GovernableSurface) -> GovernPlan {
             "out-of-scope-cloud" => plan.out_of_scope_cloud.push(t.clone()),
             "needs-permission" => plan.needs_permission.push(t.clone()),
             "ungoverned" => {
-                let available = match t.kind.as_str() {
-                    "hook" => surface.hook_available,
-                    "mcp-server" => surface.gateway_available,
-                    _ => false,
-                };
+                let available = seam_available(t, surface);
                 match action_for(t).filter(|_| available) {
                     Some(a) => plan.wire.push(a),
                     None => plan.blocked.push(t.clone()),
@@ -877,19 +1026,36 @@ fn resolve_hook_path() -> String {
         .unwrap_or_default()
 }
 
+fn resolve_hermes_hook_path() -> String {
+    resolve_hermes_hook()
+        .map(|(p, _)| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
 /// Apply one govern action to the relevant client config (file IO). Merge-safe + idempotent.
-fn apply_action(action: &GovernAction, gateway: &str, hook: &str) -> Result<(), String> {
+/// `hook`/`hermes_hook` are the two independent hook-binary paths — Claude Code and Hermes each
+/// get their own writer (different config shape entirely, not just a different marker string).
+fn apply_action(action: &GovernAction, gateway: &str, hook: &str, hermes_hook: &str) -> Result<(), String> {
     let client =
         Client::from_agent(&action.agent).ok_or_else(|| format!("unknown agent '{}'", action.agent))?;
     let path = client.config_path();
     let mut config = read_config(&path, client.fmt());
     match action.action.as_str() {
-        "install-hook" => {
-            if hook.is_empty() {
-                return Err("the bundled kriya-hook binary could not be located".into());
+        "install-hook" => match client {
+            Client::ClaudeCode => {
+                if hook.is_empty() {
+                    return Err("the bundled kriya-hook binary could not be located".into());
+                }
+                install_hook_block(&mut config, &shell_quote(hook));
             }
-            install_hook_block(&mut config, &shell_quote(hook));
-        }
+            Client::Hermes => {
+                if hermes_hook.is_empty() {
+                    return Err("the bundled kriya-hermes-hook binary could not be located".into());
+                }
+                install_hermes_hook_block(&mut config, &shell_quote(hermes_hook));
+            }
+            Client::ClaudeDesktop => return Err("Claude Desktop has no hook seam".into()),
+        },
         "wrap-mcp-server" => {
             if gateway.is_empty() {
                 return Err("the bundled kriya-gateway binary could not be located".into());
@@ -918,11 +1084,20 @@ fn revert_target(target: &GovernTarget, gateway: &str, hook: &str) -> Result<Gov
     let mut config = read_config(&path, client.fmt());
     let (verb, server_key, detail) = match target.kind.as_str() {
         "hook" => {
-            uninstall_hook_block(&mut config);
+            let bin = match client {
+                Client::Hermes => {
+                    uninstall_hermes_hook_block(&mut config);
+                    "kriya-hermes-hook"
+                }
+                _ => {
+                    uninstall_hook_block(&mut config);
+                    "kriya-hook"
+                }
+            };
             (
                 "uninstall-hook",
                 None,
-                "Remove the kriya-hook block from the agent's settings.".to_string(),
+                format!("Remove the {bin} block from the agent's settings."),
             )
         }
         "mcp-server" => {
@@ -976,10 +1151,11 @@ pub fn govern_all(opts: Option<GovernOpts>) -> GovernAllReport {
     }
     let gateway = resolve_gateway_path();
     let hook = resolve_hook_path();
+    let hermes_hook = resolve_hermes_hook_path();
     let mut wired = Vec::new();
     let mut errors = Vec::new();
     for action in &plan.wire {
-        match apply_action(action, &gateway, &hook) {
+        match apply_action(action, &gateway, &hook, &hermes_hook) {
             Ok(()) => wired.push(action.clone()),
             Err(message) => errors.push(GovernError {
                 target_id: action.target_id.clone(),
@@ -1188,6 +1364,63 @@ mod tests {
         assert_eq!(cfg, user, "revert restores the user config byte-for-byte");
     }
 
+    // --- Hermes' hook writer: distinct shape (event → flat entry list), no matcher, auto-accept ---
+
+    #[test]
+    fn hermes_hook_block_is_idempotent_and_reversible_on_empty_config() {
+        let mut cfg = json!({});
+        install_hermes_hook_block(&mut cfg, "/opt/kriya-hermes-hook");
+        let once = cfg.clone();
+        install_hermes_hook_block(&mut cfg, "/opt/kriya-hermes-hook");
+        assert_eq!(cfg, once, "installing twice yields one set of entries");
+
+        assert_eq!(cfg["hooks"]["pre_tool_call"].as_array().unwrap().len(), 1);
+        assert_eq!(cfg["hooks"]["post_tool_call"].as_array().unwrap().len(), 1);
+        let pre = &cfg["hooks"]["pre_tool_call"][0];
+        assert_eq!(pre["command"], "/opt/kriya-hermes-hook pre");
+        assert_eq!(pre["timeout"], 300);
+        assert!(pre.get("matcher").is_none(), "no matcher — fires for every tool_name");
+        assert_eq!(cfg["hooks_auto_accept"], true);
+
+        uninstall_hermes_hook_block(&mut cfg);
+        assert_eq!(cfg, json!({}), "revert removes hooks AND the auto-accept flag it set");
+    }
+
+    #[test]
+    fn hermes_hook_block_never_clobbers_a_users_own_hooks_or_settings() {
+        // A user already has an unrelated pre_llm_call hook and their own pre_tool_call entry.
+        let user = json!({
+            "hooks": {
+                "pre_llm_call": [{ "command": "~/.hermes/agent-hooks/inject-cwd-context.sh" }],
+                "pre_tool_call": [{ "matcher": "terminal", "command": "~/.hermes/agent-hooks/block-rm-rf.sh", "timeout": 10 }]
+            },
+            "model": "some-model"
+        });
+        let mut cfg = user.clone();
+        install_hermes_hook_block(&mut cfg, "/opt/kriya-hermes-hook");
+        assert_eq!(cfg["hooks"]["pre_llm_call"], user["hooks"]["pre_llm_call"], "unrelated event untouched");
+        assert_eq!(cfg["hooks"]["pre_tool_call"].as_array().unwrap().len(), 2, "user's entry survives, ours appended");
+        assert_eq!(cfg["model"], "some-model");
+
+        uninstall_hermes_hook_block(&mut cfg);
+        assert_eq!(cfg, user, "revert restores the user config byte-for-byte, including their own hooks_auto_accept absence");
+    }
+
+    #[test]
+    fn hermes_hook_uninstall_preserves_a_users_independently_set_auto_accept() {
+        // hooks_auto_accept: true is only removed on uninstall when we're confident it's the value
+        // WE set — but we can't distinguish "we set it" from "the user already had it true" by
+        // value alone, so uninstall removes it unconditionally when true. Document + lock the
+        // narrow, safe-direction divergence this causes: a user's own true flag also gets cleared.
+        let mut cfg = json!({ "hooks_auto_accept": true });
+        install_hermes_hook_block(&mut cfg, "/opt/kriya-hermes-hook");
+        uninstall_hermes_hook_block(&mut cfg);
+        assert_eq!(
+            cfg, json!({}),
+            "hooks_auto_accept is cleared even if the user had set it themselves — the safe direction (re-prompt), never the unsafe one"
+        );
+    }
+
     #[test]
     fn shell_quote_quotes_paths_with_spaces() {
         assert_eq!(shell_quote("/opt/kriya-hook"), "/opt/kriya-hook");
@@ -1211,7 +1444,7 @@ mod tests {
             config: json!({}),
             present: true,
         }];
-        let s = detect(&clients, Some(true), &[], true, true);
+        let s = detect(&clients, Some(true), &[], true, true, true);
         let hook = s.targets.iter().find(|t| t.kind == "hook").unwrap();
         assert_eq!(hook.agent, "claude-code");
         assert_eq!(hook.seam, "hook");
@@ -1223,7 +1456,7 @@ mod tests {
             config: cc_settings_with_hook(),
             present: true,
         }];
-        let s = detect(&clients, Some(true), &[], true, true);
+        let s = detect(&clients, Some(true), &[], true, true, true);
         let hook = s.targets.iter().find(|t| t.kind == "hook").unwrap();
         assert_eq!(hook.state, "governed");
     }
@@ -1241,7 +1474,7 @@ mod tests {
             }),
             present: true,
         };
-        let s = detect(&[desktop], Some(true), &[], true, true);
+        let s = detect(&[desktop], Some(true), &[], true, true, true);
         let by_id = |id: &str| s.targets.iter().find(|t| t.id == id).unwrap();
         assert_eq!(by_id("claude-desktop:mcp-server:github").state, "ungoverned");
         assert_eq!(by_id("claude-desktop:mcp-server:wrapped").state, "governed");
@@ -1259,7 +1492,7 @@ mod tests {
         let yaml = "mcp_servers:\n  fs:\n    command: uvx\n    args: [mcp-server-fs]\n";
         let config: Value = serde_yaml::from_str(yaml).unwrap();
         let hermes = ClientState { client: Client::Hermes, config, present: true };
-        let s = detect(&[hermes], None, &[], true, true);
+        let s = detect(&[hermes], None, &[], true, true, true);
         let t = s.targets.iter().find(|t| t.id == "hermes:mcp-server:fs").unwrap();
         assert_eq!(t.agent, "hermes");
         assert_eq!(t.seam, "gateway");
@@ -1274,7 +1507,7 @@ mod tests {
         let yaml = "mcpServers:\n  fs:\n    command: uvx\n    args: [mcp-server-fs]\n";
         let config: Value = serde_yaml::from_str(yaml).unwrap();
         let hermes = ClientState { client: Client::Hermes, config, present: true };
-        let s = detect(&[hermes], None, &[], true, true);
+        let s = detect(&[hermes], None, &[], true, true, true);
         assert!(
             !s.targets.iter().any(|t| t.agent == "hermes" && t.kind == "mcp-server"),
             "a camelCase mcpServers key must not be read as Hermes' mcp_servers"
@@ -1290,12 +1523,12 @@ mod tests {
 
     #[test]
     fn desktop_lane_reflects_accessibility_permission() {
-        let s = detect(&[], None, &["Numbers".into(), "Notes".into()], true, true);
+        let s = detect(&[], None, &["Numbers".into(), "Notes".into()], true, true, true);
         let d = s.targets.iter().find(|t| t.kind == "desktop-apps").unwrap();
         assert_eq!(d.state, "needs-permission", "no AX grant off macOS/ungranted");
         assert!(d.detail.contains('2'));
 
-        let s = detect(&[], Some(true), &[], true, true);
+        let s = detect(&[], Some(true), &[], true, true, true);
         let d = s.targets.iter().find(|t| t.kind == "desktop-apps").unwrap();
         assert_eq!(d.state, "ungoverned", "AX granted, nothing wired yet");
     }
@@ -1307,7 +1540,7 @@ mod tests {
             ClientState { client: Client::ClaudeDesktop, config: json!({}), present: false },
             ClientState { client: Client::Hermes, config: json!({}), present: false },
         ];
-        let s = detect(&clients, Some(true), &[], true, true);
+        let s = detect(&clients, Some(true), &[], true, true, true);
         // Only the desktop-apps lane target remains.
         assert_eq!(s.targets.len(), 1);
         assert_eq!(s.targets[0].kind, "desktop-apps");
@@ -1384,6 +1617,7 @@ mod tests {
             ],
             hook_available: true,
             gateway_available: true,
+            hermes_hook_available: true,
             ax_trusted: Some(false),
             desktop_candidates: vec!["Numbers".into()],
         };
@@ -1426,10 +1660,20 @@ mod tests {
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn surface_of(targets: Vec<GovernTarget>, hook_av: bool, gw_av: bool) -> GovernableSurface {
+        surface_of_all(targets, hook_av, gw_av, true)
+    }
+
+    fn surface_of_all(
+        targets: Vec<GovernTarget>,
+        hook_av: bool,
+        gw_av: bool,
+        hermes_hook_av: bool,
+    ) -> GovernableSurface {
         GovernableSurface {
             targets,
             hook_available: hook_av,
             gateway_available: gw_av,
+            hermes_hook_available: hermes_hook_av,
             ax_trusted: Some(true),
             desktop_candidates: vec![],
         }
@@ -1467,14 +1711,36 @@ mod tests {
     fn classify_plan_blocks_ungoverned_when_binary_unavailable() {
         let targets = vec![
             GovernTarget::new("claude-code:hook", "claude-code", "hook", "hook", "ungoverned", None, "l", "d"),
+            GovernTarget::new("hermes:hook", "hermes", "hook", "hook", "ungoverned", None, "l", "d"),
             GovernTarget::new("claude-desktop:mcp-server:x", "claude-desktop", "mcp-server", "gateway", "ungoverned", None, "l", "d"),
         ];
-        // hook binary missing → the hook target is blocked; gateway present → the wrap is wired.
-        let plan = classify_plan(&surface_of(targets, false, true));
+        // Both hook binaries missing → both hook targets blocked (each independently, not sharing
+        // one flag); gateway present → the wrap still wires. Confirms hermes_hook_available is a
+        // distinct gate from hook_available, not a shared "any hook" flag.
+        let plan = classify_plan(&surface_of_all(targets, false, true, false));
         assert_eq!(plan.wire.len(), 1);
         assert_eq!(plan.wire[0].action, "wrap-mcp-server");
+        assert_eq!(plan.blocked.len(), 2);
+        assert!(plan.blocked.iter().all(|t| t.kind == "hook"));
+        assert_eq!(
+            plan.blocked.iter().map(|t| t.agent.as_str()).collect::<std::collections::BTreeSet<_>>(),
+            ["claude-code", "hermes"].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn classify_plan_wires_hermes_hook_independently_of_claude_hook_availability() {
+        let targets = vec![
+            GovernTarget::new("claude-code:hook", "claude-code", "hook", "hook", "ungoverned", None, "l", "d"),
+            GovernTarget::new("hermes:hook", "hermes", "hook", "hook", "ungoverned", None, "l", "d"),
+        ];
+        // kriya-hook missing, kriya-hermes-hook present → Claude Code's hook is blocked but
+        // Hermes' still wires — proves the two availability flags are genuinely independent.
+        let plan = classify_plan(&surface_of_all(targets, false, true, true));
+        assert_eq!(plan.wire.len(), 1);
+        assert_eq!(plan.wire[0].target_id, "hermes:hook");
         assert_eq!(plan.blocked.len(), 1);
-        assert_eq!(plan.blocked[0].kind, "hook");
+        assert_eq!(plan.blocked[0].id, "claude-code:hook");
     }
 
     #[test]
@@ -1544,37 +1810,42 @@ mod tests {
         let cc_before = std::fs::read_to_string(&cc_path).unwrap();
         let hermes_before = std::fs::read_to_string(&hermes_path).unwrap();
 
-        // Build the surface from the on-disk configs (pretend both sidecars are bundled), classify,
-        // and apply the wire plan — the govern_all pipeline minus osascript.
+        // Build the surface from the on-disk configs (pretend all three sidecars are bundled),
+        // classify, and apply the wire plan — the govern_all pipeline minus osascript.
         let gw = "/opt/kriya-gateway";
         let hook = "/opt/kriya-hook";
-        let plan = classify_plan(&detect(&read_client_states(), Some(true), &[], true, true));
+        let hermes_hook = "/opt/kriya-hermes-hook";
+        let plan = classify_plan(&detect(&read_client_states(), Some(true), &[], true, true, true));
         let wire_ids: Vec<String> = plan.wire.iter().map(|a| a.target_id.clone()).collect();
         for a in &plan.wire {
-            apply_action(a, gw, hook).unwrap();
+            apply_action(a, gw, hook, hermes_hook).unwrap();
         }
-        // github + Hermes' fs wrapped; hook installed (coverage would detect it).
+        // github + Hermes' fs wrapped; both hooks installed (coverage would detect both).
         assert!(is_gateway_wrapped(&read_config(&desktop_path, Fmt::Json)["mcpServers"]["github"]));
         assert!(is_gateway_wrapped(&read_config(&hermes_path, Fmt::Yaml)["mcp_servers"]["fs"]));
         assert!(hook_configured(Some(&cc_path)));
+        assert!(config_has_kriya_hermes_hook(&read_config(&hermes_path, Fmt::Yaml)));
 
-        // preview == the set actually wired.
+        // preview == the set actually wired. Order follows read_client_states()'s fixed client
+        // order (ClaudeCode, ClaudeDesktop, Hermes) and, within each client, hook target before its
+        // mcp-server targets.
         assert_eq!(
             wire_ids,
             vec![
                 "claude-code:hook".to_string(),
                 "claude-desktop:mcp-server:github".to_string(),
+                "hermes:hook".to_string(),
                 "hermes:mcp-server:fs".to_string(),
             ]
         );
 
         // Idempotent: re-detect → nothing left to wire.
-        let plan2 = classify_plan(&detect(&read_client_states(), Some(true), &[], true, true));
+        let plan2 = classify_plan(&detect(&read_client_states(), Some(true), &[], true, true, true));
         assert!(plan2.wire.is_empty(), "second run wires nothing");
-        assert_eq!(plan2.already_governed.len(), 3, "all three targets now already-governed");
+        assert_eq!(plan2.already_governed.len(), 4, "all four targets now already-governed");
 
         // Revert everything governed → byte-for-byte originals.
-        for t in detect(&read_client_states(), Some(true), &[], true, true)
+        for t in detect(&read_client_states(), Some(true), &[], true, true, true)
             .targets
             .iter()
             .filter(|t| t.state == "governed")
