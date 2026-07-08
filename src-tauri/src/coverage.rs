@@ -521,11 +521,18 @@ pub fn classify_agents(
     vec![claude_code, hermes]
 }
 
-/// Read the Hermes config for the two AMBER flags: is a `kriya-hermes-hook` block wired, and is any
-/// local MCP server wrapped by `kriya-gateway`? Best-effort (missing/invalid config ⇒ both false).
+/// Read the Hermes config at the real, standard path for the two AMBER flags (production call site).
 fn hermes_flags() -> (bool, bool) {
-    let path = crate::govern::hermes_config_path();
-    let Ok(text) = std::fs::read_to_string(&path) else {
+    hermes_flags_from(&crate::govern::hermes_config_path())
+}
+
+/// Is a `kriya-hermes-hook` block wired, and is any local MCP server wrapped by `kriya-gateway`?
+/// Best-effort (missing/invalid config ⇒ both false). Injectable path so this is fixture-testable,
+/// mirroring [`classify`]'s injectable `audit_dir` — a hermetic unit test caught this function's one
+/// real bug (it originally looked up Claude's `mcpServers` key; Hermes' real on-disk key is
+/// `mcp_servers`, per `hermes_cli/mcp_config.py`) where the production-only call site couldn't.
+fn hermes_flags_from(path: &Path) -> (bool, bool) {
+    let Ok(text) = std::fs::read_to_string(path) else {
         return (false, false);
     };
     let Ok(v) = serde_yaml::from_str::<Value>(&text) else {
@@ -536,7 +543,7 @@ fn hermes_flags() -> (bool, bool) {
         .map(|h| h.to_string().contains("kriya-hermes-hook"))
         .unwrap_or(false);
     let gateway = v
-        .get("mcpServers")
+        .get(crate::govern::Client::Hermes.servers_key())
         .and_then(Value::as_object)
         .map(|m| {
             m.values().any(|e| {
@@ -1018,6 +1025,46 @@ mod tests {
         assert_eq!(agent_lane(&cov, "claude-code", "attached-mcp").state, LaneState::Amber);
         assert_eq!(agent_lane(&cov, "hermes", "mcp").state, LaneState::Amber);
         assert_eq!(agent_lane(&cov, "hermes", "native-tools").state, LaneState::Grey, "hook still deferred");
+    }
+
+    /// Regression (found live, 2026-07-08): a real Hermes config's servers live under `mcp_servers`
+    /// (snake_case, verified against `hermes_cli/mcp_config.py`) — the ORIGINAL `hermes_flags` looked
+    /// up Claude's `mcpServers` (camelCase) for every client, so a genuinely gateway-wrapped Hermes
+    /// server was invisible: this flag stayed false, and the Coverage view's Hermes MCP lane silently
+    /// stayed GREY / never went AMBER-then-GREEN, exactly mirroring the "not auto-detected in Govern
+    /// everything" symptom (govern.rs's `servers_ref` had the identical bug).
+    #[test]
+    fn hermes_flags_reads_the_real_snake_case_mcp_servers_key() {
+        let dir = tmp("hermes-flags");
+        let path = dir.join("config.yaml");
+
+        // No file yet ⇒ both false, not an error.
+        assert_eq!(hermes_flags_from(&path), (false, false));
+
+        // A real Hermes config: a gateway-wrapped server under `mcp_servers`, no hooks block yet.
+        std::fs::write(
+            &path,
+            "mcp_servers:\n  fs:\n    command: /opt/kriya-gateway\n    args: [proxy, --, uvx, mcp-server-fs]\n",
+        )
+        .unwrap();
+        assert_eq!(hermes_flags_from(&path), (false, true), "gateway flag must read mcp_servers, not mcpServers");
+
+        // The camelCase key some earlier code (and this file's own original bug) assumed must NOT
+        // be read as Hermes' servers — proves the two clients' keys are genuinely distinct.
+        std::fs::write(
+            &path,
+            "mcpServers:\n  fs:\n    command: /opt/kriya-gateway\n    args: [proxy, --, uvx, mcp-server-fs]\n",
+        )
+        .unwrap();
+        assert_eq!(hermes_flags_from(&path), (false, false), "camelCase mcpServers must not be recognized");
+
+        // Add the (not-yet-built) hermes-hook block alongside a real mcp_servers map — both flags true.
+        std::fs::write(
+            &path,
+            "hooks:\n  pre_tool_call: kriya-hermes-hook pre\nmcp_servers:\n  fs:\n    command: /opt/kriya-gateway\n    args: [proxy]\n",
+        )
+        .unwrap();
+        assert_eq!(hermes_flags_from(&path), (true, true));
     }
 
     #[test]

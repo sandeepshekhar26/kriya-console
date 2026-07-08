@@ -52,7 +52,11 @@ fn govern_all_round_trip_on_real_configs() {
     let hermes = seed(
         &sandbox,
         ".hermes/config.yaml",
-        "mcpServers:\n  fs:\n    command: uvx\n    args: [mcp-server-fs]\n",
+        // Hermes' real on-disk key (verified against hermes_cli/mcp_config.py): `mcp_servers`
+        // (snake_case) — NOT Claude's `mcpServers`. This sample previously used the wrong key,
+        // which is exactly how the real bug (a Hermes install invisible to detection) shipped
+        // undetected: the fixture mirrored the same incorrect assumption as the implementation.
+        "mcp_servers:\n  fs:\n    command: uvx\n    args: [mcp-server-fs]\n",
     );
 
     // Whether each file is YAML (Hermes) or JSON — for the content-equality check.

@@ -97,9 +97,24 @@ impl Client {
             Client::ClaudeDesktop => None, // a GUI app, not a PATH binary
         }
     }
+
+    /// The top-level key this client's config uses for its MCP-server map. Claude Desktop and Claude
+    /// Code both use Anthropic's `mcpServers` (camelCase); Hermes stores the identical shape under
+    /// `mcp_servers` (snake_case) — verified against the real `hermes_cli/mcp_config.py` source
+    /// (`_get_mcp_servers`/`_save_mcp_server` read/write `config.get("mcp_servers")`/
+    /// `config.setdefault("mcp_servers", {})`), not copied by analogy from Claude's convention. Getting
+    /// this wrong means a real Hermes install's configured servers are silently invisible to
+    /// detection — found live (2026-07-08): a user's Hermes agent never appeared in "Govern
+    /// everything" because the original code looked up `mcpServers` universally.
+    pub(crate) fn servers_key(self) -> &'static str {
+        match self {
+            Client::Hermes => "mcp_servers",
+            _ => "mcpServers",
+        }
+    }
 }
 
-/// `~/.hermes/config.yaml` — Hermes' agent config (the `mcpServers:` map + a future `hooks:` block).
+/// `~/.hermes/config.yaml` — Hermes' agent config (the `mcp_servers:` map + a future `hooks:` block).
 pub fn hermes_config_path() -> PathBuf {
     home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -146,40 +161,42 @@ fn write_config(path: &Path, fmt: Fmt, v: &Value) -> Result<(), String> {
     std::fs::write(path, text).map_err(|e| format!("writing {}: {e}", path.display()))
 }
 
-/// The `mcpServers` object, created if absent (or replaced if it exists as a non-object).
-fn servers_mut(config: &mut Value) -> &mut serde_json::Map<String, Value> {
+/// The client's MCP-servers object (keyed per [`Client::servers_key`] — `mcpServers` for Claude,
+/// `mcp_servers` for Hermes), created if absent (or replaced if it exists as a non-object).
+fn servers_mut(config: &mut Value, client: Client) -> &mut serde_json::Map<String, Value> {
     if !config.is_object() {
         *config = json!({});
     }
     let obj = config.as_object_mut().unwrap();
-    let servers = obj.entry("mcpServers").or_insert_with(|| json!({}));
+    let servers = obj.entry(client.servers_key()).or_insert_with(|| json!({}));
     if !servers.is_object() {
         *servers = json!({});
     }
     servers.as_object_mut().unwrap()
 }
 
-fn servers_ref(config: &Value) -> Option<&serde_json::Map<String, Value>> {
-    config.get("mcpServers").and_then(Value::as_object)
+fn servers_ref(config: &Value, client: Client) -> Option<&serde_json::Map<String, Value>> {
+    config.get(client.servers_key()).and_then(Value::as_object)
 }
 
-/// Insert/replace one `mcpServers` entry in a client's config, merge-safe (never touches other
-/// servers or top-level keys) and format-correct (JSON for the Claude configs, YAML for Hermes).
-/// The shared write primitive under `wire_claude_config` and (GA-1) `govern_all`.
+/// Insert/replace one MCP-server entry in a client's config, merge-safe (never touches other
+/// servers or top-level keys) and format-correct (JSON for the Claude configs, YAML for Hermes;
+/// `mcpServers` vs `mcp_servers` per [`Client::servers_key`]). The shared write primitive under
+/// `wire_claude_config` and (GA-1) `govern_all`.
 pub fn upsert_server(client: Client, key: &str, entry: Value) -> Result<PathBuf, String> {
     let path = client.config_path();
     let mut config = read_config(&path, client.fmt());
-    servers_mut(&mut config).insert(key.to_string(), entry);
+    servers_mut(&mut config, client).insert(key.to_string(), entry);
     write_config(&path, client.fmt(), &config)?;
     Ok(path)
 }
 
-/// Remove one `mcpServers` entry from a client's config (the revert half of [`upsert_server`]).
+/// Remove one MCP-server entry from a client's config (the revert half of [`upsert_server`]).
 /// No-op if the key is absent; leaves everything else untouched.
 pub fn remove_server(client: Client, key: &str) -> Result<PathBuf, String> {
     let path = client.config_path();
     let mut config = read_config(&path, client.fmt());
-    if let Some(servers) = config.get_mut("mcpServers").and_then(Value::as_object_mut) {
+    if let Some(servers) = config.get_mut(client.servers_key()).and_then(Value::as_object_mut) {
         servers.remove(key);
     }
     write_config(&path, client.fmt(), &config)?;
@@ -495,7 +512,7 @@ fn detect(
         }
 
         // Local stdio MCP servers referenced in this client's config.
-        if let Some(servers) = servers_ref(&cs.config) {
+        if let Some(servers) = servers_ref(&cs.config, cs.client) {
             for (key, entry) in servers {
                 if let Some(sub) = gateway_subcommand(entry) {
                     match sub.as_str() {
@@ -878,7 +895,7 @@ fn apply_action(action: &GovernAction, gateway: &str, hook: &str) -> Result<(), 
                 return Err("the bundled kriya-gateway binary could not be located".into());
             }
             let key = action.server_key.as_deref().ok_or("wrap action missing server key")?;
-            let servers = servers_mut(&mut config);
+            let servers = servers_mut(&mut config, client);
             let entry = servers
                 .get(key)
                 .cloned()
@@ -912,7 +929,7 @@ fn revert_target(target: &GovernTarget, gateway: &str, hook: &str) -> Result<Gov
             let key = mcp_key_of(&target.id)
                 .ok_or_else(|| format!("malformed target id '{}'", target.id))?
                 .to_string();
-            let servers = servers_mut(&mut config);
+            let servers = servers_mut(&mut config, client);
             let entry = servers
                 .get(&key)
                 .cloned()
@@ -1078,39 +1095,52 @@ mod tests {
         assert!(unwrap_entry(&reachin).is_none());
     }
 
-    // --- The mcpServers writer: idempotency + non-clobber ------------------------------------
+    // --- The MCP-servers writer: idempotency + non-clobber, per client key -------------------
 
+    /// Verified against the real `hermes_cli/mcp_config.py` source (2026-07-08): Hermes keys its MCP
+    /// servers under `mcp_servers` (snake_case) — Claude's `mcpServers` (camelCase) does NOT apply.
+    /// Parameterized over BOTH clients so this test would have caught the real bug (a Hermes install's
+    /// servers were silently invisible to detection because the code assumed `mcpServers` everywhere).
     #[test]
     fn wrapping_all_servers_is_idempotent_and_non_clobbering() {
-        let mut cfg = json!({
-            "mcpServers": {
-                "github": { "command": "npx", "args": ["-y", "server-github"] },
-                "already": { "command": "/g/kriya-gateway", "args": ["proxy", "--", "node", "s.js"] },
-                "remote": { "url": "https://x/mcp" }
-            },
-            "unrelated": { "keep": true }
-        });
+        for (client, key) in [
+            (Client::ClaudeDesktop, "mcpServers"),
+            (Client::Hermes, "mcp_servers"),
+        ] {
+            let mut cfg = json!({
+                key: {
+                    "github": { "command": "npx", "args": ["-y", "server-github"] },
+                    "already": { "command": "/g/kriya-gateway", "args": ["proxy", "--", "node", "s.js"] },
+                    "remote": { "url": "https://x/mcp" }
+                },
+                "unrelated": { "keep": true }
+            });
 
-        let wrap_all = |cfg: &mut Value| {
-            let servers = servers_mut(cfg);
-            let keys: Vec<String> = servers.keys().cloned().collect();
-            for k in keys {
-                if let Some(w) = wrap_entry(&servers[&k], "/g/kriya-gateway", "claude-desktop", "gui") {
-                    servers.insert(k, w);
+            let wrap_all = |cfg: &mut Value| {
+                let servers = servers_mut(cfg, client);
+                let keys: Vec<String> = servers.keys().cloned().collect();
+                for k in keys {
+                    if let Some(w) = wrap_entry(&servers[&k], "/g/kriya-gateway", client.agent_id(), "gui") {
+                        servers.insert(k, w);
+                    }
                 }
-            }
-        };
+            };
 
-        wrap_all(&mut cfg);
-        let after_first = cfg.clone();
-        // github got wrapped; remote + already-wrapped + unrelated untouched.
-        assert_eq!(gateway_subcommand(&cfg["mcpServers"]["github"]).as_deref(), Some("proxy"));
-        assert_eq!(cfg["mcpServers"]["remote"], json!({ "url": "https://x/mcp" }));
-        assert_eq!(cfg["unrelated"], json!({ "keep": true }));
+            wrap_all(&mut cfg);
+            let after_first = cfg.clone();
+            // github got wrapped; remote + already-wrapped + unrelated untouched.
+            assert_eq!(
+                gateway_subcommand(&cfg[key]["github"]).as_deref(),
+                Some("proxy"),
+                "{key}: github should be wrapped"
+            );
+            assert_eq!(cfg[key]["remote"], json!({ "url": "https://x/mcp" }));
+            assert_eq!(cfg["unrelated"], json!({ "keep": true }));
 
-        // A second pass changes nothing.
-        wrap_all(&mut cfg);
-        assert_eq!(cfg, after_first, "wrapping is idempotent");
+            // A second pass changes nothing.
+            wrap_all(&mut cfg);
+            assert_eq!(cfg, after_first, "{key}: wrapping is idempotent");
+        }
     }
 
     // --- The hooks writer: idempotency, non-clobber, byte-for-byte revert --------------------
@@ -1222,8 +1252,11 @@ mod tests {
 
     #[test]
     fn hermes_yaml_servers_are_detected_as_gateway_targets() {
-        // Hermes config parsed from YAML lands as the same Value shape.
-        let yaml = "mcpServers:\n  fs:\n    command: uvx\n    args: [mcp-server-fs]\n";
+        // Hermes config parsed from YAML lands as the same Value shape. Real key verified against
+        // hermes_cli/mcp_config.py: `mcp_servers` (snake_case) — NOT Claude's `mcpServers`. A fixture
+        // using the wrong key would make this test pass for the wrong reason (mirroring the same bug
+        // the implementation had), so this is the literal on-disk shape a real Hermes config uses.
+        let yaml = "mcp_servers:\n  fs:\n    command: uvx\n    args: [mcp-server-fs]\n";
         let config: Value = serde_yaml::from_str(yaml).unwrap();
         let hermes = ClientState { client: Client::Hermes, config, present: true };
         let s = detect(&[hermes], None, &[], true, true);
@@ -1231,6 +1264,28 @@ mod tests {
         assert_eq!(t.agent, "hermes");
         assert_eq!(t.seam, "gateway");
         assert_eq!(t.state, "ungoverned");
+    }
+
+    #[test]
+    fn hermes_camelcase_mcpservers_key_is_not_recognized() {
+        // The inverse guard: if a Hermes config were (incorrectly) shaped like Claude's — camelCase
+        // `mcpServers` — detection must NOT pick it up, proving the two clients' keys are genuinely
+        // distinct rather than the lookup silently accepting either.
+        let yaml = "mcpServers:\n  fs:\n    command: uvx\n    args: [mcp-server-fs]\n";
+        let config: Value = serde_yaml::from_str(yaml).unwrap();
+        let hermes = ClientState { client: Client::Hermes, config, present: true };
+        let s = detect(&[hermes], None, &[], true, true);
+        assert!(
+            !s.targets.iter().any(|t| t.agent == "hermes" && t.kind == "mcp-server"),
+            "a camelCase mcpServers key must not be read as Hermes' mcp_servers"
+        );
+    }
+
+    #[test]
+    fn servers_key_is_camelcase_for_claude_and_snake_case_for_hermes() {
+        assert_eq!(Client::ClaudeDesktop.servers_key(), "mcpServers");
+        assert_eq!(Client::ClaudeCode.servers_key(), "mcpServers");
+        assert_eq!(Client::Hermes.servers_key(), "mcp_servers");
     }
 
     #[test]
@@ -1463,11 +1518,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(home.join(".claude")).unwrap();
         std::fs::create_dir_all(home.join("Library/Application Support/Claude")).unwrap();
+        std::fs::create_dir_all(home.join(".hermes")).unwrap();
         let prev_home = std::env::var_os("HOME");
         std::env::set_var("HOME", &home);
 
         let desktop_path = Client::ClaudeDesktop.config_path();
         let cc_path = Client::ClaudeCode.config_path();
+        let hermes_path = Client::Hermes.config_path();
         write_config(
             &desktop_path,
             Fmt::Json,
@@ -1475,8 +1532,17 @@ mod tests {
         )
         .unwrap();
         write_config(&cc_path, Fmt::Json, &json!({ "permissions": { "allow": ["Read"] } })).unwrap();
+        // Hermes' real on-disk key, per hermes_cli/mcp_config.py: `mcp_servers` (snake_case) — the
+        // exact shape whose camelCase-only lookup was the live bug this test locks in the fix for.
+        write_config(
+            &hermes_path,
+            Fmt::Yaml,
+            &json!({ "mcp_servers": { "fs": { "command": "uvx", "args": ["mcp-server-fs"] } } }),
+        )
+        .unwrap();
         let desktop_before = std::fs::read_to_string(&desktop_path).unwrap();
         let cc_before = std::fs::read_to_string(&cc_path).unwrap();
+        let hermes_before = std::fs::read_to_string(&hermes_path).unwrap();
 
         // Build the surface from the on-disk configs (pretend both sidecars are bundled), classify,
         // and apply the wire plan — the govern_all pipeline minus osascript.
@@ -1487,20 +1553,25 @@ mod tests {
         for a in &plan.wire {
             apply_action(a, gw, hook).unwrap();
         }
-        // github wrapped; hook installed (coverage would detect it).
+        // github + Hermes' fs wrapped; hook installed (coverage would detect it).
         assert!(is_gateway_wrapped(&read_config(&desktop_path, Fmt::Json)["mcpServers"]["github"]));
+        assert!(is_gateway_wrapped(&read_config(&hermes_path, Fmt::Yaml)["mcp_servers"]["fs"]));
         assert!(hook_configured(Some(&cc_path)));
 
         // preview == the set actually wired.
         assert_eq!(
             wire_ids,
-            vec!["claude-code:hook".to_string(), "claude-desktop:mcp-server:github".to_string()]
+            vec![
+                "claude-code:hook".to_string(),
+                "claude-desktop:mcp-server:github".to_string(),
+                "hermes:mcp-server:fs".to_string(),
+            ]
         );
 
         // Idempotent: re-detect → nothing left to wire.
         let plan2 = classify_plan(&detect(&read_client_states(), Some(true), &[], true, true));
         assert!(plan2.wire.is_empty(), "second run wires nothing");
-        assert_eq!(plan2.already_governed.len(), 2, "both targets now already-governed");
+        assert_eq!(plan2.already_governed.len(), 3, "all three targets now already-governed");
 
         // Revert everything governed → byte-for-byte originals.
         for t in detect(&read_client_states(), Some(true), &[], true, true)
@@ -1512,6 +1583,7 @@ mod tests {
         }
         assert_eq!(std::fs::read_to_string(&desktop_path).unwrap(), desktop_before, "desktop config restored byte-for-byte");
         assert_eq!(std::fs::read_to_string(&cc_path).unwrap(), cc_before, "claude code settings restored byte-for-byte");
+        assert_eq!(std::fs::read_to_string(&hermes_path).unwrap(), hermes_before, "hermes config restored byte-for-byte");
 
         match prev_home {
             Some(h) => std::env::set_var("HOME", h),
