@@ -46,12 +46,30 @@ export interface LaneInfo {
   lastReceiptMs?: number | null;
   files: number;
 }
+/** One lane within an agent's coverage group (GA-2). Mirrors Rust `coverage::AgentLane`. */
+export interface AgentLane {
+  id: string;
+  title: string;
+  state: LaneState;
+  source?: string | null;
+  lastReceiptMs?: number | null;
+  /** For an out-of-scope lane: why it can't produce an on-device receipt. */
+  locus?: string | null;
+}
+/** One agent's coverage group. Mirrors Rust `coverage::AgentCoverage`. */
+export interface AgentCoverage {
+  agent: string;
+  label: string;
+  lanes: AgentLane[];
+}
 export interface CoverageStatus {
   windowH: number;
   lanes: Record<string, LaneInfo>;
   lastSnapshotMs?: number | null;
   snapshotChainOk: boolean;
   snapshots: number;
+  /** Per-agent coverage groups (Claude Code, Hermes) — a view layer over the same audit dir. */
+  agents: AgentCoverage[];
 }
 export const coverageStatus = () => invoke<CoverageStatus>("coverage_status");
 

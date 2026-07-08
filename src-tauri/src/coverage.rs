@@ -85,6 +85,9 @@ pub struct CoverageStatus {
     pub snapshot_chain_ok: bool,
     /// Total snapshots in the chain (the heartbeat history depth).
     pub snapshots: usize,
+    /// Per-agent coverage groups (GA-2) — Claude Code and Hermes on the same substrate, with the
+    /// honest cloud line. A view layer over the same audit dir; not part of the signed snapshot.
+    pub agents: Vec<AgentCoverage>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -337,6 +340,218 @@ pub fn classify(
 }
 
 // ---------------------------------------------------------------------------------------------
+// Multi-agent coverage view (GA-2, doc 21 §UI) — the same substrate, grouped per agent.
+//
+// This is a **read-only view layer** on top of the same audit dir; it does NOT change the six
+// signed lanes or the snapshot format (the chain stays byte-identical + verifiable). It answers
+// "how is each of my agents governed" — Claude Code and Hermes on one map — with the honest cloud
+// line (off-device surfaces greyed with their locus reason).
+// ---------------------------------------------------------------------------------------------
+
+/// One lane within an agent's coverage group.
+#[derive(Serialize, Clone, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentLane {
+    pub id: String,
+    pub title: String,
+    pub state: LaneState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_receipt_ms: Option<u64>,
+    /// For an out-of-scope lane: why it can't produce an on-device receipt (the locus reason).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locus: Option<String>,
+}
+
+/// One agent's coverage group (a lane-group in the Coverage view).
+#[derive(Serialize, Clone, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCoverage {
+    pub agent: String,
+    pub label: String,
+    pub lanes: Vec<AgentLane>,
+}
+
+/// Per-agent evidence gathered in one pass over the audit dir (newest receipt ts per family).
+#[derive(Default)]
+struct AgentScan {
+    cc_native: Option<u64>,     // claude-code.jsonl, non-mcp actions
+    cc_mcp: Option<u64>,        // claude-code__mcp__* actions
+    hermes_native: Option<u64>, // hermes.jsonl (the demand-pulled hook's log)
+    hermes_mcp: Option<u64>,    // any gateway per-server receipt attributed to actor.agent "hermes"
+}
+
+fn scan_agents(audit_dir: &Path) -> AgentScan {
+    let mut s = AgentScan::default();
+    let Ok(entries) = std::fs::read_dir(audit_dir) else {
+        return s;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if name == "coverage.jsonl" {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let Ok(v) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let Some(ts) = v.get("ts_ms").and_then(Value::as_u64) else {
+                continue;
+            };
+            let aid = v.get("action_id").and_then(Value::as_str).unwrap_or("");
+            let actor_agent = v
+                .get("actor")
+                .and_then(|a| a.get("agent"))
+                .and_then(Value::as_str);
+            if name == "claude-code.jsonl" {
+                if aid.starts_with("claude-code__mcp__") {
+                    max_opt(&mut s.cc_mcp, ts);
+                } else if aid.starts_with("claude-code__") {
+                    max_opt(&mut s.cc_native, ts);
+                }
+            } else if name == "hermes.jsonl" {
+                max_opt(&mut s.hermes_native, ts);
+            } else if actor_agent == Some("hermes") {
+                // A gateway per-server chain attributed to Hermes (govern-all wraps its stdio MCP).
+                max_opt(&mut s.hermes_mcp, ts);
+            }
+        }
+    }
+    s
+}
+
+/// Classify the governed surface **per agent** — Claude Code and Hermes on the same substrate. Pure
+/// with respect to its inputs (audit dir + config-derived flags), so it's fixture-testable. The
+/// config flags (`cc_hook`, `hermes_hook`, `hermes_gateway`) supply the AMBER "configured but silent"
+/// half; the audit dir supplies the GREEN evidence.
+pub fn classify_agents(
+    audit_dir: &Path,
+    now_ms: u64,
+    window_ms: u64,
+    cc_hook: bool,
+    hermes_hook: bool,
+    hermes_gateway: bool,
+) -> Vec<AgentCoverage> {
+    let fresh = |ts: Option<u64>| ts.map(|t| now_ms.saturating_sub(t) <= window_ms).unwrap_or(false);
+    let s = scan_agents(audit_dir);
+
+    let claude_code = AgentCoverage {
+        agent: "claude-code".into(),
+        label: "Claude Code".into(),
+        lanes: vec![
+            AgentLane {
+                id: "native-tools".into(),
+                title: "Native tools".into(),
+                state: state_of(fresh(s.cc_native), cc_hook || s.cc_native.is_some()),
+                source: Some("hook.claude-code".into()),
+                last_receipt_ms: s.cc_native,
+                locus: None,
+            },
+            AgentLane {
+                id: "attached-mcp".into(),
+                title: "Attached MCP".into(),
+                state: state_of(fresh(s.cc_mcp), cc_hook || s.cc_mcp.is_some()),
+                source: Some("hook.claude-code".into()),
+                last_receipt_ms: s.cc_mcp,
+                locus: None,
+            },
+            AgentLane {
+                id: "cloud".into(),
+                title: "Cloud".into(),
+                state: LaneState::Grey,
+                source: None,
+                last_receipt_ms: None,
+                locus: Some(
+                    "Claude Code on web · Cloud Routines · hosted Cowork run in Anthropic's cloud — no on-device process, so no receipt is possible."
+                        .into(),
+                ),
+            },
+        ],
+    };
+
+    let hermes_native_covered = hermes_hook || s.hermes_native.is_some();
+    let hermes = AgentCoverage {
+        agent: "hermes".into(),
+        label: "Hermes".into(),
+        lanes: vec![
+            AgentLane {
+                id: "native-tools".into(),
+                title: "Native tools".into(),
+                state: state_of(fresh(s.hermes_native), hermes_native_covered),
+                source: Some("hook.hermes".into()),
+                last_receipt_ms: s.hermes_native,
+                locus: (!hermes_native_covered).then(|| {
+                    "Native-tool coverage needs kriya-hermes-hook (demand-pulled) — Hermes' local MCP is governed via the gateway today."
+                        .into()
+                }),
+            },
+            AgentLane {
+                id: "mcp".into(),
+                title: "MCP servers".into(),
+                state: state_of(fresh(s.hermes_mcp), hermes_gateway || s.hermes_mcp.is_some()),
+                source: Some("gateway".into()),
+                last_receipt_ms: s.hermes_mcp,
+                locus: None,
+            },
+            AgentLane {
+                id: "cloud".into(),
+                title: "Cloud sandbox".into(),
+                state: LaneState::Grey,
+                source: None,
+                last_receipt_ms: None,
+                locus: Some(
+                    "TERMINAL_ENV=modal/daytona ships the command to a remote sandbox — locus=cloud, so no on-device receipt is possible."
+                        .into(),
+                ),
+            },
+        ],
+    };
+
+    vec![claude_code, hermes]
+}
+
+/// Read the Hermes config for the two AMBER flags: is a `kriya-hermes-hook` block wired, and is any
+/// local MCP server wrapped by `kriya-gateway`? Best-effort (missing/invalid config ⇒ both false).
+fn hermes_flags() -> (bool, bool) {
+    let path = crate::govern::hermes_config_path();
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return (false, false);
+    };
+    let Ok(v) = serde_yaml::from_str::<Value>(&text) else {
+        return (false, false);
+    };
+    let hook = v
+        .get("hooks")
+        .map(|h| h.to_string().contains("kriya-hermes-hook"))
+        .unwrap_or(false);
+    let gateway = v
+        .get("mcpServers")
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.values().any(|e| {
+                e.get("command")
+                    .and_then(Value::as_str)
+                    .and_then(|c| Path::new(c).file_name().and_then(|n| n.to_str()).map(String::from))
+                    .map(|n| n.starts_with("kriya-gateway"))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+    (hook, gateway)
+}
+
+// ---------------------------------------------------------------------------------------------
 // The signed snapshot chain (`kriya.coverage.snapshot`)
 // ---------------------------------------------------------------------------------------------
 
@@ -584,12 +799,23 @@ pub fn coverage_status() -> CoverageStatus {
     let text = std::fs::read_to_string(&log).unwrap_or_default();
     let snapshots = text.lines().filter(|l| !l.trim().is_empty()).count();
     let last_snapshot_ms = seed_last_emitted(&log).map(|(_, ts)| ts);
+    let cc_hook = hook_configured(claude_settings_path().as_deref());
+    let (hermes_hook, hermes_gateway) = hermes_flags();
+    let agents = classify_agents(
+        &audit_dir,
+        now_ms(),
+        DEFAULT_WINDOW_H * 60 * 60 * 1000,
+        cc_hook,
+        hermes_hook,
+        hermes_gateway,
+    );
     CoverageStatus {
         window_h: DEFAULT_WINDOW_H,
         lanes,
         last_snapshot_ms,
         snapshot_chain_ok: snapshots == 0 || chain_break(&text).is_none(),
         snapshots,
+        agents,
     }
 }
 
@@ -724,6 +950,87 @@ mod tests {
         let lanes = classify(&dir, None, NOW, WINDOW);
         assert_eq!(lanes["raw-file-exec"].state, LaneState::Amber);
         assert_eq!(lanes["raw-egress"].state, LaneState::Amber);
+    }
+
+    // --- Multi-agent coverage view (GA-2) ---------------------------------------------------
+
+    fn line_actor(action_id: &str, ts_ms: u64, agent: &str) -> String {
+        json!({ "step_id": "s", "action_id": action_id, "params": {}, "success": true, "ts_ms": ts_ms, "actor": { "agent": agent, "user": "u" } })
+            .to_string()
+    }
+
+    fn agent_lane<'a>(cov: &'a [AgentCoverage], agent: &str, lane_id: &str) -> &'a AgentLane {
+        cov.iter()
+            .find(|a| a.agent == agent)
+            .unwrap_or_else(|| panic!("no agent {agent}"))
+            .lanes
+            .iter()
+            .find(|l| l.id == lane_id)
+            .unwrap_or_else(|| panic!("no lane {lane_id} for {agent}"))
+    }
+
+    #[test]
+    fn agents_map_claude_code_and_hermes_on_one_substrate() {
+        let dir = tmp("agents");
+        write_log(
+            &dir,
+            "claude-code.jsonl",
+            &[
+                line("claude-code__bash", NOW - HOUR),
+                line("claude-code__mcp__github__create_issue", NOW - HOUR),
+            ],
+        );
+        // A gateway per-server chain attributed to Hermes (govern-all wraps its stdio MCP).
+        write_log(&dir, "fs-server.jsonl", &[line_actor("read_file", NOW - HOUR, "hermes")]);
+
+        let cov = classify_agents(&dir, NOW, WINDOW, false, false, false);
+        assert_eq!(cov.len(), 2, "Claude Code and Hermes lane-groups");
+        assert_eq!(agent_lane(&cov, "claude-code", "native-tools").state, LaneState::Green);
+        assert_eq!(agent_lane(&cov, "claude-code", "attached-mcp").state, LaneState::Green);
+        assert_eq!(agent_lane(&cov, "hermes", "mcp").state, LaneState::Green);
+        assert_eq!(agent_lane(&cov, "hermes", "mcp").source.as_deref(), Some("gateway"));
+        // Hermes native tools stay honestly GREY (hook demand-pulled) with a locus reason.
+        let hn = agent_lane(&cov, "hermes", "native-tools");
+        assert_eq!(hn.state, LaneState::Grey);
+        assert!(hn.locus.as_ref().unwrap().contains("kriya-hermes-hook"));
+        // Both agents carry a grey cloud lane with a locus.
+        assert_eq!(agent_lane(&cov, "claude-code", "cloud").state, LaneState::Grey);
+        assert!(agent_lane(&cov, "claude-code", "cloud").locus.is_some());
+        assert!(agent_lane(&cov, "hermes", "cloud").locus.is_some());
+    }
+
+    #[test]
+    fn agents_hermes_native_greens_from_hermes_hook_log() {
+        let dir = tmp("hermes-native");
+        write_log(&dir, "hermes.jsonl", &[line("hermes__terminal", NOW - HOUR)]);
+        let cov = classify_agents(&dir, NOW, WINDOW, false, false, false);
+        let hn = agent_lane(&cov, "hermes", "native-tools");
+        assert_eq!(hn.state, LaneState::Green);
+        assert_eq!(hn.source.as_deref(), Some("hook.hermes"));
+        assert!(hn.locus.is_none(), "a covered lane needs no out-of-scope locus");
+    }
+
+    #[test]
+    fn agents_amber_when_configured_but_silent() {
+        let dir = tmp("agents-amber");
+        let cov = classify_agents(&dir, NOW, WINDOW, /*cc_hook*/ true, /*hermes_hook*/ false, /*hermes_gateway*/ true);
+        assert_eq!(agent_lane(&cov, "claude-code", "native-tools").state, LaneState::Amber);
+        assert_eq!(agent_lane(&cov, "claude-code", "attached-mcp").state, LaneState::Amber);
+        assert_eq!(agent_lane(&cov, "hermes", "mcp").state, LaneState::Amber);
+        assert_eq!(agent_lane(&cov, "hermes", "native-tools").state, LaneState::Grey, "hook still deferred");
+    }
+
+    #[test]
+    fn agents_empty_dir_is_all_grey_with_cloud_locus() {
+        let dir = tmp("agents-grey");
+        let cov = classify_agents(&dir, NOW, WINDOW, false, false, false);
+        for a in &cov {
+            for l in &a.lanes {
+                assert_eq!(l.state, LaneState::Grey, "{}/{} must be grey", a.agent, l.id);
+            }
+            // The cloud lane always carries a locus reason.
+            assert!(agent_lane(&cov, &a.agent, "cloud").locus.is_some());
+        }
     }
 
     /// W1-5 parity: a Console-signed snapshot must verify in the SHARED verifier (`kriya-verify`,

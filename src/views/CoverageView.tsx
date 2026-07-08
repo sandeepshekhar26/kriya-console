@@ -95,6 +95,26 @@ const PREVIEW_STATUS: CoverageStatus = {
   lastSnapshotMs: Date.now() - 2 * 3600e3,
   snapshotChainOk: true,
   snapshots: 14,
+  agents: [
+    {
+      agent: "claude-code",
+      label: "Claude Code",
+      lanes: [
+        { id: "native-tools", title: "Native tools", state: "green", source: "hook.claude-code", lastReceiptMs: Date.now() - 40 * 60e3 },
+        { id: "attached-mcp", title: "Attached MCP", state: "amber", source: "hook.claude-code" },
+        { id: "cloud", title: "Cloud", state: "grey", locus: "Claude Code on web · Cloud Routines · hosted Cowork run in Anthropic's cloud — no on-device process, so no receipt is possible." },
+      ],
+    },
+    {
+      agent: "hermes",
+      label: "Hermes",
+      lanes: [
+        { id: "native-tools", title: "Native tools", state: "grey", source: "hook.hermes", locus: "Native-tool coverage needs kriya-hermes-hook (demand-pulled) — Hermes' local MCP is governed via the gateway today." },
+        { id: "mcp", title: "MCP servers", state: "green", source: "gateway", lastReceiptMs: Date.now() - 2 * 3600e3 },
+        { id: "cloud", title: "Cloud sandbox", state: "grey", locus: "TERMINAL_ENV=modal/daytona ships the command to a remote sandbox — locus=cloud, so no on-device receipt is possible." },
+      ],
+    },
+  ],
 };
 
 function ago(ms?: number | null): string {
@@ -191,6 +211,43 @@ export function CoverageView({ onNavigate }: { onNavigate: (v: View) => void }) 
           );
         })}
       </section>
+
+      {(status?.agents?.length ?? 0) > 0 && (
+        <>
+          <h2 className="section-head">Agents on this substrate</h2>
+          <p className="muted small" style={{ margin: "-4px 0 12px", maxWidth: 720 }}>
+            Kriya governs your agents — Claude Code and Hermes — through the same hook + gateway
+            substrate. Green lanes execute on-device and sign a receipt; cloud lanes execute off-device
+            and honestly can't.
+          </p>
+          <section className="panel-grid">
+            {status!.agents.map((a) => (
+              <div className="panel" key={a.agent}>
+                <div className="panel-head">
+                  <h2>{a.label}</h2>
+                </div>
+                <div className="conn-list">
+                  {a.lanes.map((l) => (
+                    <div className="conn-row" key={l.id}>
+                      <div className="conn-row-main">
+                        <b>{l.title}</b>
+                        <span className="mono">
+                          {l.locus
+                            ? l.locus
+                            : l.source
+                            ? <>via <code>{l.source}</code> · last {ago(l.lastReceiptMs)}</>
+                            : null}
+                        </span>
+                      </div>
+                      <span className={`badge ${STATE_BADGE[l.state]}`}>{STATE_LABEL[l.state]}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </section>
+        </>
+      )}
 
       <section className="panel" style={{ marginTop: 16 }}>
         <div className="panel-head">
