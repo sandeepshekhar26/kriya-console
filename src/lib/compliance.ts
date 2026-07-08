@@ -35,6 +35,15 @@ export interface ActionInventoryItem {
   destructive: boolean;
 }
 
+/** A summary of the signed coverage-completeness chain (`coverage.jsonl`), cited as AU-2/AU-12
+ *  completeness evidence for NIST 3.3.1 / 3.3.4 (GA-3). Optional — evidence is unchanged when absent. */
+export interface CoverageEvidence {
+  /** Number of signed `kriya.coverage.snapshot` receipts in the chain. */
+  snapshots: number;
+  /** Whether that chain verifies end-to-end (hash-chain continuity + signatures). */
+  chainOk: boolean;
+}
+
 export interface EvidenceBundle {
   generatedAt: string;
   organization: string;
@@ -59,7 +68,7 @@ function iso(ms: number): string {
 export function buildEvidence(
   rows: AuditRow[],
   policy: Policy,
-  opts: { generatedAt: number; organization?: string },
+  opts: { generatedAt: number; organization?: string; coverage?: CoverageEvidence },
 ): EvidenceBundle {
   const withReceipt = rows.filter((r) => r.receipt);
   const verified = withReceipt.filter((r) => r.outcome.ok);
@@ -138,14 +147,33 @@ export function buildEvidence(
   };
 
   const distinctApps = new Set(withReceipt.map((r) => r.source)).size;
-  return { ...bundle, controls: mapControls(bundle, { distinctApps }) };
+  return {
+    ...bundle,
+    controls: mapControls(bundle, {
+      distinctApps,
+      distinctAgents: bundle.attribution.agents.length,
+      coverage: opts.coverage,
+    }),
+  };
 }
 
 /** Derive control-by-control status from the computed facts. */
-function mapControls(b: Omit<EvidenceBundle, "controls">, meta: { distinctApps: number }): EvidenceControl[] {
+function mapControls(
+  b: Omit<EvidenceBundle, "controls">,
+  meta: { distinctApps: number; distinctAgents: number; coverage?: CoverageEvidence },
+): EvidenceControl[] {
   const { integrity, attribution, onDevice, humanOversight } = b;
   const hasReceipts = integrity.totalReceipts > 0;
   const allVerified = hasReceipts && integrity.failed === 0;
+  // GA-3: cite the signed coverage-completeness chain as AU-2/AU-12 completeness evidence. Only when
+  // a non-empty coverage summary is supplied — the evidence text is unchanged otherwise.
+  const cov = meta.coverage && meta.coverage.snapshots > 0 ? meta.coverage : null;
+  const coverageCreationCite = cov
+    ? ` Completeness is itself attested: ${cov.snapshots} signed coverage snapshot(s) (${cov.chainOk ? "chain intact" : "chain BROKEN"}) record which lanes were governed over the window — what was and wasn't logged is provable, not asserted.`
+    : "";
+  const coverageFailureCite = cov
+    ? " The signed coverage chain makes a stopped or silenced logging process visible by absence — a gap in the heartbeat chain, not a quiet nothing."
+    : "";
 
   const integrityStatus: ControlStatus = !hasReceipts ? "gap" : allVerified ? "satisfied" : "partial";
   const attributionStatus: ControlStatus =
@@ -261,7 +289,7 @@ function mapControls(b: Omit<EvidenceBundle, "controls">, meta: { distinctApps: 
       control: "3.3.1 (AU.L2-3.3.1 · AU-2/3/12) — Audit record creation & retention",
       requirement: "Create and retain system audit logs/records to enable monitoring, analysis, investigation, and reporting of unlawful or unauthorized activity.",
       evidence: hasReceipts
-        ? `${integrity.totalReceipts} signed receipt(s) retained across ${meta.distinctApps} app(s) as a hash-chained local JSONL log${integrity.failed ? `; ${integrity.failed} failed verification` : ""}; each record carries action id, parameters, timestamp, outcome, and signer.`
+        ? `${integrity.totalReceipts} signed receipt(s) retained across ${meta.distinctApps} app(s) and ${meta.distinctAgents} governed agent(s) as a hash-chained local JSONL log${integrity.failed ? `; ${integrity.failed} failed verification` : ""}; each record carries action id, parameters, timestamp, outcome, and signer.${coverageCreationCite}`
         : "No audit records present in this trail.",
       status: integrityStatus,
     },
@@ -286,7 +314,7 @@ function mapControls(b: Omit<EvidenceBundle, "controls">, meta: { distinctApps: 
       control: "3.3.4 (AU.L2-3.3.4 · AU-5) — Audit logging process failure alerting",
       requirement: "Alert in the event of an audit logging process failure.",
       evidence: hasReceipts
-        ? "Per-receipt verification failures and hash-chain breaks surface live in the Console, and the Coverage Map flags silent lanes; no external paging/alerting integration exists."
+        ? `Per-receipt verification failures and hash-chain breaks surface live in the Console, and the Coverage Map flags silent lanes; no external paging/alerting integration exists.${coverageFailureCite}`
         : "No audit logging process to alert on yet.",
       status: partialWhenReceipts,
     },

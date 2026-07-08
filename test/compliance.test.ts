@@ -197,3 +197,35 @@ describe("buildEvidence — NIST 800-171 AU family (R1-1)", () => {
     expect(md).toContain("evidence, not a certification");
   });
 });
+
+describe("buildEvidence — coverage-completeness citation (GA-3)", () => {
+  it("cites the signed coverage chain + agent span in NIST 3.3.1 and 3.3.4 when supplied", async () => {
+    const rows = await loadAuditLog(sample, "compliance-sample");
+    const b = buildEvidence(rows, defaultPolicy(), {
+      generatedAt: AT,
+      organization: "Acme",
+      coverage: { snapshots: 14, chainOk: true },
+    });
+    const c331 = b.controls.find((c) => c.control.startsWith("3.3.1"))!;
+    expect(c331.evidence).toContain("governed agent(s)");
+    expect(c331.evidence).toContain("14 signed coverage snapshot(s)");
+    expect(c331.evidence).toContain("chain intact");
+    const c334 = b.controls.find((c) => c.control.startsWith("3.3.4"))!;
+    expect(c334.evidence).toContain("visible by absence");
+  });
+
+  it("omits the citation when no coverage summary is supplied (backward compatible)", async () => {
+    const b = await bundle();
+    const c331 = b.controls.find((c) => c.control.startsWith("3.3.1"))!;
+    expect(c331.evidence).not.toContain("coverage snapshot");
+    // The agent span is still surfaced (that part is unconditional).
+    expect(c331.evidence).toContain("governed agent(s)");
+  });
+
+  it("names a broken coverage chain honestly", async () => {
+    const rows = await loadAuditLog(sample, "compliance-sample");
+    const b = buildEvidence(rows, defaultPolicy(), { generatedAt: AT, coverage: { snapshots: 3, chainOk: false } });
+    const c331 = b.controls.find((c) => c.control.startsWith("3.3.1"))!;
+    expect(c331.evidence).toContain("chain BROKEN");
+  });
+});

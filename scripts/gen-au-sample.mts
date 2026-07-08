@@ -51,6 +51,9 @@ const policy: Policy = {
 const bundle = buildEvidence(rows, policy, {
   generatedAt: Date.UTC(2026, 6, 6),
   organization: "Sample contractor — illustrative data",
+  // GA-3: cite the signed coverage-completeness chain as AU-2/AU-12 completeness evidence. Illustrative
+  // (like the rest of this sample) — a real export reads the count + chain health from coverage.jsonl.
+  coverage: { snapshots: 14, chainOk: true },
 });
 
 const outDir = join(here, "../docs/gtm/samples/au-family-sample");

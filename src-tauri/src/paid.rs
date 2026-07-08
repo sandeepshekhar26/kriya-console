@@ -14,6 +14,10 @@ use crate::receipts::{chain_break, verify_value};
 use kriya_verify::is_destructive;
 
 const ATTESTATION_ON_DEVICE: &str = "kriya.attestation.on_device";
+/// The signed coverage-completeness snapshot action id (`~/.kriya/audit/coverage.jsonl`). These are
+/// meta-evidence (what was/wasn't governed), not agent actions — separated out and cited as AU-2/
+/// AU-12 completeness evidence rather than counted in the action totals (GA-3).
+const COVERAGE_SNAPSHOT: &str = "kriya.coverage.snapshot";
 
 /// One receipt collected + re-verified from the on-device trail, flattened to what the paid
 /// reports need.
@@ -238,6 +242,28 @@ pub struct Control {
     pub evidence: String,
 }
 
+/// Summary of the signed coverage-completeness chain (`coverage.jsonl`), cited as AU-2/AU-12
+/// completeness evidence for NIST 3.3.1 / 3.3.4 (GA-3). Mirrors the TS `CoverageEvidence`.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverageEvidence {
+    pub snapshots: usize,
+    pub chain_ok: bool,
+}
+
+/// Build the coverage summary from the separated coverage-snapshot rows + that chain's break status.
+/// `None` when there are no coverage snapshots (evidence text is then unchanged).
+fn coverage_evidence(coverage_rows: &[Collected], chain_break: Option<usize>) -> Option<CoverageEvidence> {
+    if coverage_rows.is_empty() {
+        return None;
+    }
+    let chain_ok = chain_break.is_none() && coverage_rows.iter().all(|r| r.verified);
+    Some(CoverageEvidence {
+        snapshots: coverage_rows.len(),
+        chain_ok,
+    })
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ComplianceBundle {
@@ -264,7 +290,14 @@ pub struct ComplianceBundle {
 #[tauri::command]
 pub fn export_compliance(framework: String) -> Result<ComplianceBundle, String> {
     license::require_pro()?;
-    let (rows, chains) = collect();
+    let (all_rows, mut chains) = collect();
+    // Separate the signed coverage-completeness chain from the agent-action trail (GA-3): its
+    // snapshots are meta-evidence, cited below, not agent actions to be counted in the totals.
+    let coverage_chain_break = chains.remove("coverage.jsonl").flatten();
+    let (coverage_rows, rows): (Vec<Collected>, Vec<Collected>) = all_rows
+        .into_iter()
+        .partition(|r| r.action_id == COVERAGE_SNAPSHOT);
+    let coverage = coverage_evidence(&coverage_rows, coverage_chain_break);
 
     let verified = rows.iter().filter(|r| r.verified).count();
     let failed = rows.len() - verified;
@@ -353,6 +386,8 @@ pub fn export_compliance(framework: String) -> Result<ComplianceBundle, String> 
         operators.len(),
         destructive,
         integrity_ok,
+        agents.len(),
+        coverage.as_ref(),
     ));
 
     let generated_ms = std::time::SystemTime::now()
@@ -432,9 +467,29 @@ fn framework_controls(
     operators: usize,
     destructive: usize,
     integrity_ok: bool,
+    agents: usize,
+    coverage: Option<&CoverageEvidence>,
 ) -> Vec<Control> {
     let has_rows = total > 0;
     let coverage_pct = if verified == 0 { 0 } else { (attributed * 100) / verified };
+
+    // GA-3: cite the signed coverage-completeness chain as AU-2/AU-12 completeness evidence. Wording
+    // mirrors the TS `mapControls` so the desktop + web bundles carry the same NIST rows.
+    let coverage_creation_cite = coverage
+        .filter(|c| c.snapshots > 0)
+        .map(|c| {
+            format!(
+                " Completeness is itself attested: {} signed coverage snapshot(s) ({}) record which lanes were governed over the window — what was and wasn't logged is provable, not asserted.",
+                c.snapshots,
+                if c.chain_ok { "chain intact" } else { "chain BROKEN" }
+            )
+        })
+        .unwrap_or_default();
+    let coverage_failure_cite = if coverage.map(|c| c.snapshots > 0).unwrap_or(false) {
+        " The signed coverage chain makes a stopped or silenced logging process visible by absence — a gap in the heartbeat chain, not a quiet nothing."
+    } else {
+        ""
+    };
 
     let integrity_status = || -> &'static str {
         if !has_rows {
@@ -467,7 +522,7 @@ fn framework_controls(
                 status: integrity_status().into(),
                 evidence: if has_rows {
                     format!(
-                        "{total} signed receipt(s) retained across {distinct_apps} app(s) as a hash-chained local JSONL log{}; each record carries action id, parameters, timestamp, outcome, and signer.",
+                        "{total} signed receipt(s) retained across {distinct_apps} app(s) and {agents} governed agent(s) as a hash-chained local JSONL log{}; each record carries action id, parameters, timestamp, outcome, and signer.{coverage_creation_cite}",
                         if failed > 0 { format!("; {failed} failed verification") } else { String::new() }
                     )
                 } else {
@@ -499,7 +554,7 @@ fn framework_controls(
                 name: "Audit logging process failure alerting (AU-5)".into(),
                 status: partial_when_rows().into(),
                 evidence: if has_rows {
-                    "Per-receipt verification failures and hash-chain breaks surface live in the Console, and the Coverage Map flags silent lanes; no external paging/alerting integration exists.".into()
+                    format!("Per-receipt verification failures and hash-chain breaks surface live in the Console, and the Coverage Map flags silent lanes; no external paging/alerting integration exists.{coverage_failure_cite}")
                 } else {
                     "No audit logging process to alert on yet.".into()
                 },
@@ -690,7 +745,7 @@ mod framework_controls_tests {
     // A small synthetic "fully verified, fully attributed" fact set: 10 receipts across 2 apps, 5
     // distinct action types, all attributed, 3 destructive actions, an intact hash chain.
     fn healthy() -> Vec<Control> {
-        framework_controls("NIST-800-171", 10, 10, 0, 2, 5, 10, 3, 3, true)
+        framework_controls("NIST-800-171", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None)
     }
 
     #[test]
@@ -703,7 +758,7 @@ mod framework_controls_tests {
         // Privileged-user restriction on audit-logging management is never provided by kriya
         // itself — the status must read "gap" regardless of how clean the rest of the trail is.
         for integrity_ok in [true, false] {
-            let rows = framework_controls("NIST-800-171", 10, 10, 0, 2, 5, 10, 3, 3, integrity_ok);
+            let rows = framework_controls("NIST-800-171", 10, 10, 0, 2, 5, 10, 3, 3, integrity_ok, 2, None);
             let c = rows.iter().find(|c| c.id == "AU.L2-3.3.9").unwrap();
             assert_eq!(c.status, "gap");
         }
@@ -717,7 +772,7 @@ mod framework_controls_tests {
             "satisfied"
         );
 
-        let tampered = framework_controls("NIST-800-171", 10, 8, 2, 2, 5, 8, 3, 3, false);
+        let tampered = framework_controls("NIST-800-171", 10, 8, 2, 2, 5, 8, 3, 3, false, 2, None);
         let c = tampered.iter().find(|c| c.id == "AU.L2-3.3.8").unwrap();
         assert_eq!(c.status, "partial");
         assert!(
@@ -726,7 +781,7 @@ mod framework_controls_tests {
             c.evidence
         );
 
-        let empty = framework_controls("NIST-800-171", 0, 0, 0, 0, 0, 0, 0, 0, false);
+        let empty = framework_controls("NIST-800-171", 0, 0, 0, 0, 0, 0, 0, 0, false, 0, None);
         assert_eq!(
             empty.iter().find(|c| c.id == "AU.L2-3.3.8").unwrap().status,
             "gap"
@@ -735,7 +790,7 @@ mod framework_controls_tests {
 
     #[test]
     fn empty_trail_is_every_row_gap() {
-        let rows = framework_controls("NIST-800-171", 0, 0, 0, 0, 0, 0, 0, 0, false);
+        let rows = framework_controls("NIST-800-171", 0, 0, 0, 0, 0, 0, 0, 0, false, 0, None);
         assert_eq!(rows.len(), 9);
         for c in &rows {
             assert_eq!(c.status, "gap", "{} should be gap on an empty trail", c.id);
@@ -744,13 +799,36 @@ mod framework_controls_tests {
 
     #[test]
     fn soc2_iso42001_eu_ai_act_each_add_one_row() {
-        assert_eq!(framework_controls("SOC2", 10, 10, 0, 2, 5, 10, 3, 3, true).len(), 2);
-        assert_eq!(framework_controls("ISO42001", 10, 10, 0, 2, 5, 10, 3, 3, true).len(), 1);
-        assert_eq!(framework_controls("EU-AI-Act", 10, 10, 0, 2, 5, 10, 3, 3, true).len(), 1);
+        assert_eq!(framework_controls("SOC2", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None).len(), 2);
+        assert_eq!(framework_controls("ISO42001", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None).len(), 1);
+        assert_eq!(framework_controls("EU-AI-Act", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None).len(), 1);
     }
 
     #[test]
     fn unknown_framework_key_returns_no_extra_controls_without_panicking() {
-        assert!(framework_controls("FEDRAMP", 10, 10, 0, 2, 5, 10, 3, 3, true).is_empty());
+        assert!(framework_controls("FEDRAMP", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None).is_empty());
+    }
+
+    #[test]
+    fn coverage_completeness_and_agent_span_are_cited_in_3_3_1_and_3_3_4() {
+        let cov = CoverageEvidence { snapshots: 14, chain_ok: true };
+        let rows = framework_controls("NIST-800-171", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, Some(&cov));
+        let c331 = rows.iter().find(|c| c.id == "AU.L2-3.3.1").unwrap();
+        assert!(c331.evidence.contains("2 governed agent(s)"), "3.3.1 spans agents: {}", c331.evidence);
+        assert!(c331.evidence.contains("14 signed coverage snapshot(s)"), "3.3.1 cites coverage: {}", c331.evidence);
+        assert!(c331.evidence.contains("chain intact"));
+        let c334 = rows.iter().find(|c| c.id == "AU.L2-3.3.4").unwrap();
+        assert!(c334.evidence.contains("visible by absence"), "3.3.4 cites the heartbeat chain: {}", c334.evidence);
+
+        // A broken coverage chain is named honestly, not hidden.
+        let broken = CoverageEvidence { snapshots: 3, chain_ok: false };
+        let rows = framework_controls("NIST-800-171", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, Some(&broken));
+        assert!(rows.iter().find(|c| c.id == "AU.L2-3.3.1").unwrap().evidence.contains("chain BROKEN"));
+
+        // Without a coverage summary the evidence is unchanged (backward compatible) and 3.3.9 is
+        // still a permanent gap.
+        let rows = framework_controls("NIST-800-171", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None);
+        assert!(!rows.iter().find(|c| c.id == "AU.L2-3.3.1").unwrap().evidence.contains("coverage snapshot"));
+        assert_eq!(rows.iter().find(|c| c.id == "AU.L2-3.3.9").unwrap().status, "gap");
     }
 }
