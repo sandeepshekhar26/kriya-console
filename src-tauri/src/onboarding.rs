@@ -40,45 +40,63 @@ pub struct OnboardingStatus {
 /// next to the main executable (`Contents/MacOS/kriya-gateway`); in `tauri dev` we fall back to the
 /// `src-tauri/binaries/` staging dir. Returns `(path, bundled)`.
 pub fn resolve_gateway() -> Option<(PathBuf, bool)> {
+    resolve_sidecar("kriya-gateway")
+}
+
+/// Resolve the bundled `kriya-hook` sidecar (GA-0) — the Claude Code hooks adapter that govern-all
+/// installs into `~/.claude/settings.json`. Same resolution order as [`resolve_gateway`].
+pub fn resolve_hook() -> Option<(PathBuf, bool)> {
+    resolve_sidecar("kriya-hook")
+}
+
+/// Resolve a bundled Tauri sidecar by binary name. In a packaged `.app` Tauri places external
+/// binaries next to the main executable (`Contents/MacOS/<name>`); in `tauri dev` we fall back to the
+/// `src-tauri/binaries/<name>-<triple>` staging dir, then the installed-app location. Returns
+/// `(path, bundled)` where `bundled` means it lives inside a signed `.app` (the TCC-grantable case).
+pub fn resolve_sidecar(name: &str) -> Option<(PathBuf, bool)> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             // Packaged sidecar: same dir as the Console binary, name without the target-triple suffix.
-            let bundled = dir.join("kriya-gateway");
+            let bundled = dir.join(name);
             if bundled.is_file() {
                 let in_app = bundled.to_string_lossy().contains(".app/Contents/MacOS/");
                 return Some((bundled, in_app));
             }
             // Some layouts keep the triple suffix next to the exe.
-            if let Some(p) = first_gateway_in(dir) {
+            if let Some(p) = first_sidecar_in(dir, name) {
                 let in_app = p.to_string_lossy().contains(".app/Contents/MacOS/");
                 return Some((p, in_app));
             }
         }
     }
-    // Dev: the staged sidecar under src-tauri/binaries/kriya-gateway-<triple>.
+    // Dev: the staged sidecar under src-tauri/binaries/<name>-<triple>.
     let dev_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("binaries");
-    if let Some(p) = first_gateway_in(&dev_dir) {
+    if let Some(p) = first_sidecar_in(&dev_dir, name) {
         return Some((p, false));
     }
     // Installed app, when the Console binary itself is elsewhere.
-    let installed = PathBuf::from("/Applications/Kriya Console.app/Contents/MacOS/kriya-gateway");
+    let installed =
+        PathBuf::from(format!("/Applications/Kriya Console.app/Contents/MacOS/{name}"));
     if installed.is_file() {
         return Some((installed, true));
     }
     None
 }
 
-/// First executable in `dir` whose name starts with `kriya-gateway` (matches both the bare name and
-/// the `kriya-gateway-<triple>` staged sidecar).
-fn first_gateway_in(dir: &Path) -> Option<PathBuf> {
+/// First executable in `dir` whose name starts with `name` (matches both the bare name and the
+/// `<name>-<triple>` staged sidecar). Must not match a longer sibling by prefix
+/// (`kriya-gateway` must never pick up `kriya-gateway-broker`); we anchor on the bare name or a
+/// `<name>-` prefix.
+fn first_sidecar_in(dir: &Path, name: &str) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
+    let with_dash = format!("{name}-");
     let mut hits: Vec<PathBuf> = entries
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
-                .map(|n| n.starts_with("kriya-gateway"))
+                .map(|n| n == name || n.starts_with(&with_dash))
                 .unwrap_or(false)
                 && p.is_file()
         })
@@ -314,33 +332,14 @@ pub fn wire_claude_config(req: WireRequest) -> Result<WireResult, String> {
 
     let entry = serde_json::json!({ "command": command, "args": args });
 
-    let path = claude_config_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("creating config dir {}: {e}", parent.display()))?;
-    }
-    // Load the existing config (or start a fresh object); never clobber unrelated servers.
-    let mut config: serde_json::Value = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-    if !config.is_object() {
-        config = serde_json::json!({});
-    }
-    let obj = config.as_object_mut().unwrap();
-    let servers = obj
-        .entry("mcpServers")
-        .or_insert_with(|| serde_json::json!({}));
-    if !servers.is_object() {
-        *servers = serde_json::json!({});
-    }
-    servers
-        .as_object_mut()
-        .unwrap()
-        .insert(server_key.clone(), entry.clone());
-
-    let pretty = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    std::fs::write(&path, pretty).map_err(|e| format!("writing {}: {e}", path.display()))?;
+    // The merge-safe write is the shared multi-client primitive (GA-0): read → ensure mcpServers →
+    // insert this one key → write, never clobbering other servers or top-level keys. Claude Desktop
+    // is the JSON `claude_desktop_config.json` target.
+    let path = crate::govern::upsert_server(
+        crate::govern::Client::ClaudeDesktop,
+        &server_key,
+        entry.clone(),
+    )?;
 
     // The single-server snippet (handy for a manual paste / copy button in the UI).
     let snippet = serde_json::to_string_pretty(&serde_json::json!({

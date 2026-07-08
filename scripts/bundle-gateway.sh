@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 #
-# bundle-gateway.sh — build the public `kriya-gateway` and stage it as the Console's Tauri sidecar.
+# bundle-gateway.sh — build the public kriya sidecars and stage them as the Console's Tauri sidecars.
 #
-# The control-plane app ships the gateway INSIDE its bundle (D-018): one download installs + wires
-# the gateway. Tauri's `externalBin` expects the binary at
-#   src-tauri/binaries/kriya-gateway-<target-triple>
-# This script builds the gateway from the PUBLIC repo (open-core: the gateway is public, the Console
-# is private) with the macOS fronts enabled, then copies it into place. Run before `tauri build`
-# (and once before `tauri dev`, since externalBin must exist).
+# The control-plane app ships the runtime binaries INSIDE its bundle (D-018): one download installs +
+# wires them. Two sidecars are staged (both declared as Tauri `externalBin`):
+#   • kriya-gateway — the stdio governance proxy + reach-in/computer-use fronts.
+#   • kriya-hook    — the Claude Code hooks adapter govern-all installs (GA-0, doc 21 Part C).
+# Tauri's `externalBin` expects each at src-tauri/binaries/<bin>-<target-triple>.
 #
-# Override the gateway repo path with KRIYA_REPO=/path/to/experiment1.
-# Set KRIYA_UNIVERSAL=1 to build a UNIVERSAL sidecar (aarch64 + x86_64 lipo'd into one binary named
-# kriya-gateway-universal-apple-darwin) — required by `tauri build --target universal-apple-darwin`.
+# This builds both from the PUBLIC repo (open-core: the runtime is public, the Console is private) with
+# the macOS features each needs, then copies them into place. Run before `tauri build` (and once before
+# `tauri dev`, since externalBin must exist).
+#
+# Override the runtime repo path with KRIYA_REPO=/path/to/experiment1.
+# Set KRIYA_UNIVERSAL=1 to build UNIVERSAL sidecars (aarch64 + x86_64 lipo'd into one <bin>-universal-
+# apple-darwin each) — required by `tauri build --target universal-apple-darwin`.
 
 set -euo pipefail
 
@@ -30,38 +33,56 @@ PROFILE="${1:-release}"
 DEST_DIR="$CONSOLE_DIR/src-tauri/binaries"
 mkdir -p "$DEST_DIR"
 
-# mcp-http adds the broker's remote (HTTP/SSE) upstream transport (W2-2) so the shipped Console can
-# govern hosted MCP servers, not just local stdio ones. Pulls in the same ureq client the runtime
-# already uses; no macOS FFI.
-BUILD_FLAGS=(--no-default-features --features mcp-client,mcp-http,reach-in,computer-use,router --bin kriya-gateway)
-if [ "$PROFILE" = "release" ]; then BUILD_FLAGS+=(--release); fi
+# The sidecars to stage, as "bin:features" specs (bash 3.2-safe — no associative arrays).
+#  • gateway: mcp-http adds the broker's remote (HTTP/SSE) upstream transport (W2-2) so the shipped
+#    Console can govern hosted MCP servers, not just local stdio; reach-in/computer-use/router are the
+#    desktop fronts. Same ureq client the runtime already uses; no extra FFI.
+#  • hook: mcp-client alone (it reuses Policy/ApprovalGate/Signer; the macOS GuiApproval needs no extra
+#    feature). std-only, tiny.
+SIDECAR_SPECS=(
+  "kriya-gateway:mcp-client,mcp-http,reach-in,computer-use,router"
+  "kriya-hook:mcp-client"
+)
 
-# Build the gateway for one target triple; echo the resulting binary path on stdout (progress → stderr).
-build_for() {
-  echo "==> Building kriya-gateway ($PROFILE, all macOS fronts) for $1" >&2
-  cargo build --manifest-path "$CRATE_DIR/Cargo.toml" --target "$1" "${BUILD_FLAGS[@]}" >&2
-  echo "$CRATE_DIR/target/$1/$PROFILE/kriya-gateway"
+# Build one binary for one target triple; echo the resulting binary path on stdout (progress → stderr).
+build_bin() {  # $1=bin  $2=features  $3=target
+  local bin="$1" feats="$2" target="$3"
+  echo "==> Building $bin ($PROFILE, features: $feats) for $target" >&2
+  local flags=(--no-default-features --features "$feats" --bin "$bin")
+  [ "$PROFILE" = "release" ] && flags+=(--release)
+  cargo build --manifest-path "$CRATE_DIR/Cargo.toml" --target "$target" "${flags[@]}" >&2
+  echo "$CRATE_DIR/target/$target/$PROFILE/$bin"
+}
+
+# Build + stage one binary's per-arch sidecar under binaries/<bin>-<target>.
+stage_for() {  # $1=bin  $2=features  $3=target
+  local bin="$1" feats="$2" target="$3" src
+  src="$(build_bin "$bin" "$feats" "$target")"
+  cp "$src" "$DEST_DIR/$bin-$target"
+  chmod +x "$DEST_DIR/$bin-$target"
+  echo "==> Staged sidecar: $bin-$target" >&2
 }
 
 if [ "${KRIYA_UNIVERSAL:-0}" = "1" ]; then
-  # `tauri build --target universal-apple-darwin` needs BOTH: the two per-arch sidecars
-  # (kriya-gateway-<arch>-apple-darwin, resolved during each per-arch app compile) AND a lipo'd
-  # kriya-gateway-universal-apple-darwin (copied into the app at the final bundle step). Stage all three.
-  for T in aarch64-apple-darwin x86_64-apple-darwin; do
-    SRC="$(build_for "$T")"
-    cp "$SRC" "$DEST_DIR/kriya-gateway-$T"
-    chmod +x "$DEST_DIR/kriya-gateway-$T"
-    echo "==> Staged sidecar: kriya-gateway-$T"
+  # `tauri build --target universal-apple-darwin` needs, per sidecar, BOTH the two per-arch staged
+  # binaries (resolved during each per-arch app compile) AND a lipo'd <bin>-universal-apple-darwin
+  # (copied into the app at the final bundle step). Stage all three for each sidecar.
+  for spec in "${SIDECAR_SPECS[@]}"; do
+    bin="${spec%%:*}"; feats="${spec#*:}"
+    for T in aarch64-apple-darwin x86_64-apple-darwin; do
+      stage_for "$bin" "$feats" "$T"
+    done
+    lipo -create "$DEST_DIR/$bin-aarch64-apple-darwin" "$DEST_DIR/$bin-x86_64-apple-darwin" \
+      -output "$DEST_DIR/$bin-universal-apple-darwin"
+    chmod +x "$DEST_DIR/$bin-universal-apple-darwin"
+    echo "==> Staged UNIVERSAL sidecar: $bin-universal-apple-darwin ($(lipo -info "$DEST_DIR/$bin-universal-apple-darwin" | sed 's/.*are: *//'))" >&2
   done
-  lipo -create "$DEST_DIR/kriya-gateway-aarch64-apple-darwin" "$DEST_DIR/kriya-gateway-x86_64-apple-darwin" \
-    -output "$DEST_DIR/kriya-gateway-universal-apple-darwin"
-  chmod +x "$DEST_DIR/kriya-gateway-universal-apple-darwin"
-  echo "==> Staged UNIVERSAL sidecar: kriya-gateway-universal-apple-darwin ($(lipo -info "$DEST_DIR/kriya-gateway-universal-apple-darwin" | sed 's/.*are: *//'))"
 else
   TRIPLE="$(rustc -vV | sed -n 's/host: //p')"
-  SRC="$(build_for "$TRIPLE")"
-  DEST="$DEST_DIR/kriya-gateway-$TRIPLE"
-  cp "$SRC" "$DEST"
-  chmod +x "$DEST"
-  echo "==> Staged sidecar: $DEST"
+  for spec in "${SIDECAR_SPECS[@]}"; do
+    bin="${spec%%:*}"; feats="${spec#*:}"
+    stage_for "$bin" "$feats" "$TRIPLE"
+  done
 fi
+
+echo "==> All sidecars staged under $DEST_DIR"

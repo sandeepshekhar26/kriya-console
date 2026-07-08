@@ -170,7 +170,8 @@ pub fn claude_settings_path() -> Option<PathBuf> {
 
 /// Is `kriya-hook` wired into Claude Code's hooks? (Config presence = the AMBER half of
 /// "configured but silent".) Robust to layout: any mention inside the `hooks` value counts.
-fn hook_configured(settings: Option<&Path>) -> bool {
+/// `pub(crate)` so the govern-all detector reuses the one hook-detection definition (GA-0).
+pub(crate) fn hook_configured(settings: Option<&Path>) -> bool {
     let Some(p) = settings else { return false };
     let Ok(text) = std::fs::read_to_string(p) else {
         return false;

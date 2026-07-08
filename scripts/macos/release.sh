@@ -43,13 +43,16 @@ SELF_IDENTITY="${IDENTITY:-Kriya Dev}"
 # which needs a lipo'd universal sidecar and reads its output from target/universal-apple-darwin/.
 if [ "$UNIVERSAL" -eq 1 ]; then
   ARCH="universal"
-  SIDECARS=(src-tauri/binaries/kriya-gateway-aarch64-apple-darwin src-tauri/binaries/kriya-gateway-x86_64-apple-darwin src-tauri/binaries/kriya-gateway-universal-apple-darwin)
+  SIDECARS=(
+    src-tauri/binaries/kriya-gateway-aarch64-apple-darwin src-tauri/binaries/kriya-gateway-x86_64-apple-darwin src-tauri/binaries/kriya-gateway-universal-apple-darwin
+    src-tauri/binaries/kriya-hook-aarch64-apple-darwin src-tauri/binaries/kriya-hook-x86_64-apple-darwin src-tauri/binaries/kriya-hook-universal-apple-darwin
+  )
   TAURI_TARGET_ARGS=(--target universal-apple-darwin)
   APP_BASE="src-tauri/target/universal-apple-darwin/release"
 else
   TRIPLE="$(rustc -vV | sed -n 's/host: //p')"
   ARCH="${TRIPLE%%-*}"                                # aarch64 | x86_64
-  SIDECARS=(src-tauri/binaries/kriya-gateway-$TRIPLE)
+  SIDECARS=(src-tauri/binaries/kriya-gateway-$TRIPLE src-tauri/binaries/kriya-hook-$TRIPLE)
   TAURI_TARGET_ARGS=()
   APP_BASE="src-tauri/target/release"
 fi

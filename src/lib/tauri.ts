@@ -87,6 +87,47 @@ export const openSettingsPane = (pane: string) => invoke<void>("open_settings_pa
 export const listCandidateApps = () => invoke<string[]>("list_candidate_apps");
 export const wireClaudeConfig = (req: WireRequest) => invoke<WireResult>("wire_claude_config", { req });
 
+// ── Govern-all (free, GA-0) ──────────────────────────────────────────────────
+/** `governed` = wired through its seam; `ungoverned` = detected, wireable; `needs-permission` = a
+ *  macOS grant is missing; `out-of-scope-cloud` = executes off-device, no on-device receipt possible. */
+export type GovernState = "governed" | "ungoverned" | "needs-permission" | "out-of-scope-cloud";
+/** One governable target in the detected surface. Mirrors Rust `govern::GovernTarget` (camelCase). */
+export interface GovernTarget {
+  /** Stable id (`<agent>:<kind>[:<key>]`) — the handle for per-item govern/ungovern + the toggle. */
+  id: string;
+  /** `claude-code` | `claude-desktop` | `hermes` | `desktop`. */
+  agent: string;
+  /** `hook` | `mcp-server` | `desktop-apps`. */
+  kind: string;
+  /** `hook` | `gateway` | `reach-in/computer-use`. */
+  seam: string;
+  state: GovernState;
+  configPath?: string | null;
+  label: string;
+  detail: string;
+}
+/** The whole detected governable surface. Mirrors Rust `govern::GovernableSurface`. */
+export interface GovernableSurface {
+  targets: GovernTarget[];
+  /** Is `kriya-hook` bundled/resolvable? (Govern-all can't install a hook it doesn't ship.) */
+  hookAvailable: boolean;
+  /** Is `kriya-gateway` bundled/resolvable? */
+  gatewayAvailable: boolean;
+  /** macOS Accessibility trust for the desktop lane (`null`/absent off macOS). */
+  axTrusted?: boolean | null;
+  /** Running desktop-app names (reach-in/computer-use candidates) — for the Advanced drawer. */
+  desktopCandidates: string[];
+}
+export interface HookResult {
+  agent: string;
+  configPath: string;
+  hookPath: string;
+  installed: boolean;
+}
+export const governableSurface = () => invoke<GovernableSurface>("governable_surface");
+export const installHook = (agent: string) => invoke<HookResult>("install_hook", { agent });
+export const uninstallHook = (agent: string) => invoke<HookResult>("uninstall_hook", { agent });
+
 // ── License (R29) ────────────────────────────────────────────────────────────
 export interface LicenseStatus {
   tier: "free" | "pro";

@@ -40,6 +40,10 @@ kriya-verify = { path = "crates/kriya-verify" }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The govern-all multi-client writer edits Hermes' `~/.hermes/config.yaml` (YAML) alongside the two
+# JSON client configs. All merge logic runs on a `serde_json::Value`; serde_yaml only (de)serializes
+# the YAML file at the edges. Matches the runtime's pinned 0.9.
+serde_yaml = "0.9"
 # Receipt re-verification + offline license verification — the compiled "tamper-proof anchoring"
 # and license-check moat. Self-contained (no cross-repo path dep on the public crate) so the
 # private Console builds + ships independently; the canonical-bytes format mirrors

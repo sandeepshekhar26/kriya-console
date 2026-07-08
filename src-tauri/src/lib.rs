@@ -10,6 +10,7 @@
 
 pub mod audit;
 pub mod coverage;
+pub mod govern;
 pub mod license;
 pub mod onboarding;
 pub mod paid;
@@ -52,6 +53,10 @@ pub fn run() {
             onboarding::open_settings_pane,
             onboarding::list_candidate_apps,
             onboarding::wire_claude_config,
+            // Free: govern-all (GA-0) — detect the governable surface + install/uninstall the hook.
+            govern::governable_surface,
+            govern::install_hook,
+            govern::uninstall_hook,
             // License (R29).
             license::license_status,
             license::install_license,

@@ -1,0 +1,27 @@
+{
+  "targets": [
+    {
+      "id": "claude-code:hook",
+      "agent": "claude-code",
+      "kind": "hook",
+      "seam": "hook",
+      "state": "ungoverned",
+      "configPath": "/home/u/.claude/settings.json",
+      "label": "Claude Code — native tools + attached MCP",
+      "detail": "detail"
+    },
+    {
+      "id": "desktop:desktop-apps",
+      "agent": "desktop",
+      "kind": "desktop-apps",
+      "seam": "reach-in/computer-use",
+      "state": "needs-permission",
+      "label": "Desktop apps (no API)",
+      "detail": "detail"
+    }
+  ],
+  "hookAvailable": true,
+  "gatewayAvailable": true,
+  "axTrusted": false,
+  "desktopCandidates": ["Numbers"]
+}
