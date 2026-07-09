@@ -23,12 +23,14 @@ fn main() {
     let mut holder = "Demo Holder".to_string();
     let mut days: Option<u64> = None;
     let mut control_plane = false;
+    let mut fleet_console = false;
 
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
         match flag.as_str() {
             "--holder" => holder = it.next().unwrap_or(holder),
             "--control-plane" => control_plane = true, // also grant the on-prem control-plane feature
+            "--fleet-console" => fleet_console = true, // also grant the fleet cockpit (P0)
             "--days" => {
                 days = it.next().and_then(|d| d.parse().ok()).or_else(|| {
                     eprintln!("--days needs a number");
@@ -37,7 +39,7 @@ fn main() {
             }
             "-h" | "--help" => {
                 eprintln!(
-                    "usage: issue-license --holder \"<name>\" [--control-plane] [--days <n>]"
+                    "usage: issue-license --holder \"<name>\" [--control-plane] [--fleet-console] [--days <n>]"
                 );
                 std::process::exit(0);
             }
@@ -52,6 +54,9 @@ fn main() {
     let mut features = vec!["compliance-export".into(), "fleet-correlation".into()];
     if control_plane {
         features.push("control-plane".into());
+    }
+    if fleet_console {
+        features.push("fleet-console".into());
     }
     let payload = LicensePayload {
         holder,

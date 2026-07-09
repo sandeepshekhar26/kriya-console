@@ -13,6 +13,13 @@ pub struct Store {
     conn: Mutex<Connection>,
 }
 
+/// The row cap for `read_back` (doc 22 §11 DoS hardening): the store layer NEVER materializes more
+/// than this many envelope rows into memory for a single read-back, regardless of how wide a window
+/// was requested. This is the defense-in-depth backstop — it's what keeps a legacy client that sends
+/// no `from_seq`/`to_seq` at all (defaults to `0..=u64::MAX`) working (capped, not rejected), even
+/// though the HTTP layer separately rejects an explicitly oversized window with a 400.
+pub const READ_BACK_ROW_CAP: i64 = 10_000;
+
 /// The outcome of ingesting one envelope (idempotent on `(device_pub, seq)`).
 #[derive(Debug, PartialEq, Eq)]
 pub enum Ingest {
@@ -304,20 +311,29 @@ impl Store {
     /// Trustless read-back (2.9): the EXACT stored signed bytes for a contiguous `from_seq..=to_seq`
     /// slice (no re-render) + the device's most-recent signed heartbeat (the tail anchor). The caller
     /// re-runs the offline verifier on these bytes and asserts `returned_top_seq >= heartbeat.seq_seen`.
+    ///
+    /// DoS hardening (doc 22 §11): capped at `READ_BACK_ROW_CAP` rows regardless of the requested
+    /// window width — this is the data-layer backstop (defense in depth) behind the route-layer 400
+    /// in `get_verify`. A caller asking for a window wider than the cap (including a legacy caller
+    /// that sent no range at all, i.e. `0..=u64::MAX`) gets the first `READ_BACK_ROW_CAP` envelopes
+    /// in the window, not an error — additive/backward-compatible (BC-4).
     pub fn read_back(&self, device_pub: &str, from_seq: u64, to_seq: u64) -> Readback {
         let conn = self.lock();
         let mut stmt = conn
             .prepare(
                 "SELECT signed_bytes FROM envelopes WHERE device_pub=?1 AND seq>=?2 AND seq<=?3 \
-                 ORDER BY seq",
+                 ORDER BY seq LIMIT ?4",
             )
             .expect("prepare read_back");
         let clamp = |s: u64| s.min(i64::MAX as u64) as i64;
         let envelopes = stmt
-            .query_map(params![device_pub, clamp(from_seq), clamp(to_seq)], |r| {
-                let b: Vec<u8> = r.get(0)?;
-                Ok(String::from_utf8_lossy(&b).into_owned())
-            })
+            .query_map(
+                params![device_pub, clamp(from_seq), clamp(to_seq), READ_BACK_ROW_CAP],
+                |r| {
+                    let b: Vec<u8> = r.get(0)?;
+                    Ok(String::from_utf8_lossy(&b).into_owned())
+                },
+            )
             .expect("query read_back")
             .filter_map(Result::ok)
             .collect();
