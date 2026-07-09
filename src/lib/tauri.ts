@@ -372,3 +372,42 @@ export interface DeviceCoverageRow {
   agents?: DeviceAgentInfo[];
   info_collected_ms?: number;
 }
+
+// ── Fleet cockpit — the Tauri commands themselves (paid, P2, doc 22 §6/§8) ──
+// The P0 Rust commands (`src-tauri/src/control_plane/fleet.rs`) predate this file having any wrapper
+// for them; P1 added the DeviceInfo/DeviceCoverageRow types above but not these. Tauri v2 auto-converts
+// each Rust snake_case param to a camelCase JS object key — these mirror `fleet.rs`'s exact signatures.
+
+/** One re-verified envelope: the raw signed line as returned by kriyad, plus whether it verifies
+ *  locally against kriya-verify right now (BC-5). `verified: false` is returned, not thrown — a
+ *  forged/tampered row is itself the finding, not a reason to hide the rest of the window. Mirrors
+ *  Rust `control_plane::fleet::VerifiedEnvelope` (`#[serde(rename_all = "camelCase")]`). */
+export interface VerifiedEnvelope {
+  raw: string;
+  verified: boolean;
+  /** Set only when verification failed — the reason, for the operator's investigation. */
+  error?: string | null;
+}
+
+/** Mirrors Rust `control_plane::fleet::DeviceEvidence`. */
+export interface DeviceEvidence {
+  envelopes: VerifiedEnvelope[];
+  /** The device's most-recent signed heartbeat line, re-verified the same way — `null` if the
+   *  device has never heartbeat. */
+  heartbeat?: VerifiedEnvelope | null;
+}
+
+/** Probe `url`'s `/healthz` over mTLS with the given CA + client cert/key, and ONLY on success persist
+ *  the connection to `~/.kriya/console/fleet.json`. Requires the `fleet-console` license flag (checked
+ *  Rust-side, first, before any network I/O). */
+export const fleetConnect = (url: string, caPemPath: string, certPath: string, keyPath: string) =>
+  invoke<void>("fleet_connect", { url, caPemPath, certPath, keyPath });
+
+/** `GET /v1/coverage` — the per-device liveness/completeness dashboard. */
+export const fleetCoverage = () => invoke<DeviceCoverageRow[]>("fleet_coverage");
+
+/** `GET /v1/verify?device_pub=&from_seq=&to_seq=` — the trustless read-back, re-verified LOCALLY over
+ *  the raw returned bytes before this ever reaches the UI (BC-5: never trust the wire, never re-verify
+ *  a re-serialization). */
+export const fleetDeviceEvidence = (devicePub: string, fromSeq: number, toSeq: number) =>
+  invoke<DeviceEvidence>("fleet_device_evidence", { devicePub, fromSeq, toSeq });

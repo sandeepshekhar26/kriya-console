@@ -121,6 +121,54 @@ surface instead of a footnote — the **Coverage Map**:
   time, outcome — no TLS payloads). A GREY lane is the honest statement that nothing would have
   been recorded there at all.
 
+## The three-tier data-boundary promise
+
+The Console now has three distinct postures — free single-machine use, an enrolled device
+reporting into a fleet, and the fleet cockpit itself — and each carries a different, precisely
+scoped promise about what ever leaves the machine. Stating them side by side, rather than letting
+"nothing leaves the device" quietly become the answer for all three, is the same honesty discipline
+as the Coverage Map above: say exactly what is and isn't true, per state, not a comforting average.
+
+| Tier | Promise | What that means concretely |
+|---|---|---|
+| **Free / un-enrolled device** | **Machine-level: nothing leaves the device, full stop.** | No fleet connection is configured, so no socket to any server — kriyad or otherwise — is ever opened for audit/evidence purposes. This is unchanged, byte-for-byte, by anything below: the free tier's claim on this page has not been weakened or reinterpreted. |
+| **Enrolled device** (paid `control-plane`) | **Boundary-level: minimized, signed envelopes and the device-info beacon go to the customer's own kriyad — never anywhere else.** | Once an operator points a device at a self-hosted `kriyad` (their box, their VM, their k8s, or an air-gapped enclave — see below), the device signs and sends redaction-minimized evidence envelopes plus the periodic `DeviceInfo` inventory beacon (§7 fields only, see below) to that one server, over mTLS. Raw receipts and raw payload values are never included — see "Honest boundaries" above for what recording even means. This traffic never reaches kriya's infrastructure or any third-party cloud; it terminates at infrastructure the customer alone controls. |
+| **Operator** (paid `fleet-console`, the cockpit) | **Boundary-level: the cockpit pulls from, and can publish policy to, the customer's own kriyad — never kriya's or any vendor's cloud.** | The fleet cockpit view in this same Console app, run in "operator mode," talks only to the customer's self-hosted `kriyad` (the same server enrolled devices report to) to read coverage/evidence and, in a later phase, publish policy. It is the same on-device Console binary, not a hosted dashboard — there is no kriya-operated server in this path at any point. |
+
+**The through-line, at every tier: kriya (the vendor) never receives your data.** The only thing
+that changes tier-to-tier is whether anything leaves the *device* at all, and if it does, that it
+goes exclusively to infrastructure the customer stands up and controls themselves. There is no
+tier, free or paid, in which evidence or inventory data is sent to a server kriya operates.
+
+**Why this doesn't undercut the ops story.** Raw receipts and raw payload values stay device-local
+even for an enrolled device — not merely as a courtesy, but because it keeps the customer's own
+`kriyad` store non-sensitive (a backup is one small SQLite file, not a honeypot of raw agent
+payloads) and because it's the posture that survives an employee-privacy review: a regulated buyer
+adopting fleet governance must be able to show they did *not* centralize keystroke-level employee
+activity. Envelope verbosity beyond the minimized default is the customer's own policy dial to set
+on their own server — not something this Console decides for them or defaults to.
+
+### What the device-info beacon does — and does not — collect
+
+The new `POST /v1/device-info` beacon (used by the enrolled-device tier above, and read back by
+the cockpit's fleet table and per-device drill-in) is schema-constrained to an explicit allowlist
+of device-scoped, technical fields, enforced in code, not just by convention:
+
+| Collected (device-scoped, technical) | Excluded (person-scoped or unnecessary) — never collected, never transmitted |
+|---|---|
+| Console / runtime / verifier / agent / adapter versions | OS **username** |
+| Coarse OS platform, version, and architecture | **Hostname** — never auto-derived; the only device name shown is an optional, enterprise-assigned asset tag from the customer's own MDM, and the fleet cockpit falls back to a short public-key fragment (never a locally-known OS identity string) when that tag is absent |
+| Per-agent wired/unwired status, applied policy version | Source **IP** — seen at the transport layer but not persisted |
+| Outbox depth (a health signal), enrollment time | Timezone, locale, MAC address, hardware serial numbers |
+
+This is the same field list documented as canonical in the runtime's `DeviceInfo` schema (see the
+open kriya repo's `kriya-verify` crate), which ships with an adversarial test proving the exclusion
+structurally: a probe that deliberately offers a username, a hostname, a source IP, a timezone, a
+locale, a MAC address, and a serial number is fed through the real constructor, and none of those
+seven values — or their field names — can appear anywhere in the signed bytes actually placed on
+the wire. The guarantee here isn't "we chose not to send it today"; it's that the schema has no
+field to put it in.
+
 ## Why on-device matters here
 
 For local and regulated apps, the audit cannot live in a cloud gateway — the data and the human are

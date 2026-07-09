@@ -161,7 +161,7 @@ export function App() {
       tier: "pro",
       valid: true,
       holder: "Demo Org",
-      features: ["compliance-export", "fleet-correlation", "control-plane"],
+      features: ["compliance-export", "fleet-correlation", "control-plane", "fleet-console"],
     };
 
     // Capture mode (?capture=1): load the clean, PII-free, genuinely-signed marketing dataset, with

@@ -49,10 +49,13 @@ pub struct FleetConfig {
 
 /// Parsed `GET /v1/coverage` response — mirrors `kriya_aggregator::store::DeviceCoverage` field-for-field
 /// (kept as an independent local type, not a cross-crate dep on kriya-aggregator, since the Console
-/// never links the aggregator binary — only its documented wire shape). `#[serde(default)]`-free: every
-/// field here is present in kriyad's response today; BC-4 additive-only evolution means a future kriyad
-/// may add NEW optional fields, which `serde` ignores by default on a struct deserialize (unknown fields
-/// are tolerated unless `deny_unknown_fields` is set, which we deliberately never set here).
+/// never links the aggregator binary — only its documented wire shape). `#[serde(default)]`-free on the
+/// original P0 fields (every one of those is present in kriyad's response today); the doc-22 §7 P1
+/// inventory passthrough fields below are ALL `#[serde(default)]` — kriyad omits them entirely for a
+/// device that has never posted a `DeviceInfo` beacon (pre-P1 devices, or ones that simply haven't
+/// beaconed yet), and BC-4 additive-only evolution means a future kriyad may add still-newer optional
+/// fields, which `serde` ignores by default on a struct deserialize (unknown fields are tolerated unless
+/// `deny_unknown_fields` is set, which we deliberately never set here).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DeviceCoverage {
     pub device_pub: String,
@@ -67,6 +70,39 @@ pub struct DeviceCoverage {
     /// status value from a newer kriyad still deserializes cleanly (BC-4: parsers unknown-field/-value
     /// tolerant) instead of hard-failing the whole coverage fetch.
     pub status: String,
+
+    // --- doc 22 §7 device-inventory passthrough (P1) — ADDITIVE, optional, ABSENT (not null) when a
+    // device hasn't posted a DeviceInfo beacon yet. Mirrors `kriya_aggregator::store::DeviceCoverage`'s
+    // own P1 fields field-for-field; the Tauri command layer (`fleet.rs::fleet_coverage`) surfaces these
+    // straight through to the cockpit UI, which renders "inventory: n/a" for anything absent (BC-4).
+    #[serde(default)]
+    pub console_version: Option<String>,
+    #[serde(default)]
+    pub runtime_version: Option<String>,
+    #[serde(default)]
+    pub verify_crate_version: Option<String>,
+    #[serde(default)]
+    pub os_platform: Option<String>,
+    #[serde(default)]
+    pub os_version: Option<String>,
+    #[serde(default)]
+    pub os_arch: Option<String>,
+    #[serde(default)]
+    pub policy_applied_version: Option<i64>,
+    #[serde(default)]
+    pub policy_bundle_hash: Option<String>,
+    #[serde(default)]
+    pub outbox_pending: Option<i64>,
+    #[serde(default)]
+    pub enrolled_ms: Option<i64>,
+    #[serde(default)]
+    pub device_label: Option<String>,
+    /// The full `agents[]` array (doc 22 §7), kept as opaque JSON — not worth its own struct for a pure
+    /// passthrough; the cockpit already has `kriya_verify::AgentInfo`-shaped TS types to render it.
+    #[serde(default)]
+    pub agents: Option<serde_json::Value>,
+    #[serde(default)]
+    pub info_collected_ms: Option<i64>,
 }
 
 /// The parsed shape of `GET /v1/coverage`'s response: a JSON array of `DeviceCoverage` rows.
