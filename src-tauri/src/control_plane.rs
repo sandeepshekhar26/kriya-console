@@ -11,7 +11,8 @@
 //! OPERATOR cockpit's outbound mTLS pull client), [`fleet`] (P0 — the Tauri IPC layer over it),
 //! [`device_info`] (P1 — the signed DeviceInfo inventory beacon, doc 22 §7), [`org_key`] (P3 — the
 //! operator-side org policy key, OS-keychain-backed), [`policy`] (P3 — the device policy downlink:
-//! pull, verify, apply, anti-rollback).
+//! pull, verify, apply, anti-rollback), [`fleet_evidence`] (P5 — the org-wide, envelope-native
+//! assessor-ready evidence export, doc 22 §9).
 
 pub mod compiler;
 pub mod device_info;
@@ -19,6 +20,7 @@ pub mod enrollment;
 pub mod envelope;
 pub mod fleet;
 pub mod fleet_client;
+pub mod fleet_evidence;
 pub mod org_key;
 pub mod outbox;
 pub mod policy;

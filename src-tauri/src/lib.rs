@@ -100,6 +100,10 @@ pub fn run() {
             control_plane::fleet::fleet_policy_preview,
             #[cfg(feature = "control-plane")]
             control_plane::fleet::fleet_publish_policy,
+            // Org-wide, envelope-native evidence export (P5, doc 22 §9) — the per-device engine
+            // (paid::export_compliance) is untouched; this is a wholly separate fleet-wide module.
+            #[cfg(feature = "control-plane")]
+            control_plane::fleet::fleet_org_evidence,
             // Device policy downlink (P3) — air-gap apply. Gated on enrollment + a pinned org key, NOT
             // on `fleet-console` (a device-side act any enrolled device can do, not an operator-only one).
             #[cfg(feature = "control-plane")]

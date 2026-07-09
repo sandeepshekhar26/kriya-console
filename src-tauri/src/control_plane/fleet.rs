@@ -316,6 +316,55 @@ pub fn fleet_publish_policy(
     }
 }
 
+// ── Org-wide evidence export (P5, doc 22 §9) ────────────────────────────────────────────────────────
+
+/// The org-wide, envelope-native evidence export (P5, doc 22 §9). Requires `fleet-console`. Streams
+/// the fleet's envelopes device-by-device through the existing P0 windowed pull client
+/// (`fleet_evidence::stream_fleet_envelopes` — capped `from_seq..to_seq` chunks, never the full
+/// lifetime history at once), folds them with the current coverage + the latest visible policy bundle
+/// into [`fleet_evidence::OrgEvidence`] via the pure, fixture-tested [`fleet_evidence::fleet_evidence`]
+/// core. `window_ms` defaults to [`fleet_evidence::DEFAULT_WINDOW_MS`] (90 days) when omitted.
+#[tauri::command]
+#[cfg(feature = "control-plane")]
+pub fn fleet_org_evidence(
+    organization: String,
+    window_ms: Option<u64>,
+) -> Result<super::fleet_evidence::OrgEvidence, String> {
+    require_fleet_console()?;
+    let conn = load_connection()?;
+    let cfg = to_fleet_config(&conn)?;
+
+    let coverage = fleet_client::fetch_coverage(&cfg)?;
+    let now = now_ms();
+    let window_ms = window_ms.unwrap_or(super::fleet_evidence::DEFAULT_WINDOW_MS);
+    let envelopes = super::fleet_evidence::stream_fleet_envelopes(&cfg, &coverage, now, window_ms);
+
+    // The latest bundle this cockpit can see (the SAME preview fetch `fleet_policy_preview` uses) —
+    // `bundles` is empty, not an error, when nothing has ever been published (matches doc 22 §9's
+    // "no baseline yet" honesty case).
+    let bundles: Vec<kriya_verify::PolicyBundle> =
+        match fleet_client::fetch_policy_preview(&cfg, PREVIEW_DEVICE_PUB, None)? {
+            Some(raw) => serde_json::from_str::<Value>(&raw)
+                .ok()
+                .and_then(|v| v.get("bundle").cloned())
+                .and_then(|b| serde_json::from_value::<kriya_verify::PolicyBundle>(b).ok())
+                .into_iter()
+                .collect(),
+            None => Vec::new(),
+        };
+
+    let device_infos = super::fleet_evidence::device_inventories_from_coverage(&coverage);
+    Ok(super::fleet_evidence::fleet_evidence(
+        &envelopes,
+        &coverage,
+        &bundles,
+        &device_infos,
+        (now.saturating_sub(window_ms), now),
+        &organization,
+        now,
+    ))
+}
+
 #[cfg(all(test, feature = "control-plane"))]
 mod tests {
     use super::*;

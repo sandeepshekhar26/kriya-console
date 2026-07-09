@@ -473,3 +473,70 @@ export const fleetPublishPolicy = (args: {
   govern: { target: string; action: string }[];
   envelopeVerbosity: string;
 }) => invoke<PublishResult>("fleet_publish_policy", args);
+
+// ── Org-wide evidence export (paid, P5, doc 22 §9) ───────────────────────────
+// The per-device engine (`exportCompliance`/`ComplianceBundle` above) is untouched by this — kriyad
+// only ever stores signed envelope rollups, never raw receipts (doc 22 §11-B1), so this is a wholly
+// separate, envelope-native module (`fleet_evidence.rs`). Mirrors its Rust shape field-for-field.
+
+/** `"satisfied" | "partial" | "gap"` — mirrors Rust `fleet_evidence::ControlStatus` (serde `lowercase`). */
+export type OrgControlStatus = "satisfied" | "partial" | "gap";
+
+/** Mirrors Rust `control_plane::fleet_evidence::OrgControl`. */
+export interface OrgControl {
+  framework: string;
+  control: string;
+  requirement: string;
+  evidence: string;
+  status: OrgControlStatus;
+}
+
+/** One device's row in the fleet coverage-completeness table — mirrors Rust
+ *  `control_plane::fleet_evidence::DeviceCompleteness`. */
+export interface DeviceCompleteness {
+  devicePub: string;
+  deviceLabel?: string | null;
+  /** kriyad's own liveness hint (`current`/`behind`/`silent`) — the fields below are the LOCALLY
+   *  re-verified proof layer, not a second hint. */
+  liveness: string;
+  envelopesInWindow: number;
+  /** Human-readable seq-continuity gap citations, e.g. `"seq 12 -> 15 (2 missing)"`. Empty = no gaps. */
+  seqGaps: string[];
+  chainIntact: boolean;
+  chainBreakAt?: number | null;
+  /** From the LATEST in-window envelope's `policy_state`, locally re-verified — absent if this
+   *  device's window carries no envelope with one (never applied within the window, or pre-P3). */
+  appliedPolicyVersion?: number | null;
+  appliedBundleHash?: string | null;
+  consoleVersion?: string | null;
+  runtimeVersion?: string | null;
+}
+
+/** The full org-wide evidence bundle — mirrors Rust `control_plane::fleet_evidence::OrgEvidence`.
+ *  `markdown`/`json` are the ready-to-save report text, generated in Rust (same pattern as
+ *  `ComplianceBundle` above: the Console never re-derives report text client-side). */
+export interface OrgEvidence {
+  generatedMs: number;
+  organization: string;
+  windowFromMs: number;
+  windowToMs: number;
+  devicesTotal: number;
+  devicesCurrent: number;
+  devicesBehind: number;
+  devicesSilent: number;
+  deviceCompleteness: DeviceCompleteness[];
+  /** The highest version among the currently-published, in-scope-visible bundle(s) — absent when
+   *  nothing has ever been published. */
+  latestBundleVersion?: number | null;
+  /** Named exceptions: devices whose locally-verified applied version is behind `latestBundleVersion`,
+   *  or that have never applied any bundle at all. */
+  drift: string[];
+  controls: OrgControl[];
+  markdown: string;
+  json: string;
+}
+
+/** The org-wide, envelope-native evidence export (P5, doc 22 §9). Requires `fleet-console`.
+ *  `windowMs` defaults to 90 days (Rust `fleet_evidence::DEFAULT_WINDOW_MS`) when omitted. */
+export const fleetOrgEvidence = (organization: string, windowMs?: number | null) =>
+  invoke<OrgEvidence>("fleet_org_evidence", { organization, windowMs: windowMs ?? null });

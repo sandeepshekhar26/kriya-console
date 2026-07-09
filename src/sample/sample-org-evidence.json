@@ -1,0 +1,137 @@
+{
+  "generatedMs": 5000,
+  "organization": "Sample contractor — illustrative data",
+  "windowFromMs": 0,
+  "windowToMs": 3000,
+  "devicesTotal": 3,
+  "devicesCurrent": 2,
+  "devicesBehind": 0,
+  "devicesSilent": 1,
+  "deviceCompleteness": [
+    {
+      "devicePub": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "deviceLabel": "laptop-a",
+      "liveness": "current",
+      "envelopesInWindow": 2,
+      "seqGaps": [],
+      "chainIntact": true,
+      "chainBreakAt": null,
+      "appliedPolicyVersion": 2,
+      "appliedBundleHash": "hash-v2",
+      "consoleVersion": "0.2.0",
+      "runtimeVersion": "0.4.0"
+    },
+    {
+      "devicePub": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+      "deviceLabel": "laptop-b",
+      "liveness": "current",
+      "envelopesInWindow": 2,
+      "seqGaps": [
+        "seq 1 -> 3 (1 missing)"
+      ],
+      "chainIntact": false,
+      "chainBreakAt": 2,
+      "appliedPolicyVersion": 1,
+      "appliedBundleHash": "hash-v1",
+      "consoleVersion": "0.2.0",
+      "runtimeVersion": "0.4.0"
+    },
+    {
+      "devicePub": "ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "deviceLabel": "server-c",
+      "liveness": "silent",
+      "envelopesInWindow": 1,
+      "seqGaps": [],
+      "chainIntact": true,
+      "chainBreakAt": null,
+      "appliedPolicyVersion": null,
+      "appliedBundleHash": null,
+      "consoleVersion": "0.2.0",
+      "runtimeVersion": "0.4.0"
+    }
+  ],
+  "latestBundleVersion": 2,
+  "drift": [
+    "laptop-b (8139770ea87d…): applied v1 < latest v2",
+    "server-c (ed4928c628d1…): never applied (baseline is v2)"
+  ],
+  "controls": [
+    {
+      "framework": "NIST 800-171",
+      "control": "3.3.1 (AU.L2-3.3.1 · AU-2/3/12) — Audit record creation & retention",
+      "requirement": "Create and retain system audit logs/records to enable monitoring, analysis, investigation, and reporting of unlawful or unauthorized activity.",
+      "evidence": "5 device-reported receipt(s) retained across 3 device(s) as hash-chained, signed envelope rollups (5 verified / 0 failed at the device, per-envelope self-reported counts); 0 of 5 envelope(s) fleet-wide failed THIS module's own local re-verification (tampering/corruption); 1 device(s) with a broken chain, 1 with a seq-continuity gap, 1 silent (unreachable). Fleet-wide coverage-completeness is itself attested per device from re-verified envelope bytes, not asserted.",
+      "status": "partial"
+    },
+    {
+      "framework": "NIST 800-171",
+      "control": "3.3.2 (AU.L2-3.3.2 · AU-3) — Individual accountability",
+      "requirement": "Ensure the actions of individual system users can be uniquely traced to those users so they can be held accountable.",
+      "evidence": "3 distinct pseudonymous operator ref(s) across 3 device(s) fleet-wide (HMAC-pseudonymized at the aggregator — individual identities never leave the originating device). Accountability is traceable to a stable per-window pseudonym, not a directly identifiable individual; this is the privacy design working, not a shortfall to fix.",
+      "status": "partial"
+    },
+    {
+      "framework": "NIST 800-171",
+      "control": "3.3.3 (AU.L2-3.3.3 · AU-2) — Review & update logged events",
+      "requirement": "Review and update logged events.",
+      "evidence": "3 device(s) contributing envelope rollups fleet-wide; the periodic review and update of which events to log remains an organizational process outside kriya.",
+      "status": "partial"
+    },
+    {
+      "framework": "NIST 800-171",
+      "control": "3.3.4 (AU.L2-3.3.4 · AU-5) — Audit logging process failure alerting",
+      "requirement": "Alert in the event of an audit logging process failure.",
+      "evidence": "1 device(s) currently silent out of 3, named: server-c (ed4928c628d1…). A stopped or silenced device is visible by absence in the signed coverage chain — a gap in the heartbeat/envelope stream, not a quiet nothing. No external paging/alerting integration exists.",
+      "status": "partial"
+    },
+    {
+      "framework": "NIST 800-171",
+      "control": "3.3.5 (AU.L2-3.3.5 · AU-6(3)) — Correlate audit review & analysis",
+      "requirement": "Correlate audit record review, analysis, and reporting processes for investigation and response to indications of suspicious activity.",
+      "evidence": "Cross-device correlation via kriyad's aggregated envelope store across 3 device(s); this is fleet-wide, single-organization correlation, not cross-organization SIEM aggregation.",
+      "status": "partial"
+    },
+    {
+      "framework": "NIST 800-171",
+      "control": "3.3.6 (AU.L2-3.3.6 · AU-7) — Audit record reduction & report generation",
+      "requirement": "Provide audit record reduction and report generation to support on-demand analysis and reporting.",
+      "evidence": "This Markdown + JSON org-wide evidence bundle is itself the fleet-wide reduction/report artifact, generated on-demand from every device's signed envelope stream and independently re-verifiable offline.",
+      "status": "satisfied"
+    },
+    {
+      "framework": "NIST 800-171",
+      "control": "3.3.7 (AU.L2-3.3.7 · AU-8) — Clock synchronization for time stamps",
+      "requirement": "Provide a system capability that compares and synchronizes internal system clocks with an authoritative source for audit-record time stamps.",
+      "evidence": "Every envelope carries a compiler-stamped window (from_ms/to_ms); clock synchronization against an authoritative source is OS-provided (NTP) on each device, outside kriya's control — this control is capped at partial regardless of fleet size.",
+      "status": "partial"
+    },
+    {
+      "framework": "NIST 800-171",
+      "control": "3.3.8 (AU.L2-3.3.8 · AU-9) — Protect audit information & tools",
+      "requirement": "Protect audit information and audit logging tools from unauthorized access, modification, and deletion.",
+      "evidence": "0 envelope(s) failed local re-verification fleet-wide out of 5 received (tampering/corruption detected) — the detection control is functioning as intended; investigate any flagged device(s). Access control over kriyad's own store/OS account is outside kriya's control, capping this at partial regardless of trail size.",
+      "status": "partial"
+    },
+    {
+      "framework": "NIST 800-171",
+      "control": "3.3.9 (AU.L2-3.3.9 · AU-9(4)) — Limit audit-logging management to privileged users",
+      "requirement": "Limit management of audit logging functionality to a subset of privileged users.",
+      "evidence": "kriyad's aggregator runs under the operator's own OS account, and in-app roles are self-asserted (see docs/TRUST.md) — kriya enforces no privileged-user restriction on who can manage audit logging fleet-wide; this must be enforced by an OS-level or organizational access control (the same permanent gap the per-device engine reports, doc 21 Part D).",
+      "status": "gap"
+    },
+    {
+      "framework": "NIST 800-171 / CMMC L2",
+      "control": "3.4.1 (CM.L2-3.4.1 · CM-2/3/8) — Baseline configuration",
+      "requirement": "Establish and maintain baseline configurations and inventories of systems throughout the respective system development life cycles.",
+      "evidence": "Policy bundle v2, authored and org-key-signed, is the fleet's current baseline; verified-applied on 1/3 device(s) (1 never applied any bundle within the window) — applied version taken from EACH DEVICE'S OWN locally re-verified envelope, never kriyad's serving hint.",
+      "status": "partial"
+    },
+    {
+      "framework": "NIST 800-171 / CMMC L2",
+      "control": "3.4.2 (CM.L2-3.4.2 · CM-6) — Enforce security configuration settings",
+      "requirement": "Establish and enforce security configuration settings for information technology products employed in organizational systems.",
+      "evidence": "2 device(s) behind the current baseline: laptop-b (8139770ea87d…): applied v1 < latest v2; server-c (ed4928c628d1…): never applied (baseline is v2). Enriched with §7 inventory where available (console/runtime versions on `device_completeness`).",
+      "status": "partial"
+    }
+  ]
+}

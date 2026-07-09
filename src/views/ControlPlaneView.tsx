@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ComponentType } from "react";
 import { Icon } from "../components/Icon";
 import { ControlPlaneDrillIn } from "./ControlPlaneDrillIn";
+import { ControlPlaneEvidenceTab } from "./ControlPlaneEvidenceTab";
 import { ControlPlanePolicyTab } from "./ControlPlanePolicyTab";
 import { bundleHash } from "../lib/policyBundle";
 import {
@@ -303,7 +304,7 @@ function FleetCockpit({
   const [refreshing, setRefreshing] = useState(false);
   const [refreshErr, setRefreshErr] = useState<string | null>(null);
   const [selected, setSelected] = useState<DeviceCoverageRow | null>(null);
-  const [tab, setTab] = useState<"fleet" | "policy">("fleet");
+  const [tab, setTab] = useState<"fleet" | "policy" | "evidence">("fleet");
   const [drift, setDrift] = useState<{
     latest: { version: number; bundle_hash: string } | null;
     verdicts: Record<string, DriftVerdict>;
@@ -400,10 +401,15 @@ function FleetCockpit({
         <button className={tab === "policy" ? "active" : undefined} onClick={() => setTab("policy")}>
           <Icon name="policy" size={13} /> Policy
         </button>
+        <button className={tab === "evidence" ? "active" : undefined} onClick={() => setTab("evidence")}>
+          <Icon name="evidence" size={13} /> Evidence
+        </button>
       </div>
 
       {tab === "policy" ? (
         <ControlPlanePolicyTab />
+      ) : tab === "evidence" ? (
+        <ControlPlaneEvidenceTab />
       ) : (
         <>
           <div className="cp-conn">
