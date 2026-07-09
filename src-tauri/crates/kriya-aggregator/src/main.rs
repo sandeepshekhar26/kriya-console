@@ -21,9 +21,6 @@ use axum::{Json, Router};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-/// `silent` when a device hasn't been seen for N·H (N=3, H=1h) — the coverage threshold (LLD §B.6).
-const SILENT_AFTER_MS: u64 = 3 * 60 * 60 * 1000;
-
 /// Prometheus counters (the SQLite store lands in 2.3).
 #[derive(Default)]
 pub struct Metrics {
@@ -38,20 +35,28 @@ pub struct AppState {
     /// Only `ca_dir` (not a full `Config`) is threaded through — the one field route handlers actually
     /// need, to resolve the pinned org policy public key (P3, `config::Config::org_policy_pub`).
     pub ca_dir: PathBuf,
+    /// `silent` when a device hasn't been seen for this long (LLD §B.6 pilot default: 3h) —
+    /// `config::Config::silent_after_ms`'s doc comment explains why this is configurable.
+    pub silent_after_ms: u64,
 }
 
 impl AppState {
-    pub fn new(store: store::Store, ca_dir: PathBuf) -> Self {
+    pub fn new(store: store::Store, ca_dir: PathBuf, silent_after_ms: u64) -> Self {
         Self {
             metrics: Metrics::default(),
             store,
             ca_dir,
+            silent_after_ms,
         }
     }
 
     #[cfg(test)]
     pub fn in_memory() -> Self {
-        Self::new(store::Store::open_in_memory().expect("in-memory store"), PathBuf::from("."))
+        Self::new(
+            store::Store::open_in_memory().expect("in-memory store"),
+            PathBuf::from("."),
+            3 * 60 * 60 * 1000,
+        )
     }
 
     /// Resolve the pinned org policy public key for this server — see
@@ -82,7 +87,7 @@ async fn get_coverage(
     Query(q): Query<HashMap<String, String>>,
 ) -> Json<Vec<store::DeviceCoverage>> {
     let org = q.get("org_id").map(String::as_str);
-    Json(state.store.coverage(now_ms(), SILENT_AFTER_MS, org))
+    Json(state.store.coverage(now_ms(), state.silent_after_ms, org))
 }
 
 /// The maximum `to_seq - from_seq` window this route accepts from an EXPLICIT range (doc 22 §11 DoS
@@ -346,7 +351,7 @@ async fn main() {
         std::process::exit(1);
     }
     let store = store::Store::open(&config.db_path).expect("open store");
-    let state = AppState::new(store, config.ca_dir.clone());
+    let state = AppState::new(store, config.ca_dir.clone(), config.silent_after_ms);
 
     // Air-gap receive: `kriyad ingest-file <outbox.ndjson>` side-loads signed bytes carried across on
     // approved media, runs the SAME offline re-verification as the wire path, then exits (no serve).
@@ -400,6 +405,30 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
+
+    /// `config::Config::silent_after_ms` (env `KRIYAD_SILENT_AFTER_MS`) actually reaches the route —
+    /// a SHORT threshold flips a just-reported device to `silent` almost immediately, without waiting
+    /// out the pilot's real 3h default. This is what the P4 e2e proof relies on to demonstrate
+    /// "stop the laggard -> silent+red" in seconds rather than hours.
+    #[tokio::test]
+    async fn silent_after_ms_is_configurable_via_app_state() {
+        use ed25519_dalek::SigningKey;
+        let key = SigningKey::from_bytes(&[91u8; 32]);
+        let state = Arc::new(AppState::new(
+            store::Store::open_in_memory().unwrap(),
+            PathBuf::from("."),
+            50, // 50ms — a device is "silent" almost the instant it stops reporting
+        ));
+        let env_line = serde_json::to_string(&build_envelope(&key, 1, None)).unwrap();
+        post(state.clone(), "/v1/envelopes", env_line).await;
+
+        let cov: Value = serde_json::from_slice(&get(state.clone(), "/v1/coverage").await).unwrap();
+        assert_eq!(cov[0]["status"], "current", "fresh report is current, even with a short threshold");
+
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let cov: Value = serde_json::from_slice(&get(state, "/v1/coverage").await).unwrap();
+        assert_eq!(cov[0]["status"], "silent", "a short configured threshold flips it to silent quickly");
+    }
 
     #[tokio::test]
     async fn healthz_and_metrics_respond() {
@@ -733,12 +762,109 @@ mod tests {
             "device_label",
             "agents",
             "info_collected_ms",
+            // P4 (doc 22 §9-CM) additions — likewise absent, never null, when nothing has ever been
+            // published/applied.
+            "applied_policy_version",
+            "applied_bundle_hash",
+            "latest_bundle_version",
         ] {
             assert!(
                 !obj.contains_key(new_field),
                 "field {new_field:?} must be absent (not null) on a device with no DeviceInfo beacon: {row}"
             );
         }
+    }
+
+    /// P4 (doc 22 §9-CM): a device's LATEST accepted envelope's `policy_state` is what `applied_*`
+    /// reflects — even when the P1 device-info echo is stale/absent (fresher: it updates every window,
+    /// not just on a content-hash-gated DeviceInfo re-beacon).
+    #[tokio::test]
+    async fn coverage_applied_policy_prefers_the_latest_envelopes_policy_state() {
+        use ed25519_dalek::SigningKey;
+        let key = SigningKey::from_bytes(&[26u8; 32]);
+        let device_pub = hex::encode(key.verifying_key().to_bytes());
+        let state = Arc::new(AppState::in_memory());
+
+        // seq 1: no policy_state yet (pre-apply).
+        let e1 = build_envelope(&key, 1, None);
+        let (_, body) = post(state.clone(), "/v1/envelopes", serde_json::to_string(&e1).unwrap()).await;
+        assert_eq!(serde_json::from_slice::<Value>(&body).unwrap()["accepted"], 1);
+
+        let cov: Value = serde_json::from_slice(&get(state.clone(), "/v1/coverage").await).unwrap();
+        let row = &cov.as_array().unwrap()[0];
+        assert!(
+            !row.as_object().unwrap().contains_key("applied_policy_version"),
+            "no policy_state anywhere yet -> absent, never a fabricated value: {row}"
+        );
+
+        // seq 2: the device applied v7 — its envelope now carries policy_state.
+        let prev = kriya_verify::sha256_hex(&kriya_verify::canonical_json_bytes(
+            &serde_json::to_value(&e1).unwrap(),
+        ));
+        let mut e2 = build_envelope(&key, 2, Some(prev));
+        e2.envelope.policy_state = Some(kriya_verify::PolicyStateEcho {
+            version: 7,
+            bundle_hash: "cafef00d".into(),
+            applied_ms: 1_783_500_000_000,
+        });
+        let e2 = resign(e2, &key);
+        let (_, body) = post(state.clone(), "/v1/envelopes", serde_json::to_string(&e2).unwrap()).await;
+        assert_eq!(serde_json::from_slice::<Value>(&body).unwrap()["accepted"], 1);
+
+        let cov: Value = serde_json::from_slice(&get(state.clone(), "/v1/coverage").await).unwrap();
+        let row = &cov.as_array().unwrap()[0];
+        assert_eq!(row["device_pub"], device_pub);
+        assert_eq!(row["applied_policy_version"], 7);
+        assert_eq!(row["applied_bundle_hash"], "cafef00d");
+    }
+
+    /// P4: `latest_bundle_version` reflects the highest `PolicyBundle` version this kriyad has EVER
+    /// accepted, across every device row (a pure fleet-wide aggregate) — `None`/absent until the first
+    /// bundle is published.
+    #[tokio::test]
+    async fn coverage_latest_bundle_version_reflects_the_highest_published_version() {
+        let _guard = ENV_LOCK.lock().await;
+        let org_key = ed25519_dalek::SigningKey::from_bytes(&[27u8; 32]);
+        let org_pub = hex::encode(org_key.verifying_key().to_bytes());
+        std::env::set_var("KRIYAD_ORG_POLICY_PUB", &org_pub);
+        let state = Arc::new(AppState::in_memory());
+
+        // Before any device or bundle: an empty coverage list (nothing to assert per-row, but the
+        // aggregate must not panic on an empty policy_bundles table).
+        let cov: Value = serde_json::from_slice(&get(state.clone(), "/v1/coverage").await).unwrap();
+        assert_eq!(cov.as_array().unwrap().len(), 0);
+
+        // One device reports in.
+        let device_key = ed25519_dalek::SigningKey::from_bytes(&[28u8; 32]);
+        let env_line = serde_json::to_string(&build_envelope(&device_key, 1, None)).unwrap();
+        post(state.clone(), "/v1/envelopes", env_line).await;
+
+        // Publish v1 then v2.
+        for version in [1u64, 2] {
+            let bundle = kriya_verify::sign_policy_bundle(
+                &org_key,
+                kriya_verify::PolicyBundle {
+                    org_id: "acme".into(),
+                    version,
+                    issued_ms: 1000 + version,
+                    expires_ms: None,
+                    scope: kriya_verify::PolicyScope::all(),
+                    policy: json!({}),
+                    budgets: json!({}),
+                    govern: vec![],
+                    envelope_verbosity: "standard".into(),
+                },
+            );
+            let (status, _) =
+                post(state.clone(), "/v1/policy", serde_json::to_string(&bundle).unwrap()).await;
+            assert_eq!(status, StatusCode::OK);
+        }
+
+        let cov: Value = serde_json::from_slice(&get(state.clone(), "/v1/coverage").await).unwrap();
+        let row = &cov.as_array().unwrap()[0];
+        assert_eq!(row["latest_bundle_version"], 2, "reflects the HIGHEST published version");
+
+        std::env::remove_var("KRIYAD_ORG_POLICY_PUB");
     }
 
     /// BC-5 cross-version fixture (a): a NEW verifier reading an OLD (pre-DeviceInfo) heartbeat
@@ -985,6 +1111,40 @@ mod tests {
         }
     }
 
+    /// P4's BC gate (doc 22 §9-CM's acceptance line): "coverage consumed by a P2-era cockpit build
+    /// still parses (new fields optional)". A P2-era `/v1/coverage` row already carries every P1
+    /// device-inventory field (P2 widened the Console's OWN pull client to declare them — see
+    /// `fleet_client.rs`'s doc comment — but added nothing new to the wire shape itself) and predates
+    /// P3/P4 entirely: no `policy_state`-derived fields exist yet. Proves the OLD-artifact side of
+    /// additive-only evolution for P4 specifically, extending the pre-P1 fixture's proof
+    /// (`old_shape_coverage_fixture_parses_as_new_device_coverage_shape`) up through P2. The companion
+    /// Console-side proof (the SAME committed fixture, parsed as `fleet_client::DeviceCoverage`) lives
+    /// in `fleet_client.rs`.
+    #[test]
+    fn p2_era_coverage_fixture_parses_as_new_device_coverage_shape() {
+        let raw = include_str!("../test-fixtures/p2-era-coverage-sample.json");
+        let rows: Vec<store::DeviceCoverage> =
+            serde_json::from_str(raw).expect("P2-era coverage fixture parses as the P4 shape");
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.device_pub, "8f3c1a2b4d5e6f7089abcdef0123456789abcdef0123456789abcdef01234567");
+        assert_eq!(row.device_label.as_deref(), Some("laptop-east-07"), "P1 fields still parse");
+        assert_eq!(row.policy_applied_version, Some(3), "the RAW P1 echo is untouched by P4");
+
+        // The three P4 fields are genuinely absent from a P2-era artifact — None, not a default/error.
+        assert!(row.applied_policy_version.is_none());
+        assert!(row.applied_bundle_hash.is_none());
+        assert!(row.latest_bundle_version.is_none());
+
+        // Round-trips losslessly: a NEW server re-emitting a P2-era-shaped row still omits the P4
+        // fields on the wire (skip_serializing_if), so it stays indistinguishable from true P2 output.
+        let reserialized = serde_json::to_value(row).unwrap();
+        let obj = reserialized.as_object().unwrap();
+        for p4_field in ["applied_policy_version", "applied_bundle_hash", "latest_bundle_version"] {
+            assert!(!obj.contains_key(p4_field), "{p4_field} must not reappear on the wire");
+        }
+    }
+
     async fn get(state: Arc<AppState>, uri: &str) -> Vec<u8> {
         let resp = app(state)
             .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
@@ -1071,6 +1231,18 @@ mod tests {
         }
     }
 
+    /// Re-sign a `SignedEnvelope` after test code mutates `.envelope` directly (e.g. to set
+    /// `policy_state` post-construction) — the original signature no longer matches otherwise.
+    fn resign(
+        mut signed: kriya_verify::SignedEnvelope,
+        key: &ed25519_dalek::SigningKey,
+    ) -> kriya_verify::SignedEnvelope {
+        use ed25519_dalek::Signer;
+        signed.signature =
+            hex::encode(key.sign(&kriya_verify::envelope_canonical_bytes(&signed.envelope)).to_bytes());
+        signed
+    }
+
     /// The ⭐ end-to-end pilot demo (2.11): device emits a signed envelope + heartbeat → kriyad ingests
     /// and RE-VERIFIES offline → an auditor reads the bytes back over /v1/verify, re-verifies the SAME
     /// bytes, and checks the tail-truncation anchor → coverage reads current, then silent once the device
@@ -1134,7 +1306,7 @@ mod tests {
         assert_eq!(cov[0]["device_pub"], device_pub);
         let silent = state
             .store
-            .coverage(now_ms() + 10 * 60 * 60 * 1000, SILENT_AFTER_MS, None);
+            .coverage(now_ms() + 10 * 60 * 60 * 1000, state.silent_after_ms, None);
         assert_eq!(silent[0].status, "silent", "a quiet device flips to silent");
 
         // 4. Air-gap variant: the SAME signed bytes, side-loaded from a file, ingest identically.

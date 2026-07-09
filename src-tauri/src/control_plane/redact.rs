@@ -19,7 +19,7 @@ pub fn default_allowlist() -> Allowlist {
     Allowlist::new(STANDARD_IDS)
 }
 
-const STANDARD_IDS: [&str; 10] = [
+const STANDARD_IDS: [&str; 12] = [
     "create_note",
     "edit_note",
     "delete_note",
@@ -30,6 +30,12 @@ const STANDARD_IDS: [&str; 10] = [
     "list_tasks",
     "categorize_transaction",
     "list_transactions",
+    // P4 (doc 22 §9-CM): the device's OWN policy-lifecycle markers (P3) — governance metadata, not
+    // app data, so these are allowlisted verbatim at EVERY verbosity, never bucketed to "other". This
+    // is what lets the cockpit's drill-in reconstruct "policy history" from `actions[]` counts at all;
+    // without this they'd be indistinguishable from any other non-prefixed action id.
+    "kriya.policy.applied",
+    "kriya.policy.stale",
 ];
 
 /// `"extended"` verbosity (doc 22 §2/§5's `envelope_verbosity` dial) — a WIDER allowlist an operator
@@ -86,6 +92,18 @@ mod tests {
             unknown.allows("create_note") && !unknown.allows("read_note"),
             "an unrecognized verbosity value degrades to standard, never errors"
         );
+    }
+
+    #[test]
+    fn policy_lifecycle_markers_are_allowlisted_at_every_verbosity() {
+        // P4: the drill-in's "policy history" reconstructs from actions[] counts — these markers must
+        // pass through verbatim (never bucketed to "other") at BOTH verbosities, since they're
+        // governance metadata, not app data an operator would want to dial down.
+        for verbosity in ["standard", "extended", "anything-unrecognized"] {
+            let allow = allowlist_for(verbosity);
+            assert!(allow.allows("kriya.policy.applied"), "verbosity={verbosity}");
+            assert!(allow.allows("kriya.policy.stale"), "verbosity={verbosity}");
+        }
     }
 
     #[test]

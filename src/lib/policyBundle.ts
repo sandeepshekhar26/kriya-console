@@ -102,3 +102,14 @@ export async function verifyPolicyBundle(
 export function supersedes(newVersion: number, lastApplied: number | null): boolean {
   return lastApplied === null ? true : newVersion > lastApplied;
 }
+
+/** `sha256` of a bundle's canonical signed bytes — parity with Rust's
+ *  `control_plane::policy::bundle_hash` (`sha256_hex(&policy_bundle_canonical_bytes(bundle))`). Used by
+ *  the P4 drift view to compare "what this cockpit can see as latest" against a device's own
+ *  locally-re-verified `policy_state.bundle_hash`, entirely client-side. */
+export async function bundleHash(bundle: Record<string, Json>): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", canonicalPolicyBundleBytes(bundle) as BufferSource);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}

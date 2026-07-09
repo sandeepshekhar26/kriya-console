@@ -371,6 +371,14 @@ export interface DeviceCoverageRow {
   device_label?: string;
   agents?: DeviceAgentInfo[];
   info_collected_ms?: number;
+  // --- P4 (doc 22 §9-CM) drift-view passthrough, additive/optional. Still just the SERVED HINT — the
+  // cockpit re-verifies a device's actual applied version against its own signed envelopes locally
+  // (`lib/policyDrift.ts`) before rendering a drift verdict; never trust these two fields alone. ---
+  applied_policy_version?: number;
+  applied_bundle_hash?: string;
+  /** The highest bundle version this kriyad has ever accepted — the SAME value on every row (no
+   *  genuine "top-level" slot in a bare JSON array without breaking every existing parser, BC-4). */
+  latest_bundle_version?: number;
 }
 
 // ── Fleet cockpit — the Tauri commands themselves (paid, P2, doc 22 §6/§8) ──

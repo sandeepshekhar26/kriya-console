@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Icon } from "../components/Icon";
+import { parseActions, parsePolicyState, type DriftVerdict, type PolicyStateEcho } from "../lib/policyDrift";
 import {
   fleetDeviceEvidence,
   type DeviceCoverageRow,
@@ -18,11 +19,17 @@ import {
 export function ControlPlaneDrillIn({
   device,
   info,
+  verdict,
   onClose,
 }: {
   device: DeviceCoverageRow;
   /** The device's full DeviceInfo, if it has ever beaconed one (BC-4: absent on old/pre-P1 devices). */
   info?: DeviceInfo;
+  /** The SAME locally-re-verified drift verdict the fleet table's Policy column shows for this device
+   *  (doc 22 §9-CM) — computed once by the parent from re-verified envelope data, passed down rather
+   *  than re-fetched, so the table and the drill-in never disagree with each other. `undefined` while
+   *  the parent is still computing it. */
+  verdict?: DriftVerdict;
   onClose: () => void;
 }) {
   const [evidence, setEvidence] = useState<DeviceEvidence | null>(null);
@@ -112,6 +119,17 @@ export function ControlPlaneDrillIn({
 
           <section>
             <h2 style={{ fontSize: 14, fontWeight: 600, letterSpacing: "-0.1px", margin: "0 0 10px" }}>
+              Policy
+            </h2>
+            <p className="muted small" style={{ margin: "0 0 10px" }}>
+              Reconstructed from the SAME re-verified envelopes above (doc 22 §9-CM) — kriyad's own
+              coverage row is the hint; this is the proof.
+            </p>
+            {!loading && !err && evidence && <PolicyHistory evidence={evidence} verdict={verdict} />}
+          </section>
+
+          <section>
+            <h2 style={{ fontSize: 14, fontWeight: 600, letterSpacing: "-0.1px", margin: "0 0 10px" }}>
               Device info
             </h2>
             {info ? (
@@ -166,6 +184,122 @@ function EnvelopeChain({ evidence }: { evidence: DeviceEvidence }) {
         ))}
       </div>
     </>
+  );
+}
+
+/**
+ * Policy history (doc 22 §9-CM) — reconstructed ENTIRELY from the envelopes already fetched + verified
+ * above (no extra network calls): each verified envelope's `policy_state` gives a version/hash/
+ * applied_ms snapshot as of that window, and `actions[]` carries `kriya.policy.applied`/`kriya.policy.stale`
+ * counts as corroboration. Only `verified: true` envelopes are read — an unverified one contributes
+ * nothing here, the same BC-5 discipline as the envelope chain above.
+ */
+function PolicyHistory({ evidence, verdict }: { evidence: DeviceEvidence; verdict?: DriftVerdict }) {
+  const entries = evidence.envelopes
+    .filter((v) => v.verified)
+    .map((v) => {
+      const seq = parseEnvelope(v.raw)?.seq;
+      const policyState = parsePolicyState(v.raw);
+      const actions = parseActions(v.raw);
+      const appliedCount = actions
+        .filter((a) => a.action === "kriya.policy.applied")
+        .reduce((n, a) => n + a.count, 0);
+      const staleCount = actions
+        .filter((a) => a.action === "kriya.policy.stale")
+        .reduce((n, a) => n + a.count, 0);
+      return { seq, policyState, appliedCount, staleCount };
+    });
+
+  const current = [...entries].reverse().find((e) => e.policyState)?.policyState ?? null;
+
+  // Version TRANSITIONS within this window: consecutive entries whose version actually changed.
+  const transitions: { seq?: number; state: PolicyStateEcho }[] = [];
+  let lastVersion: number | undefined;
+  for (const e of entries) {
+    if (e.policyState && e.policyState.version !== lastVersion) {
+      transitions.push({ seq: e.seq, state: e.policyState });
+      lastVersion = e.policyState.version;
+    }
+  }
+
+  const totalApplied = entries.reduce((n, e) => n + e.appliedCount, 0);
+  const totalStale = entries.reduce((n, e) => n + e.staleCount, 0);
+
+  if (entries.length === 0) {
+    return <p className="muted small">No verified envelopes in this window to reconstruct policy history from.</p>;
+  }
+
+  const verdictTone = verdict?.tone === "ok" || verdict?.tone === "warn" || verdict?.tone === "bad" ? verdict.tone : undefined;
+
+  return (
+    <div>
+      {verdict && (
+        <div className={`cp-line ${verdictTone ?? ""}`} style={{ marginBottom: 10 }}>
+          <Icon name={verdict.tone === "ok" ? "check" : verdict.tone === "warn" ? "clock" : verdict.tone === "bad" ? "alert" : "info"} size={15} />
+          <div>
+            <div className="cp-line-label">{verdict.label}</div>
+            <div className="cp-line-detail">{verdict.detail}</div>
+          </div>
+        </div>
+      )}
+      {verdict?.mismatch && (
+        <div className="cp-line bad" style={{ marginBottom: 10 }}>
+          <Icon name="alert" size={15} />
+          <div>
+            <div className="cp-line-label">kriyad's hint disagrees with this device's own signed envelopes</div>
+            <div className="cp-line-detail">
+              The verdict above is computed from the LOCALLY re-verified truth, not kriyad's served hint —
+              the disagreement itself is worth investigating.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {current ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
+          <Field label="Applied version" value={`v${current.version}`} />
+          <Field label="Bundle hash" value={current.bundle_hash} />
+          <Field label="Applied at" value={new Date(current.applied_ms).toLocaleString()} />
+        </div>
+      ) : (
+        <p className="muted small" style={{ marginBottom: 14 }}>
+          None of the envelopes in this window carry a <code>policy_state</code> — pre-P3, or this
+          device has never applied a bundle.
+        </p>
+      )}
+
+      {(totalApplied > 0 || totalStale > 0) && (
+        <p className="muted small" style={{ marginBottom: 14 }}>
+          {totalApplied} <code>kriya.policy.applied</code> · {totalStale}{" "}
+          <code>kriya.policy.stale</code> receipt(s) in this window.
+        </p>
+      )}
+
+      {transitions.length > 0 && (
+        <>
+          <h3 style={{ fontSize: 12, fontWeight: 500, color: "var(--ink)", margin: "0 0 8px" }}>
+            Version history (this window)
+          </h3>
+          <div className="cp-proof">
+            {transitions.map((t, i) => (
+              <div className="cp-line" key={i}>
+                <Icon name="policy" size={15} />
+                <div>
+                  <div className="cp-line-label">
+                    v{t.state.version}
+                    {t.seq !== undefined && <span className="muted"> · envelope seq {t.seq}</span>}
+                  </div>
+                  <div className="cp-line-detail">
+                    hash {t.state.bundle_hash.slice(0, 12)}… · applied{" "}
+                    {new Date(t.state.applied_ms).toLocaleString()}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 

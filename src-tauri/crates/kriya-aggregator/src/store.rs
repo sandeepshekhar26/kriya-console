@@ -88,6 +88,26 @@ pub struct DeviceCoverage {
     pub agents: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub info_collected_ms: Option<i64>,
+
+    // --- P4 (doc 22 §9-CM) — the drift view's consolidated policy freshness signal. ADDITIVE,
+    // optional, ABSENT (not null) exactly like the P1 fields above (BC-4). Distinct from
+    // `policy_applied_version`/`policy_bundle_hash` above (the RAW P1 DeviceInfo echo, unchanged):
+    // these are the CONSOLIDATED best-known value the cockpit should actually use for drift —
+    // preferring the device's LATEST accepted envelope's `policy_state` (fresher: it updates every
+    // window, not just on a content-hash-gated DeviceInfo re-beacon) and falling back to the P1 echo
+    // only when no envelope has ever carried one. This is still just the HINT — doc 22 §9's trust rule
+    // requires the cockpit to re-verify these against the device's own signed envelopes locally before
+    // rendering a drift verdict; kriyad's row is never the last word.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied_policy_version: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied_bundle_hash: Option<String>,
+    /// The highest `PolicyBundle` version ever accepted by THIS kriyad, across every scope — a pure
+    /// `MAX(version)` aggregate, computed ONCE per `coverage()` call and repeated on every row (there is
+    /// no genuinely "top-level" slot in a bare JSON array response without breaking BC-4's wire-shape
+    /// contract — see `coverage()`'s doc comment). `None` when nothing has ever been published.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_bundle_version: Option<i64>,
 }
 
 /// A trustless read-back: the EXACT stored signed bytes + the device's most-recent signed heartbeat
@@ -519,6 +539,16 @@ impl Store {
     /// Per-device coverage (2.8). `status` = `silent` if `now − last_seen_ms > silent_after_ms`,
     /// `behind` if a heartbeat claims a higher seq than is stored, else `current`. A gap is always a
     /// visible cell, never a silent hole (subject to invariant 6b: a never-covered source is invisible).
+    ///
+    /// P4 (doc 22 §9-CM) additionally joins each device's LATEST accepted envelope for its
+    /// `policy_state` (falling back to the P1 device-info echo when no envelope has ever carried one)
+    /// and the fleet-wide latest published bundle version. `latest_bundle_version` is a pure aggregate
+    /// with no genuine "top-level" slot in a bare JSON-array response (BC-4: this route's wire shape is
+    /// an array, not an object — wrapping it would break every existing client's `Vec<DeviceCoverage>`
+    /// parse), so it's computed ONCE and repeated on every row — mechanically per-row, conceptually
+    /// fleet-wide. This whole extension is still just the SERVED HINT (doc 22 §9's trust rule): the
+    /// cockpit re-verifies a device's actual applied version against its own signed envelopes locally
+    /// before rendering any drift verdict.
     pub fn coverage(
         &self,
         now_ms: u64,
@@ -526,14 +556,22 @@ impl Store {
         org_filter: Option<&str>,
     ) -> Vec<DeviceCoverage> {
         let conn = self.lock();
+        let latest_bundle_version: Option<i64> = conn
+            .query_row("SELECT MAX(version) FROM policy_bundles", [], |r| r.get(0))
+            .unwrap_or(None);
+
         let mut stmt = conn
             .prepare(
-                "SELECT device_pub, org_id, business_unit, COALESCE(last_seq,0), \
-                 COALESCE(max_seq_seen,0), COALESCE(last_seen_ms,0), \
-                 console_version, runtime_version, verify_crate_version, os_platform, os_version, \
-                 os_arch, policy_applied_version, policy_bundle_hash, outbox_pending, enrolled_ms, \
-                 device_label, agents_json, info_collected_ms \
-                 FROM devices ORDER BY device_pub",
+                "SELECT d.device_pub, d.org_id, d.business_unit, COALESCE(d.last_seq,0), \
+                 COALESCE(d.max_seq_seen,0), COALESCE(d.last_seen_ms,0), \
+                 d.console_version, d.runtime_version, d.verify_crate_version, d.os_platform, \
+                 d.os_version, d.os_arch, d.policy_applied_version, d.policy_bundle_hash, \
+                 d.outbox_pending, d.enrolled_ms, d.device_label, d.agents_json, d.info_collected_ms, \
+                 e.policy_state_version, e.policy_state_bundle_hash \
+                 FROM devices d \
+                 LEFT JOIN envelopes e ON e.device_pub = d.device_pub \
+                   AND e.seq = (SELECT MAX(seq) FROM envelopes WHERE device_pub = d.device_pub) \
+                 ORDER BY d.device_pub",
             )
             .expect("prepare coverage");
         let rows = stmt
@@ -558,6 +596,8 @@ impl Store {
                     r.get::<_, Option<String>>(16)?,
                     r.get::<_, Option<String>>(17)?,
                     r.get::<_, Option<i64>>(18)?,
+                    r.get::<_, Option<i64>>(19)?,
+                    r.get::<_, Option<String>>(20)?,
                 ))
             })
             .expect("query coverage");
@@ -584,6 +624,8 @@ impl Store {
                     device_label,
                     agents_json,
                     info_collected_ms,
+                    envelope_policy_state_version,
+                    envelope_policy_state_bundle_hash,
                 )| {
                     let status = if now_ms.saturating_sub(last_seen_ms as u64) > silent_after_ms {
                         "silent"
@@ -595,6 +637,12 @@ impl Store {
                     let agents = agents_json
                         .as_deref()
                         .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+                    // The envelope's own policy_state is FRESHER (updates every window) than the P1
+                    // device-info echo (only updates on a content-hash-gated re-beacon) — prefer it,
+                    // falling back to the echo only when no envelope has ever carried one.
+                    let applied_policy_version = envelope_policy_state_version.or(policy_applied_version);
+                    let applied_bundle_hash =
+                        envelope_policy_state_bundle_hash.or_else(|| policy_bundle_hash.clone());
                     DeviceCoverage {
                         device_pub,
                         org_id,
@@ -616,6 +664,9 @@ impl Store {
                         device_label,
                         agents,
                         info_collected_ms,
+                        applied_policy_version,
+                        applied_bundle_hash,
+                        latest_bundle_version,
                     }
                 },
             )

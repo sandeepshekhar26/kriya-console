@@ -1,0 +1,24 @@
+[
+  {
+    "device_pub": "8f3c1a2b4d5e6f7089abcdef0123456789abcdef0123456789abcdef01234567",
+    "org_id": "acme",
+    "business_unit": "east-region",
+    "last_seq": 12,
+    "max_seq_seen": 12,
+    "last_seen_ms": 42000,
+    "status": "current",
+    "console_version": "0.2.1",
+    "runtime_version": "0.4.0",
+    "verify_crate_version": "0.1.0",
+    "os_platform": "macos",
+    "os_version": "14.5",
+    "os_arch": "aarch64",
+    "policy_applied_version": 3,
+    "policy_bundle_hash": "aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44ee55ff66aa11bb22cc33dd44",
+    "outbox_pending": 0,
+    "enrolled_ms": 1000,
+    "device_label": "laptop-east-07",
+    "agents": [{ "name": "claude-code", "wired": true }],
+    "info_collected_ms": 41000
+  }
+]

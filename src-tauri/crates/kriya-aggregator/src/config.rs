@@ -14,6 +14,12 @@ pub struct Config {
     pub license_path: PathBuf,
     /// Directory holding the server cert/key + the pinned client CA (2.4).
     pub ca_dir: PathBuf,
+    /// A device is `silent` once `now - last_seen_ms` exceeds this (LLD §B.3.1's pilot default:
+    /// `N=3, H=1h` → 3h). Configurable (`KRIYAD_SILENT_AFTER_MS`) so an operator can tune liveness
+    /// sensitivity to their fleet's real heartbeat cadence, and so tests can exercise the silent
+    /// transition without an actual multi-hour wait — the DEFAULT is unchanged from the pilot's
+    /// original hardcoded constant.
+    pub silent_after_ms: u64,
 }
 
 impl Config {
@@ -22,11 +28,16 @@ impl Config {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or_else(|| "127.0.0.1:8443".parse().expect("default bind"));
+        let silent_after_ms = std::env::var("KRIYAD_SILENT_AFTER_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3 * 60 * 60 * 1000);
         Config {
             bind,
             db_path: env_path("KRIYAD_DB", "kriyad.sqlite"),
             license_path: env_path("KRIYAD_LICENSE", "kriyad-license.json"),
             ca_dir: env_path("KRIYAD_CA_DIR", "ca"),
+            silent_after_ms,
         }
     }
 

@@ -717,8 +717,11 @@ table.audit tbody tr:hover { background: var(--surface-2); }
 }
 .cp-line.ok { border-color: color-mix(in srgb, var(--ok) 35%, var(--line)); }
 .cp-line.bad { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); background: var(--bad-bg); }
+/* P4 (doc 22 §9-CM): the amber "behind but reachable" drift tone — mirrors .badge.warn's palette. */
+.cp-line.warn { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); background: var(--warn-bg); }
 .cp-line.ok .icon { color: var(--ok); }
 .cp-line.bad .icon { color: var(--bad); }
+.cp-line.warn .icon { color: var(--warn); }
 .cp-line.running { color: var(--ink-muted); font-size: 12.5px; align-items: center; gap: 8px; background: transparent; border: none; }
 .cp-line-label { font-size: 13px; font-weight: 500; color: var(--ink); }
 .cp-line-detail { font-size: 12px; color: var(--ink-muted); margin-top: 2px; }

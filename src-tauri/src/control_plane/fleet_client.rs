@@ -103,6 +103,20 @@ pub struct DeviceCoverage {
     pub agents: Option<serde_json::Value>,
     #[serde(default)]
     pub info_collected_ms: Option<i64>,
+
+    // --- P4 (doc 22 §9-CM) drift-view passthrough — ADDITIVE, optional, ABSENT (not null) when
+    // nothing has ever been applied/published. Mirrors `kriya_aggregator::store::DeviceCoverage`'s own
+    // P4 fields field-for-field. Still just the SERVED HINT — the cockpit re-verifies a device's
+    // actual applied version against its own signed envelopes locally before rendering a drift verdict.
+    #[serde(default)]
+    pub applied_policy_version: Option<i64>,
+    #[serde(default)]
+    pub applied_bundle_hash: Option<String>,
+    /// The highest `PolicyBundle` version this kriyad has ever accepted, across every scope — the SAME
+    /// value repeated on every row (there is no genuine "top-level" slot in a bare JSON-array response
+    /// without breaking BC-4's wire-shape contract for every existing `Vec<DeviceCoverage>` parser).
+    #[serde(default)]
+    pub latest_bundle_version: Option<i64>,
 }
 
 /// The parsed shape of `GET /v1/coverage`'s response: a JSON array of `DeviceCoverage` rows.

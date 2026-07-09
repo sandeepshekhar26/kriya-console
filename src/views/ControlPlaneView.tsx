@@ -2,9 +2,19 @@ import { useEffect, useMemo, useState, type ComponentType } from "react";
 import { Icon } from "../components/Icon";
 import { ControlPlaneDrillIn } from "./ControlPlaneDrillIn";
 import { ControlPlanePolicyTab } from "./ControlPlanePolicyTab";
+import { bundleHash } from "../lib/policyBundle";
+import {
+  computeDriftVerdict,
+  driftSummaryLine,
+  parsePolicyState,
+  type DriftVerdict,
+  type Json,
+} from "../lib/policyDrift";
 import {
   fleetConnect,
   fleetCoverage,
+  fleetDeviceEvidence,
+  fleetPolicyPreview,
   isTauri,
   licenseStatus,
   type DeviceAgentInfo,
@@ -294,8 +304,72 @@ function FleetCockpit({
   const [refreshErr, setRefreshErr] = useState<string | null>(null);
   const [selected, setSelected] = useState<DeviceCoverageRow | null>(null);
   const [tab, setTab] = useState<"fleet" | "policy">("fleet");
+  const [drift, setDrift] = useState<{
+    latest: { version: number; bundle_hash: string } | null;
+    verdicts: Record<string, DriftVerdict>;
+    loading: boolean;
+  }>({ latest: null, verdicts: {}, loading: true });
 
   useEffect(() => setRows(initialRows), [initialRows]);
+
+  // P4 (doc 22 §9-CM) — the trust rule: every drift verdict is computed from RE-VERIFIED envelope data,
+  // never from kriyad's `applied_policy_version`/`applied_bundle_hash` hint directly. Re-runs whenever
+  // `rows` changes (initial load + every "Refresh").
+  useEffect(() => {
+    let cancelled = false;
+    setDrift((d) => ({ ...d, loading: true }));
+
+    async function computeAll() {
+      // The fleet-wide "latest", locally hashed from the operator's own preview fetch — never trust
+      // kriyad's `latest_bundle_version` hint alone for the actual comparison.
+      let latest: { version: number; bundle_hash: string } | null = null;
+      try {
+        const preview = await fleetPolicyPreview();
+        if (preview) {
+          const hash = await bundleHash(preview.bundle as unknown as Record<string, Json>);
+          latest = { version: preview.bundle.version, bundle_hash: hash };
+        }
+      } catch {
+        // No reachable preview — every row falls back to "nothing to compare against" (grey).
+      }
+
+      const entries = await Promise.all(
+        rows.map(async (d) => {
+          let verifiedApplied: { version: number; bundle_hash: string } | null = null;
+          if (d.last_seq > 0) {
+            try {
+              const evidence = await fleetDeviceEvidence(d.device_pub, d.last_seq, d.last_seq);
+              const top = evidence.envelopes[evidence.envelopes.length - 1];
+              if (top?.verified) {
+                const ps = parsePolicyState(top.raw);
+                if (ps) verifiedApplied = { version: ps.version, bundle_hash: ps.bundle_hash };
+              }
+              // An unverified/absent top envelope leaves verifiedApplied null — rendered as "never
+              // applied"/grey rather than silently trusting kriyad's own hint instead.
+            } catch {
+              // Non-fatal — this row renders as if no verified data exists yet.
+            }
+          }
+          const verdict = computeDriftVerdict({
+            liveness: d.status,
+            verifiedApplied,
+            verifiedLatest: latest,
+            hintAppliedVersion: d.applied_policy_version ?? null,
+          });
+          return [d.device_pub, verdict] as const;
+        }),
+      );
+
+      if (!cancelled) {
+        setDrift({ latest, verdicts: Object.fromEntries(entries), loading: false });
+      }
+    }
+
+    void computeAll();
+    return () => {
+      cancelled = true;
+    };
+  }, [rows]);
 
   async function refresh() {
     setRefreshing(true);
@@ -357,6 +431,15 @@ function FleetCockpit({
               <h2>Fleet</h2>
               <span className="muted small">click a device for its signed evidence + inventory</span>
             </div>
+            <p className="muted small" style={{ margin: "0 0 12px" }}>
+              {drift.loading ? (
+                <span className="cp-line running" style={{ padding: 0, border: "none", background: "none" }}>
+                  <span className="dot live" /> re-verifying policy drift locally…
+                </span>
+              ) : (
+                driftSummaryLine(drift.latest?.version ?? null, Object.values(drift.verdicts))
+              )}
+            </p>
             <div style={{ overflowX: "auto" }}>
               <table className="audit cp-cover">
                 <thead>
@@ -390,8 +473,8 @@ function FleetCockpit({
                       <td><VersionCell version={d.console_version} max={maxConsoleVersion} /></td>
                       <td><VersionCell version={d.runtime_version} max={maxRuntimeVersion} /></td>
                       <td><AgentsCell agents={d.agents} /></td>
-                      <td className="muted">
-                        {d.policy_applied_version !== undefined ? `v${d.policy_applied_version}` : "—"}
+                      <td>
+                        <PolicyDriftCell verdict={drift.verdicts[d.device_pub]} loading={drift.loading} />
                       </td>
                       <td className="muted">{ago(d.last_seen_ms)}</td>
                     </tr>
@@ -412,6 +495,7 @@ function FleetCockpit({
             <ControlPlaneDrillIn
               device={selected}
               info={coverageRowToDeviceInfo(selected)}
+              verdict={drift.verdicts[selected.device_pub]}
               onClose={() => setSelected(null)}
             />
           )}
@@ -459,6 +543,36 @@ function VersionCell({ version, max }: { version?: string; max: string | null })
       {outdated && (
         <span className="badge warn" style={{ marginLeft: 6 }} title={`newest seen in this fleet: ${max}`}>
           update available
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** P4 (doc 22 §9-CM) — renders the LOCALLY re-verified drift verdict (never kriyad's raw hint alone).
+ *  `verdict` is `undefined` while still being computed (per-device evidence fetch in flight). */
+function PolicyDriftCell({ verdict, loading }: { verdict?: DriftVerdict; loading: boolean }) {
+  if (!verdict) {
+    return (
+      <span className="muted small">{loading ? "verifying…" : "inventory: n/a"}</span>
+    );
+  }
+  if (verdict.tone === "grey") {
+    return <span className="muted small" title={verdict.detail}>{verdict.label}</span>;
+  }
+  return (
+    <span>
+      <span className={`badge ${verdict.tone}`} title={verdict.detail}>
+        <Icon name={verdict.tone === "ok" ? "check" : verdict.tone === "warn" ? "clock" : "alert"} size={12} />
+        {verdict.label}
+      </span>
+      {verdict.mismatch && (
+        <span
+          className="badge bad"
+          style={{ marginLeft: 6 }}
+          title="kriyad's own served hint disagrees with this device's locally re-verified signed envelope — investigate."
+        >
+          <Icon name="alert" size={12} /> mismatch
         </span>
       )}
     </span>

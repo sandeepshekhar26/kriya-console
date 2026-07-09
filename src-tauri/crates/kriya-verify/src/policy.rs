@@ -274,6 +274,17 @@ mod tests {
         assert!(bundle.govern.is_empty());
     }
 
+    /// P4 (doc 22 §9-CM) TS↔Rust parity: the committed `sample-policy-bundle.json` fixture hashes to
+    /// this exact value — the SAME constant `test/policy-bundle.test.ts`'s `bundleHash()` test asserts,
+    /// so a canonicalization drift on either side is caught by BOTH suites independently.
+    #[test]
+    fn bundle_hash_matches_the_committed_ts_parity_constant() {
+        let raw = include_str!("../../../../src/sample/sample-policy-bundle.json");
+        let signed: SignedPolicyBundle = serde_json::from_str(raw).unwrap();
+        let hash = crate::sha256_hex(&policy_bundle_canonical_bytes(&signed.bundle));
+        assert_eq!(hash, "1295bcc0ec28992b4228b85cd4ecde943fa4456a5ef252ae01d6b471e66d151f");
+    }
+
     /// Emits the committed Rust↔TS parity fixture (`src/sample/sample-policy-bundle.json`) for the TS
     /// verifier test. Deterministic (fixed key seed). Regenerate with:
     ///   cargo test -p kriya-verify print_sample_policy_bundle -- --ignored --nocapture

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { verifyPolicyBundle, supersedes, type SignedPolicyBundle } from "../src/lib/policyBundle";
+import { verifyPolicyBundle, supersedes, bundleHash, type SignedPolicyBundle } from "../src/lib/policyBundle";
 
 const here = dirname(fileURLToPath(import.meta.url));
 // A real PolicyBundle signed by kriya-verify (Rust). If the TS canonicalization were off by a single
@@ -66,5 +66,23 @@ describe("supersedes — TS/Rust parity for the anti-rollback version check", ()
     expect(supersedes(2, 1)).toBe(true);
     expect(supersedes(1, 1)).toBe(false);
     expect(supersedes(1, 2)).toBe(false);
+  });
+});
+
+describe("bundleHash — P4 (doc 22 §9-CM) TS/Rust parity", () => {
+  it("matches the committed Rust-computed hash for the fixture bundle", async () => {
+    // The SAME constant `kriya_verify::policy::tests::bundle_hash_matches_the_committed_ts_parity_constant`
+    // asserts — a canonicalization drift on either side is caught by both suites independently.
+    const hash = await bundleHash(fixture.bundle as unknown as Parameters<typeof bundleHash>[0]);
+    expect(hash).toBe("1295bcc0ec28992b4228b85cd4ecde943fa4456a5ef252ae01d6b471e66d151f");
+  });
+
+  it("changes when the bundle content changes", async () => {
+    const h1 = await bundleHash(fixture.bundle as unknown as Parameters<typeof bundleHash>[0]);
+    const h2 = await bundleHash({
+      ...(fixture.bundle as unknown as Record<string, unknown>),
+      version: 999,
+    } as Parameters<typeof bundleHash>[0]);
+    expect(h1).not.toBe(h2);
   });
 });
