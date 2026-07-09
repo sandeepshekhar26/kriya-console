@@ -20,6 +20,12 @@ pub struct Enrollment {
     pub business_unit: Option<String>,
     pub operator_id: String,
     pub server_ca_pin_sha256: String,
+    /// The enterprise-assigned MDM asset tag (doc 22 §7's `device_label` — P1). Additive + optional
+    /// (`#[serde(default)]`) so an `enrollment.json` written by a pre-P1 MDM tool still parses
+    /// unchanged. This is deliberately the ONLY on-device source of `device_label` — never the OS
+    /// hostname (doc 22 §7's exclusion table).
+    #[serde(default)]
+    pub device_label: Option<String>,
 }
 
 /// Where the enrollment record lives on-device (alongside the installed license).

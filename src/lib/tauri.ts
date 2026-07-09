@@ -278,3 +278,97 @@ export interface ComplianceBundle {
 }
 export const fleetCorrelation = () => invoke<FleetReport>("fleet_correlation");
 export const exportCompliance = (framework: string) => invoke<ComplianceBundle>("export_compliance", { framework });
+
+// ── Fleet cockpit (paid, P1: signed DeviceInfo beacon, doc 22 §7) ────────────
+// kriyad's wire types (kriyad is a separate Rust binary the Console talks to over mTLS — not a Tauri
+// `invoke` command — so these interfaces are hand-mirrored from `kriya-verify::DeviceInfo` /
+// `kriya-aggregator::store::DeviceCoverage`, same "Mirrors Rust ..." convention as the sections above).
+//
+// BC-3/BC-4 (doc 22 §8): every field below that was introduced in P1 is OPTIONAL here, even fields
+// that are always-present in a freshly-signed DeviceInfo — because a TS client built BEFORE this
+// schema existed must still type-check and parse against a superset response (an old cockpit build
+// talking to a new kriyad, or this new cockpit talking to an old kriyad that never sends these keys
+// at all). Treat `?:` here as "the wire may omit this key", independent of whether the *producing*
+// Rust struct happens to make the field non-optional once it exists.
+
+/** One detected agent + its governance adapter. Mirrors Rust `kriya_verify::AgentInfo`. */
+export interface DeviceAgentInfo {
+  id?: string;
+  version?: string;
+  adapter?: string;
+  adapter_version?: string;
+  wired?: boolean;
+}
+
+/** Coarse, non-fingerprinting OS descriptor. Mirrors Rust `kriya_verify::OsInfo`. */
+export interface DeviceOsInfo {
+  platform?: string;
+  version?: string;
+  arch?: string;
+}
+
+/** Freshness echo of the applied policy bundle (doc 22 §5) — absent until P3 lands. Mirrors Rust
+ *  `kriya_verify::PolicyEcho`. */
+export interface DevicePolicyEcho {
+  applied_version?: number;
+  bundle_hash?: string;
+}
+
+/** The device inventory snapshot, doc 22 §7 schema — allowlist-only on the Rust side (no
+ *  username/hostname/IP/locale/serial can ever appear here). Mirrors Rust `kriya_verify::DeviceInfo`.
+ *  Every field optional per BC-3/BC-4 above. */
+export interface DeviceInfo {
+  console_version?: string;
+  /** The governed gateway/runtime, e.g. `"kriya-host 0.4.2"`. */
+  runtime_version?: string;
+  verify_crate_version?: string;
+  os?: DeviceOsInfo;
+  /** Detected by the doc-21 govern-all engine. */
+  agents?: DeviceAgentInfo[];
+  /** `null`/absent until the P3 policy-push phase lands. */
+  policy?: DevicePolicyEcho | null;
+  /** Buffered envelopes — a health signal. */
+  outbox_pending?: number;
+  enrolled_ms?: number;
+  /** ONLY the enterprise-assigned MDM asset tag — NEVER derived from the OS hostname. */
+  device_label?: string | null;
+}
+
+/** The signed wire envelope `POST`ed to kriyad's `/v1/device-info`. Mirrors Rust
+ *  `kriya_verify::SignedDeviceInfo`. */
+export interface SignedDeviceInfo {
+  device_pub?: string;
+  collected_ms?: number;
+  info?: DeviceInfo;
+  signature?: string;
+}
+
+/** One device's `GET /v1/coverage` row from kriyad. The `device_pub`.. `status` fields are the
+ *  original (pre-P1) shape; every field below that is new, additive, `skip_serializing_if`-absent
+ *  (never `null`) on a device that hasn't posted a DeviceInfo beacon yet (BC-4) — hence optional here
+ *  too. Mirrors Rust `kriya_aggregator::store::DeviceCoverage`. Snake_case (kriyad is a plain JSON
+ *  HTTP API, not a `#[serde(rename_all = "camelCase")]` Tauri command — unlike every interface above). */
+export interface DeviceCoverageRow {
+  device_pub: string;
+  org_id?: string | null;
+  business_unit?: string | null;
+  last_seq: number;
+  max_seq_seen: number;
+  last_seen_ms: number;
+  /** `current` · `behind` · `silent`. */
+  status: string;
+  // --- doc 22 §7 device-inventory passthrough (P1), all additive/optional ---
+  console_version?: string;
+  runtime_version?: string;
+  verify_crate_version?: string;
+  os_platform?: string;
+  os_version?: string;
+  os_arch?: string;
+  policy_applied_version?: number;
+  policy_bundle_hash?: string;
+  outbox_pending?: number;
+  enrolled_ms?: number;
+  device_label?: string;
+  agents?: DeviceAgentInfo[];
+  info_collected_ms?: number;
+}

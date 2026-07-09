@@ -37,6 +37,15 @@ pub fn chain_break() -> Result<Option<usize>, String> {
     chain_break_of(&read_lines_from(&outbox_path())?)
 }
 
+/// How many envelope lines currently sit in the outbox — a simple depth/health signal (P1's
+/// `DeviceInfo.outbox_pending`). The outbox is append-only with no delivery-ack/truncate mechanism
+/// today (that's the push client's concern, not this module's), so this is an upper bound on "truly
+/// undelivered" rather than an exact count — see `device_info.rs::outbox_pending`'s doc comment for the
+/// full reasoning. `Ok(0)` (never an error) when the outbox file doesn't exist yet.
+pub fn line_count() -> Result<u64, String> {
+    Ok(read_lines_from(&outbox_path())?.len() as u64)
+}
+
 // ── path-injected internals (so the logic is testable without touching $HOME) ─────────────────────
 
 fn append_to(path: &Path, signed: &SignedEnvelope) -> Result<(), String> {

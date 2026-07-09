@@ -57,6 +57,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/metrics", get(metrics))
         .route("/v1/envelopes", post(post_envelopes))
         .route("/v1/heartbeat", post(post_heartbeat))
+        .route("/v1/device-info", post(post_device_info))
         .route("/v1/coverage", get(get_coverage))
         .route("/v1/verify", get(get_verify))
         .with_state(state)
@@ -214,6 +215,35 @@ async fn post_heartbeat(State(state): State<Arc<AppState>>, body: String) -> (St
                 .fetch_add(1, Ordering::Relaxed);
             (StatusCode::OK, "ok\n".into())
         }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}\n")),
+    }
+}
+
+/// POST /v1/device-info — doc 22 §7's signed device-inventory beacon (P1). Mirrors
+/// `post_heartbeat`'s shape exactly: parse the raw body bytes, verify the signature via
+/// `kriya_verify::verify_device_info` (BC-5 — canonicalization is over the PARSED fields' recursively
+/// key-sorted JSON, which is reorder-safe, so this is the raw-received-bytes check, never a
+/// deserialize-drop-unknown-field-reserialize one; a byte flipped anywhere in the signed payload changes
+/// the parsed value and therefore the recomputed canonical bytes, so tampering is caught), then upsert.
+/// An unknown `device_pub` is NOT rejected — mirrors `insert_envelope`/`insert_heartbeat`: this may be
+/// the device's very FIRST beacon, posted before it has ever pushed an envelope.
+async fn post_device_info(State(state): State<Arc<AppState>>, body: String) -> (StatusCode, String) {
+    let v: Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("parse: {e}\n")),
+    };
+    if let Err(reason) = kriya_verify::verify_device_info(&v) {
+        return (StatusCode::BAD_REQUEST, format!("{reason}\n"));
+    }
+    let signed: kriya_verify::SignedDeviceInfo = match serde_json::from_value(v) {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("decode: {e}\n")),
+    };
+    match state
+        .store
+        .insert_device_info(&signed, body.as_bytes(), now_ms())
+    {
+        Ok(()) => (StatusCode::OK, "ok\n".into()),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}\n")),
     }
 }
@@ -409,6 +439,291 @@ mod tests {
             StatusCode::BAD_REQUEST,
             "a forged heartbeat is rejected"
         );
+    }
+
+    /// A real signed DeviceInfo beacon (doc 22 §7), keyed by `key`, ready to POST.
+    fn sample_signed_device_info(key: &ed25519_dalek::SigningKey) -> kriya_verify::SignedDeviceInfo {
+        use kriya_verify::{AgentInfo, DeviceInfo, OsInfo, PolicyEcho};
+        let info = DeviceInfo {
+            console_version: "0.2.1".into(),
+            runtime_version: "kriya-host 0.4.2".into(),
+            verify_crate_version: "kriya-verify 0.1.0".into(),
+            os: OsInfo {
+                platform: "macos".into(),
+                version: "15.5".into(),
+                arch: "aarch64".into(),
+            },
+            agents: vec![AgentInfo {
+                id: "claude-code".into(),
+                version: "2.1.x".into(),
+                adapter: "kriya-hook".into(),
+                adapter_version: "r30".into(),
+                wired: true,
+            }],
+            policy: Some(PolicyEcho {
+                applied_version: 13,
+                bundle_hash: "deadbeef".into(),
+            }),
+            outbox_pending: 2,
+            enrolled_ms: 1_783_400_000_000,
+            device_label: Some("ENG-1234".into()),
+        };
+        kriya_verify::sign_device_info(key, 1_783_500_000_000, info)
+    }
+
+    /// Happy path: a validly signed DeviceInfo beacon is accepted (200) and then shows up as ADDITIVE
+    /// fields on the SAME device's `GET /v1/coverage` row.
+    #[tokio::test]
+    async fn post_device_info_accepted_then_visible_in_coverage() {
+        use ed25519_dalek::SigningKey;
+        let state = Arc::new(AppState::in_memory());
+        let key = SigningKey::from_bytes(&[21u8; 32]);
+        let device_pub = hex::encode(key.verifying_key().to_bytes());
+        let signed = sample_signed_device_info(&key);
+        let line = serde_json::to_string(&signed).unwrap();
+
+        let (status, body) = post(state.clone(), "/v1/device-info", line).await;
+        assert_eq!(status, StatusCode::OK, "valid device-info beacon accepted: {body:?}");
+
+        let cov: Value = serde_json::from_slice(&get(state.clone(), "/v1/coverage").await).unwrap();
+        let row = cov
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["device_pub"] == json!(device_pub))
+            .expect("device row present");
+        assert_eq!(row["console_version"], "0.2.1");
+        assert_eq!(row["runtime_version"], "kriya-host 0.4.2");
+        assert_eq!(row["verify_crate_version"], "kriya-verify 0.1.0");
+        assert_eq!(row["os_platform"], "macos");
+        assert_eq!(row["os_version"], "15.5");
+        assert_eq!(row["os_arch"], "aarch64");
+        assert_eq!(row["policy_applied_version"], 13);
+        assert_eq!(row["policy_bundle_hash"], "deadbeef");
+        assert_eq!(row["outbox_pending"], 2);
+        assert_eq!(row["enrolled_ms"], 1_783_400_000_000_i64);
+        assert_eq!(row["device_label"], "ENG-1234");
+        assert_eq!(row["agents"][0]["id"], "claude-code");
+        assert_eq!(row["agents"][0]["adapter_version"], "r30");
+
+        // The stored bytes re-verify offline — proves `signed_bytes` round-trips correctly (BC-5).
+        let stored_raw: Vec<u8> = {
+            use rusqlite::params;
+            let conn = state.store.lock();
+            conn.query_row(
+                "SELECT info_signed_bytes FROM devices WHERE device_pub=?1",
+                params![device_pub],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let stored_val: Value = serde_json::from_slice(&stored_raw).unwrap();
+        assert!(
+            kriya_verify::verify_device_info(&stored_val).is_ok(),
+            "the verbatim stored bytes re-verify offline"
+        );
+    }
+
+    /// A byte flipped anywhere inside a validly-shaped signed DeviceInfo payload must be rejected with
+    /// 400 — the real BC-5 negative test (not a trivial malformed-JSON case): the JSON stays well-formed,
+    /// only a value inside `info` changes after signing, so this exercises the actual signature check.
+    #[tokio::test]
+    async fn post_device_info_rejects_tampered_signature() {
+        use ed25519_dalek::SigningKey;
+        let state = Arc::new(AppState::in_memory());
+        let key = SigningKey::from_bytes(&[22u8; 32]);
+        let signed = sample_signed_device_info(&key);
+        let mut v = serde_json::to_value(&signed).unwrap();
+
+        // Flip a value inside `info` post-signing — well-formed JSON, forged content.
+        v["info"]["outbox_pending"] = json!(9999);
+        let (status, body) = post(state.clone(), "/v1/device-info", v.to_string()).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "tampered device-info payload rejected: {body:?}"
+        );
+
+        // A device_pub swap (claiming another key's identity) must also fail.
+        let other = SigningKey::from_bytes(&[23u8; 32]);
+        let mut swapped = serde_json::to_value(&signed).unwrap();
+        swapped["device_pub"] = json!(hex::encode(other.verifying_key().to_bytes()));
+        let (status, _) = post(state, "/v1/device-info", swapped.to_string()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "device_pub swap rejected");
+    }
+
+    /// Unknown `device_pub` handling: a DeviceInfo beacon may be the FIRST thing kriyad ever hears from
+    /// a device (posted before any envelope/heartbeat) — mirrors `insert_envelope`/`insert_heartbeat`'s
+    /// convention of creating the device row rather than rejecting.
+    #[tokio::test]
+    async fn post_device_info_creates_row_for_unknown_device() {
+        use ed25519_dalek::SigningKey;
+        let state = Arc::new(AppState::in_memory());
+        let key = SigningKey::from_bytes(&[24u8; 32]);
+        let device_pub = hex::encode(key.verifying_key().to_bytes());
+        let signed = sample_signed_device_info(&key);
+
+        // Confirm the device is genuinely unknown before the beacon.
+        let cov: Value = serde_json::from_slice(&get(state.clone(), "/v1/coverage").await).unwrap();
+        assert!(cov.as_array().unwrap().is_empty(), "no devices yet");
+
+        let (status, body) = post(
+            state.clone(),
+            "/v1/device-info",
+            serde_json::to_string(&signed).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "first-ever beacon accepted: {body:?}");
+
+        let cov: Value = serde_json::from_slice(&get(state.clone(), "/v1/coverage").await).unwrap();
+        let rows = cov.as_array().unwrap();
+        assert_eq!(rows.len(), 1, "a device row was created from the beacon alone");
+        assert_eq!(rows[0]["device_pub"], device_pub);
+        assert_eq!(rows[0]["console_version"], "0.2.1");
+    }
+
+    /// BC-4 regression guard: a device that has ONLY ever posted envelopes/heartbeats (pre-P1 shape, or
+    /// simply never beaconed) must still serialize on `GET /v1/coverage` exactly as it did before this
+    /// change — the new fields absent, not null, not erroring, not affecting old fields.
+    #[tokio::test]
+    async fn coverage_serializes_old_device_rows_unaffected_by_device_info_fields() {
+        use ed25519_dalek::{Signer, SigningKey};
+        let state = Arc::new(AppState::in_memory());
+        let key = SigningKey::from_bytes(&[25u8; 32]);
+        let device_pub = hex::encode(key.verifying_key().to_bytes());
+        let env_line = serde_json::to_string(&build_envelope(&key, 1, None)).unwrap();
+        let (_, body) = post(state.clone(), "/v1/envelopes", env_line).await;
+        let r: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(r["accepted"], 1);
+
+        let hb = kriya_verify::Heartbeat {
+            device_pub: device_pub.clone(),
+            seq_seen: 1,
+            ts_ms: 1500,
+        };
+        let hb_line = json!({
+            "heartbeat": hb,
+            "public_key": device_pub,
+            "signature": hex::encode(key.sign(&kriya_verify::heartbeat_canonical_bytes(&hb)).to_bytes()),
+        })
+        .to_string();
+        let (status, _) = post(state.clone(), "/v1/heartbeat", hb_line).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let cov: Value = serde_json::from_slice(&get(state.clone(), "/v1/coverage").await).unwrap();
+        let row = &cov.as_array().unwrap()[0];
+        assert_eq!(row["device_pub"], device_pub);
+        assert_eq!(row["status"], "current");
+        assert_eq!(row["last_seq"], 1);
+        assert_eq!(row["max_seq_seen"], 1);
+        // The new device-inventory fields must be ABSENT (not null) — `skip_serializing_if` — so an old
+        // cockpit client's unknown-field-tolerant parser sees exactly the same shape as before P1.
+        let obj = row.as_object().unwrap();
+        for new_field in [
+            "console_version",
+            "runtime_version",
+            "verify_crate_version",
+            "os_platform",
+            "os_version",
+            "os_arch",
+            "policy_applied_version",
+            "policy_bundle_hash",
+            "outbox_pending",
+            "enrolled_ms",
+            "device_label",
+            "agents",
+            "info_collected_ms",
+        ] {
+            assert!(
+                !obj.contains_key(new_field),
+                "field {new_field:?} must be absent (not null) on a device with no DeviceInfo beacon: {row}"
+            );
+        }
+    }
+
+    /// BC-5 cross-version fixture (a): a NEW verifier reading an OLD (pre-DeviceInfo) heartbeat
+    /// artifact. `pilot-heartbeat.json` predates P1 — it was minted by `emit_pilot_fixtures` before
+    /// `DeviceInfo`/`/v1/device-info` existed and carries none of the new fields. The schema-bump rule
+    /// (doc 22 §8 BC-5: "cross-version fixtures per schema bump") requires proving the post-bump
+    /// verifier still accepts pre-bump artifacts unchanged — no crash, no spurious rejection, and (since
+    /// a heartbeat is device-info-independent) posting it to the live `/v1/device-info`-aware route
+    /// still works exactly as it always did.
+    #[tokio::test]
+    async fn new_verifier_accepts_old_shape_heartbeat_fixture() {
+        let raw = include_str!("../test-fixtures/pilot-heartbeat.json");
+        let v: Value = serde_json::from_str(raw.trim()).expect("committed fixture is valid JSON");
+        // No P1 fields exist anywhere in this artifact — it genuinely predates the schema bump.
+        assert!(v.get("info").is_none(), "fixture must be pre-DeviceInfo shaped");
+        assert!(
+            kriya_verify::verify_heartbeat(&v).is_ok(),
+            "the NEW kriya-verify must still accept an OLD-shape heartbeat artifact unchanged"
+        );
+
+        // And it still round-trips through the live route exactly as before.
+        let state = Arc::new(AppState::in_memory());
+        let (status, body) = post(state, "/v1/heartbeat", raw.trim().to_string()).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "an old-shape heartbeat is accepted by the new server: {body:?}"
+        );
+    }
+
+    /// BC-5 cross-version fixture (b): an OLD-shape `/v1/coverage` response (pre-P1: only
+    /// `device_pub/org_id/business_unit/last_seq/max_seq_seen/last_seen_ms/status` — none of the P1
+    /// device-inventory fields exist yet) still parses correctly against the NEW `store::DeviceCoverage`
+    /// shape. Proves additive-only evolution from the OLD-artifact side (BC-4): a response that predates
+    /// the new optional fields is a valid, unsurprising `Vec<DeviceCoverage>` on the new server/cockpit
+    /// code — every new field simply deserializes to `None`. The companion TS-side proof (the same
+    /// committed fixture, parsed as the new `DeviceCoverageRow` type) lives in
+    /// `test/device-info-fixture.test.ts`.
+    #[test]
+    fn old_shape_coverage_fixture_parses_as_new_device_coverage_shape() {
+        let raw = include_str!("../test-fixtures/pre-p1-coverage-sample.json");
+        let rows: Vec<store::DeviceCoverage> =
+            serde_json::from_str(raw).expect("old-shape coverage fixture parses as the new shape");
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.device_pub, "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c");
+        assert_eq!(row.org_id.as_deref(), Some("acme"));
+        assert_eq!(row.status, "current");
+        // Every P1 device-inventory field is genuinely absent from the old artifact, so it must
+        // deserialize to None rather than erroring or defaulting to something misleading.
+        assert!(row.console_version.is_none());
+        assert!(row.runtime_version.is_none());
+        assert!(row.verify_crate_version.is_none());
+        assert!(row.os_platform.is_none());
+        assert!(row.os_version.is_none());
+        assert!(row.os_arch.is_none());
+        assert!(row.policy_applied_version.is_none());
+        assert!(row.policy_bundle_hash.is_none());
+        assert!(row.outbox_pending.is_none());
+        assert!(row.enrolled_ms.is_none());
+        assert!(row.device_label.is_none());
+        assert!(row.agents.is_none());
+        assert!(row.info_collected_ms.is_none());
+
+        // Re-serializing must round-trip losslessly: the new fields stay absent (skip_serializing_if),
+        // so a NEW server re-emitting an old-shaped row still looks old-shaped on the wire (BC-4).
+        let reserialized = serde_json::to_value(row).unwrap();
+        let obj = reserialized.as_object().unwrap();
+        for new_field in [
+            "console_version",
+            "runtime_version",
+            "verify_crate_version",
+            "os_platform",
+            "os_version",
+            "os_arch",
+            "policy_applied_version",
+            "policy_bundle_hash",
+            "outbox_pending",
+            "enrolled_ms",
+            "device_label",
+            "agents",
+            "info_collected_ms",
+        ] {
+            assert!(!obj.contains_key(new_field));
+        }
     }
 
     async fn get(state: Arc<AppState>, uri: &str) -> Vec<u8> {

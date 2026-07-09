@@ -13,8 +13,14 @@
 //! helper, the license verifier, and the envelope schema land in later items.
 #![forbid(unsafe_code)]
 
+/// This crate's own version (`CARGO_PKG_VERSION`), re-exported so downstream crates (the Console app,
+/// P1's `DeviceInfo.verify_crate_version`) can report "which kriya-verify is actually linked into this
+/// binary" without hardcoding a copy of the version string that could drift from `Cargo.toml`.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 mod canonical;
 mod classify;
+mod device_info;
 mod envelope;
 mod heartbeat;
 mod license;
@@ -25,6 +31,10 @@ mod sig;
 
 pub use canonical::{canonical_json_bytes, canonical_value, sha256_hex};
 pub use classify::is_destructive;
+pub use device_info::{
+    device_info_canonical_bytes, sign_device_info, verify_device_info, AgentInfo, DeviceInfo,
+    OsInfo, PolicyEcho, SignedDeviceInfo,
+};
 pub use envelope::{
     envelope_canonical_bytes, envelope_chain_break, verify_envelope, AttestationEnvelope,
     CompilerInfo, Counts, Integrity, NonEgress, OperatorRollup, SignedEnvelope, SignerRollup,
