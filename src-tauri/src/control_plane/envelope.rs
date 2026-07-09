@@ -79,7 +79,7 @@ use std::collections::BTreeMap;
 use ed25519_dalek::Signer;
 use serde_json::Value;
 
-use crate::control_plane::redact::{default_allowlist, operator_pseudonym};
+use crate::control_plane::redact::{allowlist_for, operator_pseudonym};
 use kriya_verify::{
     canonical_json_bytes, chain_continues_from, envelope_canonical_bytes, is_destructive,
     merkle_root, minimize_window, sha256_hex, verify_value, AttestationEnvelope, CompilerInfo,
@@ -108,6 +108,15 @@ pub struct WindowInput {
     pub prev_envelope_hash: Option<String>,
     pub produced_ms: u64,
     pub sources: Vec<SourceWindow>,
+    /// The applied `envelope_verbosity` dial (doc 22 §5/P3) — `"standard"` | `"extended"`, resolved by
+    /// the caller from the P3 policy downlink state (`policy::current_envelope_verbosity`), defaulting
+    /// to `"standard"` pre-P3/pre-apply so existing behavior is unchanged until an operator publishes a
+    /// bundle setting it.
+    pub envelope_verbosity: String,
+    /// Envelope v1.1 (P3, doc 22 §5) — the policy freshness echo, resolved by the caller from the P3
+    /// downlink's applied state (`policy::load_state()`). `None` pre-P3 / before any bundle has ever
+    /// been applied — the envelope simply omits the field (byte-for-byte v1.0-identical).
+    pub policy_state: Option<kriya_verify::PolicyStateEcho>,
 }
 
 /// Assemble + sign one `AttestationEnvelope` from a verified window. Reuses the shared trust core
@@ -152,8 +161,8 @@ pub fn build_signed_envelope(
     let verified = verified_values.len() as u32;
     let failed = total_receipts.saturating_sub(verified);
 
-    // 3. Minimized actions (drop-by-default) over verified receipts.
-    let actions = minimize_window(&verified_values, &default_allowlist());
+    // 3. Minimized actions (drop-by-default) over verified receipts, at the applied verbosity dial.
+    let actions = minimize_window(&verified_values, &allowlist_for(&input.envelope_verbosity));
 
     // 4. Signer-fingerprint rollup + 5. operator-pseudonym rollup (HMAC; never the plaintext name).
     let mut by_signer: BTreeMap<String, u32> = BTreeMap::new();
@@ -244,6 +253,7 @@ pub fn build_signed_envelope(
             version: env!("CARGO_PKG_VERSION").into(),
             produced_ms: input.produced_ms,
         },
+        policy_state: input.policy_state.clone(),
     };
     let signature = hex::encode(key.sign(&envelope_canonical_bytes(&envelope)).to_bytes());
     Ok(SignedEnvelope {
@@ -302,6 +312,8 @@ mod builder_tests {
                 lines: vec![l1, l2],
                 prev_tail_hash: None,
             }],
+            envelope_verbosity: "standard".into(),
+            policy_state: None,
         };
         let key = SigningKey::from_bytes(&[11u8; 32]);
         let signed = build_signed_envelope(&input, &key, &[3u8; 32]).expect("build");
@@ -354,6 +366,8 @@ mod builder_tests {
                 lines: vec![l2],
                 prev_tail_hash: None,
             }],
+            envelope_verbosity: "standard".into(),
+            policy_state: None,
         };
         let key = SigningKey::from_bytes(&[11u8; 32]);
         let signed = build_signed_envelope(&input, &key, &[3u8; 32]).unwrap();
@@ -388,6 +402,8 @@ mod builder_tests {
                 lines: vec![l1],
                 prev_tail_hash: None,
             }],
+            envelope_verbosity: "standard".into(),
+            policy_state: None,
         };
         let signed =
             build_signed_envelope(&input, &SigningKey::from_bytes(&[11u8; 32]), &[3u8; 32])

@@ -414,6 +414,7 @@ mod tests {
             operator_id: "op-1".into(),
             server_ca_pin_sha256: "ab".into(),
             device_label: Some("ENG-1234".into()),
+            org_policy_pub: None,
         }
     }
 
@@ -539,9 +540,16 @@ mod tests {
         );
     }
 
+    /// The ONE crate-wide lock (`crate::HOME_ENV_LOCK`) every `$HOME`-mutating test in this crate takes
+    /// — these two tests previously had NO lock at all, a real gap the P3 change's audit caught (a
+    /// per-module lock alone wouldn't have been enough anyway; see `lib.rs`'s doc comment on it).
+    #[cfg(feature = "control-plane")]
+    use crate::HOME_ENV_LOCK as ENV_LOCK;
+
     #[cfg(feature = "control-plane")]
     #[test]
     fn emit_if_changed_errors_cleanly_when_not_enrolled() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!(
             "kriya-device-info-noenroll-{}-{:?}",
             std::process::id(),
@@ -564,6 +572,7 @@ mod tests {
     #[cfg(feature = "control-plane")]
     #[test]
     fn emit_if_changed_is_non_fatal_when_target_certs_are_missing() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!(
             "kriya-device-info-enrolled-{}-{:?}",
             std::process::id(),

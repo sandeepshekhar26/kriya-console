@@ -1893,7 +1893,9 @@ mod tests {
 
     // --- GA-1: the govern-all orchestrator ---------------------------------------------------
 
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// The ONE crate-wide lock (`crate::HOME_ENV_LOCK`) every `$HOME`-mutating test in this crate takes
+    /// — a per-module lock alone doesn't stop this module's tests from racing another module's.
+    use crate::HOME_ENV_LOCK as ENV_LOCK;
 
     fn surface_of(targets: Vec<GovernTarget>, hook_av: bool, gw_av: bool) -> GovernableSurface {
         surface_of_all(targets, hook_av, gw_av, true)

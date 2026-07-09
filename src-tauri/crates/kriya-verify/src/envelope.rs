@@ -37,6 +37,24 @@ pub struct AttestationEnvelope {
     pub integrity: Integrity,
     pub non_egress: NonEgress,
     pub compiler: CompilerInfo,
+    /// v1.1 (P3, doc 22 §5) — a freshness echo of the policy bundle applied at compile time, emitted
+    /// by the Compiler once a device has actually applied a `PolicyBundle` (the P3 downlink). Optional
+    /// and additive (`#[serde(default)]` + `skip_serializing_if`): a pre-P3 device (or one that has
+    /// never applied a bundle) omits this field entirely, byte-for-byte identical to v1.0 — never
+    /// `null`. See [`verify_envelope`]'s doc comment for how this stays BC-5 safe both ways.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_state: Option<PolicyStateEcho>,
+}
+
+/// The v1.1 envelope's policy freshness echo — `{version, bundle_hash, applied_ms}` verbatim per doc
+/// 22 §5. Distinct from `kriya_verify::DeviceInfo`'s `PolicyEcho` (`{applied_version, bundle_hash}`,
+/// doc 22 §7) — same idea, two different schemas from two different doc sections, deliberately not
+/// unified (an envelope field and a device-inventory field are not the same wire contract).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyStateEcho {
+    pub version: u64,
+    pub bundle_hash: String,
+    pub applied_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,13 +133,24 @@ pub fn envelope_canonical_bytes(env: &AttestationEnvelope) -> Vec<u8> {
 /// Verify a parsed `SignedEnvelope`: the Ed25519 signature over the canonical envelope bytes (against
 /// the envelope's own `device_pub`, which must equal `public_key`), plus internal count sanity. The
 /// anti-forgery guarantee — a stolen transport cert can't forge this (it lacks the evidence key).
+///
+/// **BC-5, the trap, made concrete (doc 22 §8):** the signature is checked against the canonical bytes
+/// of the RAW `v["envelope"]` value exactly as received — never a re-serialization of the *parsed*
+/// [`AttestationEnvelope`] struct. Re-serializing the typed struct would silently DROP any field this
+/// exact build doesn't define (e.g. an older `kriya-verify` reading a v1.1 envelope's `policy_state`),
+/// recomputing bytes that don't match what was actually signed and wrongly failing a legitimately
+/// signed newer envelope. Canonicalizing the untyped value sidesteps this: it includes every key that
+/// was actually on the wire, known or not to this build, so the recomputed bytes always match what the
+/// signer signed — in both directions (an old verifier reading a new artifact, and a new verifier
+/// reading an old one, where the newer optional field is simply absent either way).
 pub fn verify_envelope(v: &Value) -> Result<(), String> {
     let signed: SignedEnvelope =
         serde_json::from_value(v.clone()).map_err(|e| format!("not a signed envelope: {e}"))?;
     if signed.envelope.device_pub != signed.public_key {
         return Err("device_pub does not match the signing public_key".into());
     }
-    let msg = envelope_canonical_bytes(&signed.envelope);
+    let raw_envelope = v.get("envelope").ok_or("missing envelope field")?;
+    let msg = canonical_json_bytes(raw_envelope);
     verify_detached(&signed.public_key, &signed.signature, &msg)
         .map_err(|_| "envelope signature does not match".to_string())?;
     sanity_counts(&signed.envelope)
@@ -233,6 +262,7 @@ mod tests {
                 version: "0.1.0".into(),
                 produced_ms: 2000,
             },
+            policy_state: None,
         }
     }
 
@@ -256,6 +286,96 @@ mod tests {
             verify_envelope(&mismatched).is_err(),
             "device_pub != public_key must fail"
         );
+    }
+
+    #[test]
+    fn envelope_with_policy_state_verifies_and_tamper_fails() {
+        let key = SigningKey::from_bytes(&[15u8; 32]);
+        let pk = hex::encode(key.verifying_key().to_bytes());
+        let mut env = sample_envelope(&pk, 1, None);
+        env.policy_state = Some(PolicyStateEcho {
+            version: 13,
+            bundle_hash: "deadbeef".into(),
+            applied_ms: 1_783_500_000_000,
+        });
+        let signed = sign_envelope(env, &key);
+        assert!(
+            verify_envelope(&signed).is_ok(),
+            "a v1.1 envelope carrying policy_state verifies"
+        );
+
+        let mut tampered = signed.clone();
+        tampered["envelope"]["policy_state"]["version"] = json!(999);
+        assert!(
+            verify_envelope(&tampered).is_err(),
+            "tampering policy_state after signing must fail"
+        );
+    }
+
+    #[test]
+    fn policy_state_is_omitted_not_null_when_absent() {
+        // BC-4: additive-only evolution depends on ABSENCE, not `null`, being the "pre-P3 / not yet
+        // applied" signal — mirrors DeviceInfo's identical `policy`/`device_label` convention.
+        let key = SigningKey::from_bytes(&[16u8; 32]);
+        let pk = hex::encode(key.verifying_key().to_bytes());
+        let signed = sign_envelope(sample_envelope(&pk, 1, None), &key);
+        let s = serde_json::to_string(&signed).unwrap();
+        assert!(!s.contains("\"policy_state\":null"));
+        assert!(!s.contains("policy_state")); // truly absent, not present-as-null
+    }
+
+    /// THE BC-5 regression proof (doc 22 §8's "trap"): a field genuinely NEWER than anything this
+    /// exact build's `AttestationEnvelope` struct defines — not `policy_state` specifically, something
+    /// this code has never heard of at all — must still verify. This is the practical stand-in for
+    /// "an old verifier reads a new artifact": if verification recomputed bytes from the PARSED (and
+    /// therefore unknown-field-dropping) struct, this would wrongly fail; canonicalizing the RAW wire
+    /// value (this crate's actual behavior, fixed in this same change) succeeds regardless.
+    #[test]
+    fn verify_envelope_tolerates_a_field_newer_than_this_code_knows_about() {
+        let key = SigningKey::from_bytes(&[17u8; 32]);
+        let pk = hex::encode(key.verifying_key().to_bytes());
+        let mut env_value = serde_json::to_value(sample_envelope(&pk, 1, None)).unwrap();
+        env_value["a_field_from_a_future_schema_bump"] = json!({ "nested": "whatever", "n": 42 });
+        let msg = canonical_json_bytes(&env_value);
+        let signature = hex::encode(key.sign(&msg).to_bytes());
+        let signed = json!({ "envelope": env_value, "public_key": pk, "signature": signature });
+        assert!(
+            verify_envelope(&signed).is_ok(),
+            "an envelope field this build has never heard of must not break verification"
+        );
+
+        // And tampering that SAME unknown field must still be caught — proof this isn't just "ignore
+        // everything I don't recognize," it's "canonicalize exactly what's there, known or not."
+        let mut tampered = signed.clone();
+        tampered["envelope"]["a_field_from_a_future_schema_bump"]["n"] = json!(43);
+        assert!(verify_envelope(&tampered).is_err(), "tampering an unknown field must still fail");
+    }
+
+    /// BC-5 cross-version fixture pair (doc 22 §8, P3): the CURRENT verifier accepts BOTH the
+    /// pre-existing v1.0 fixture (no `policy_state` at all — committed since Phase 1, unchanged) and
+    /// the new v1.1 fixture (`policy_state` present, this change) — proving additive schema evolution
+    /// holds in both directions against the SAME code, the practical proxy this codebase already uses
+    /// for "old ↔ new" compatibility (mirrors `kriya-aggregator`'s own coverage/heartbeat cross-version
+    /// tests). The companion TS-side proof lives in `test/envelope.test.ts`.
+    #[test]
+    fn cross_version_fixtures_both_verify() {
+        let v1_0: Value =
+            serde_json::from_str(include_str!("../../../../src/sample/sample-envelope.json")).unwrap();
+        assert!(
+            v1_0["envelope"].get("policy_state").is_none(),
+            "the v1.0 fixture must genuinely predate policy_state"
+        );
+        assert!(verify_envelope(&v1_0).is_ok(), "the v1.0 (no policy_state) fixture verifies");
+
+        let v1_1: Value = serde_json::from_str(include_str!(
+            "../../../../src/sample/sample-envelope-v1.1.json"
+        ))
+        .unwrap();
+        assert!(
+            v1_1["envelope"]["policy_state"]["version"] == json!(13),
+            "the v1.1 fixture must genuinely carry policy_state"
+        );
+        assert!(verify_envelope(&v1_1).is_ok(), "the v1.1 (with policy_state) fixture verifies");
     }
 
     #[test]
@@ -306,6 +426,27 @@ mod tests {
         let key = SigningKey::from_bytes(&[5u8; 32]);
         let pk = hex::encode(key.verifying_key().to_bytes());
         let signed = sign_envelope(sample_envelope(&pk, 1, None), &key);
+        println!("{}", serde_json::to_string_pretty(&signed).unwrap());
+    }
+
+    /// Emits the BC-5 cross-version parity fixture (`src/sample/sample-envelope-v1.1.json`) — a v1.1
+    /// envelope carrying `policy_state` (doc 22 §5, P3). The pre-existing `sample-envelope.json` (no
+    /// `policy_state` at all) IS the "v1.0" fixture side of this same parity pair — both fixtures are
+    /// verified by the SAME current code (see the BC-5 tests above + `test/envelope.test.ts`), proving
+    /// additive schema evolution holds in both directions. Regenerate with:
+    ///   cargo test -p kriya-verify print_sample_envelope_v1_1 -- --ignored --nocapture
+    #[test]
+    #[ignore = "fixture generator; run with --ignored --nocapture to (re)generate the parity fixture"]
+    fn print_sample_envelope_v1_1() {
+        let key = SigningKey::from_bytes(&[5u8; 32]);
+        let pk = hex::encode(key.verifying_key().to_bytes());
+        let mut env = sample_envelope(&pk, 1, None);
+        env.policy_state = Some(PolicyStateEcho {
+            version: 13,
+            bundle_hash: "deadbeefcafef00d".into(),
+            applied_ms: 1_783_500_000_000,
+        });
+        let signed = sign_envelope(env, &key);
         println!("{}", serde_json::to_string_pretty(&signed).unwrap());
     }
 }

@@ -26,6 +26,24 @@ pub struct Enrollment {
     /// hostname (doc 22 §7's exclusion table).
     #[serde(default)]
     pub device_label: Option<String>,
+    /// The pinned **org policy public key** (P3, doc 22 §3/§5) — lowercase hex, the device's trust
+    /// anchor for verifying a `PolicyBundle` before applying it. Additive + optional
+    /// (`#[serde(default)]`): a pre-P3 `enrollment.json` (or one an MDM simply never set this on) still
+    /// parses unchanged, and its ABSENCE is the downlink's own dormancy gate — see
+    /// [`Enrollment::org_policy_pub_hex`] and BC-4 in doc 22 §8. In production an MDM writes this
+    /// alongside the rest of enrollment (mirrors `device_label`'s provisioning story); the dev
+    /// `kriyd-ca` stub sets it from the operator's freshly-generated `org-policy.pub`.
+    #[serde(default)]
+    pub org_policy_pub: Option<String>,
+}
+
+impl Enrollment {
+    /// The device's pinned org-key trust anchor, if the downlink is enabled for this device at all.
+    /// `None` ⇒ policy downlink is OFF (BC-4: an enrollment with no org key configured behaves
+    /// EXACTLY as a pre-P3 device — it simply never calls `GET /v1/policy`).
+    pub fn org_policy_pub_hex(&self) -> Option<&str> {
+        self.org_policy_pub.as_deref().filter(|s| !s.trim().is_empty())
+    }
 }
 
 /// Where the enrollment record lives on-device (alongside the installed license).
@@ -93,5 +111,26 @@ mod tests {
 
         // Malformed JSON → None.
         assert!(parse_enrollment("not json").is_none());
+    }
+
+    #[test]
+    fn org_policy_pub_is_optional_and_absence_is_the_downlink_off_switch() {
+        // A pre-P3 enrollment.json (no org_policy_pub at all) must still parse — BC-4.
+        let pre_p3 = r#"{"serverUrl":"https://x","orgId":"o","operatorId":"op","serverCaPinSha256":"ab"}"#;
+        let e = parse_enrollment(pre_p3).expect("pre-P3 enrollment still parses");
+        assert_eq!(e.org_policy_pub_hex(), None, "no org key configured ⇒ downlink off");
+
+        // An empty-string org_policy_pub is likewise treated as "not configured" (never a half-pin).
+        let blank = r#"{"serverUrl":"https://x","orgId":"o","operatorId":"op","serverCaPinSha256":"ab",
+            "orgPolicyPub":"  "}"#;
+        assert_eq!(parse_enrollment(blank).unwrap().org_policy_pub_hex(), None);
+
+        // A real pinned key is exposed verbatim.
+        let with_key = r#"{"serverUrl":"https://x","orgId":"o","operatorId":"op","serverCaPinSha256":"ab",
+            "orgPolicyPub":"deadbeef"}"#;
+        assert_eq!(
+            parse_enrollment(with_key).unwrap().org_policy_pub_hex(),
+            Some("deadbeef")
+        );
     }
 }

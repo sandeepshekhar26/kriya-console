@@ -1,0 +1,66 @@
+{
+  "envelope": {
+    "actions": [
+      {
+        "action": "create_note",
+        "count": 1,
+        "destructive": false,
+        "failures": 0
+      },
+      {
+        "action": "destructive",
+        "count": 1,
+        "destructive": true,
+        "failures": 0
+      }
+    ],
+    "compiler": {
+      "produced_ms": 2000,
+      "version": "0.1.0"
+    },
+    "counts": {
+      "attestations": 0,
+      "destructive": 1,
+      "failed": 0,
+      "receipts": 2,
+      "verified": 2
+    },
+    "device_pub": "6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1",
+    "integrity": {
+      "broken_sources": [],
+      "chain_intact": true,
+      "merkle_root": "deadbeef"
+    },
+    "non_egress": {
+      "attestation_count": 0,
+      "attested": false
+    },
+    "operators": [
+      {
+        "actions": 2,
+        "ref": "op_ab12"
+      }
+    ],
+    "org_id": "acme",
+    "policy_state": {
+      "applied_ms": 1783500000000,
+      "bundle_hash": "deadbeefcafef00d",
+      "version": 13
+    },
+    "schema": "kriya.envelope.v1",
+    "seq": 1,
+    "signers": [
+      {
+        "fingerprint": "ab12",
+        "receipts": 2,
+        "verified": 2
+      }
+    ],
+    "window": {
+      "from_ms": 1000,
+      "to_ms": 2000
+    }
+  },
+  "public_key": "6e7a1cdd29b0b78fd13af4c5598feff4ef2a97166e3ca6f2e4fbfccd80505bf1",
+  "signature": "b599bc93628f5de9a28c6cb413c65960e1b02e70b308012cb6c633c875bf6a6dc0ee7ce66bf119dc36cec3a6f6746c3550f42ba9f518593640b9182805f3ad0c"
+}

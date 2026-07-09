@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ComponentType } from "react";
 import { Icon } from "../components/Icon";
 import { ControlPlaneDrillIn } from "./ControlPlaneDrillIn";
+import { ControlPlanePolicyTab } from "./ControlPlanePolicyTab";
 import {
   fleetConnect,
   fleetCoverage,
@@ -292,6 +293,7 @@ function FleetCockpit({
   const [refreshing, setRefreshing] = useState(false);
   const [refreshErr, setRefreshErr] = useState<string | null>(null);
   const [selected, setSelected] = useState<DeviceCoverageRow | null>(null);
+  const [tab, setTab] = useState<"fleet" | "policy">("fleet");
 
   useEffect(() => setRows(initialRows), [initialRows]);
 
@@ -317,94 +319,109 @@ function FleetCockpit({
     <div className="view">
       <CockpitHeader />
 
-      <div className="cp-conn">
-        <span className="dot live" />
-        <code>kriyad</code>
-        <span className="pill"><Icon name="lock" size={12} /> mTLS</span>
-        <span className="pill">single-tenant</span>
-        <span className="pill"><Icon name="shield-check" size={12} /> no egress</span>
-        <span className="spacer" />
-        {refreshErr && <span className="muted small" style={{ color: "var(--bad-text)" }}>{refreshErr}</span>}
-        <button className="btn ghost small" onClick={() => void refresh()} disabled={refreshing}>
-          <Icon name="refresh" size={13} /> {refreshing ? "Refreshing…" : "Refresh"}
+      <div className="segmented" style={{ marginBottom: 16 }}>
+        <button className={tab === "fleet" ? "active" : undefined} onClick={() => setTab("fleet")}>
+          <Icon name="fleet" size={13} /> Fleet
+        </button>
+        <button className={tab === "policy" ? "active" : undefined} onClick={() => setTab("policy")}>
+          <Icon name="policy" size={13} /> Policy
         </button>
       </div>
 
-      <section className="stat-grid cp-stats">
-        <Stat label="Devices" value={rows.length} />
-        <Stat label="Current" value={counts.current ?? 0} tone="ok" />
-        <Stat label="Behind" value={counts.behind ?? 0} tone={counts.behind ? "warn" : undefined} />
-        <Stat label="Silent" value={counts.silent ?? 0} tone={counts.silent ? "bad" : undefined} />
-      </section>
+      {tab === "policy" ? (
+        <ControlPlanePolicyTab />
+      ) : (
+        <>
+          <div className="cp-conn">
+            <span className="dot live" />
+            <code>kriyad</code>
+            <span className="pill"><Icon name="lock" size={12} /> mTLS</span>
+            <span className="pill">single-tenant</span>
+            <span className="pill"><Icon name="shield-check" size={12} /> no egress</span>
+            <span className="spacer" />
+            {refreshErr && <span className="muted small" style={{ color: "var(--bad-text)" }}>{refreshErr}</span>}
+            <button className="btn ghost small" onClick={() => void refresh()} disabled={refreshing}>
+              <Icon name="refresh" size={13} /> {refreshing ? "Refreshing…" : "Refresh"}
+            </button>
+          </div>
 
-      <section className="panel">
-        <div className="panel-head">
-          <h2>Fleet</h2>
-          <span className="muted small">click a device for its signed evidence + inventory</span>
-        </div>
-        <div style={{ overflowX: "auto" }}>
-          <table className="audit cp-cover">
-            <thead>
-              <tr>
-                <th>Device</th>
-                <th>Org / BU</th>
-                <th>Liveness</th>
-                <th>Console</th>
-                <th>Runtime</th>
-                <th>Agents</th>
-                <th>Policy</th>
-                <th>Last seen</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((d) => (
-                <tr
-                  key={d.device_pub}
-                  onClick={() => setSelected(d)}
-                  style={{ cursor: "pointer" }}
-                >
-                  <td>
-                    <div className="cp-dev">
-                      <Icon name="desktop" size={14} className="muted" />
-                      <span>{d.device_label || shortPub(d.device_pub)}</span>
-                    </div>
-                    <code className="cp-pub">{shortPub(d.device_pub)}</code>
-                  </td>
-                  <td>{orgBu(d)}</td>
-                  <td><LivenessBadge status={d.status} /></td>
-                  <td><VersionCell version={d.console_version} max={maxConsoleVersion} /></td>
-                  <td><VersionCell version={d.runtime_version} max={maxRuntimeVersion} /></td>
-                  <td><AgentsCell agents={d.agents} /></td>
-                  <td className="muted">
-                    {d.policy_applied_version !== undefined ? `v${d.policy_applied_version}` : "—"}
-                  </td>
-                  <td className="muted">{ago(d.last_seen_ms)}</td>
-                </tr>
-              ))}
-              {rows.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="muted small" style={{ textAlign: "center", padding: "24px 0" }}>
-                    No devices have reported coverage to this aggregator yet.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+          <section className="stat-grid cp-stats">
+            <Stat label="Devices" value={rows.length} />
+            <Stat label="Current" value={counts.current ?? 0} tone="ok" />
+            <Stat label="Behind" value={counts.behind ?? 0} tone={counts.behind ? "warn" : undefined} />
+            <Stat label="Silent" value={counts.silent ?? 0} tone={counts.silent ? "bad" : undefined} />
+          </section>
 
-      {selected && (
-        <ControlPlaneDrillIn
-          device={selected}
-          info={coverageRowToDeviceInfo(selected)}
-          onClose={() => setSelected(null)}
-        />
-      )}
+          <section className="panel">
+            <div className="panel-head">
+              <h2>Fleet</h2>
+              <span className="muted small">click a device for its signed evidence + inventory</span>
+            </div>
+            <div style={{ overflowX: "auto" }}>
+              <table className="audit cp-cover">
+                <thead>
+                  <tr>
+                    <th>Device</th>
+                    <th>Org / BU</th>
+                    <th>Liveness</th>
+                    <th>Console</th>
+                    <th>Runtime</th>
+                    <th>Agents</th>
+                    <th>Policy</th>
+                    <th>Last seen</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((d) => (
+                    <tr
+                      key={d.device_pub}
+                      onClick={() => setSelected(d)}
+                      style={{ cursor: "pointer" }}
+                    >
+                      <td>
+                        <div className="cp-dev">
+                          <Icon name="desktop" size={14} className="muted" />
+                          <span>{d.device_label || shortPub(d.device_pub)}</span>
+                        </div>
+                        <code className="cp-pub">{shortPub(d.device_pub)}</code>
+                      </td>
+                      <td>{orgBu(d)}</td>
+                      <td><LivenessBadge status={d.status} /></td>
+                      <td><VersionCell version={d.console_version} max={maxConsoleVersion} /></td>
+                      <td><VersionCell version={d.runtime_version} max={maxRuntimeVersion} /></td>
+                      <td><AgentsCell agents={d.agents} /></td>
+                      <td className="muted">
+                        {d.policy_applied_version !== undefined ? `v${d.policy_applied_version}` : "—"}
+                      </td>
+                      <td className="muted">{ago(d.last_seen_ms)}</td>
+                    </tr>
+                  ))}
+                  {rows.length === 0 && (
+                    <tr>
+                      <td colSpan={8} className="muted small" style={{ textAlign: "center", padding: "24px 0" }}>
+                        No devices have reported coverage to this aggregator yet.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
 
-      {refreshErr && refreshErr.toLowerCase().includes("fleet-console") && (
-        // A license/connection state change mid-session (e.g. license removed) — bounce back to the
-        // connect/empty flow rather than keep showing stale rows.
-        <ReconnectNudge onReconnectNeeded={onReconnectNeeded} />
+          {selected && (
+            <ControlPlaneDrillIn
+              device={selected}
+              info={coverageRowToDeviceInfo(selected)}
+              onClose={() => setSelected(null)}
+            />
+          )}
+
+          {refreshErr && refreshErr.toLowerCase().includes("fleet-console") && (
+            // A license/connection state change mid-session (e.g. license removed) — bounce back to
+            // the connect/empty flow rather than keep showing stale rows.
+            <ReconnectNudge onReconnectNeeded={onReconnectNeeded} />
+          )}
+        </>
       )}
     </div>
   );

@@ -411,3 +411,57 @@ export const fleetCoverage = () => invoke<DeviceCoverageRow[]>("fleet_coverage")
  *  a re-serialization). */
 export const fleetDeviceEvidence = (devicePub: string, fromSeq: number, toSeq: number) =>
   invoke<DeviceEvidence>("fleet_device_evidence", { devicePub, fromSeq, toSeq });
+
+// ── Org policy key (paid, P3, doc 22 §3/§5) ──────────────────────────────────
+/** Mirrors Rust `control_plane::org_key::OrgKeyInfo`. */
+export interface OrgKeyInfo {
+  orgPolicyPub: string;
+  pubPath: string;
+  /** `false` when an existing key was found and returned unchanged (never silently rotated). */
+  generated: boolean;
+}
+/** Generate (once) the org policy key that signs `PolicyBundle`s — private half in the OS keychain,
+ *  public half exported to `org-policy.pub` for MDM/enrollment. Idempotent-but-honest: calling this
+ *  again after a key exists returns it unchanged (`generated: false`), never rotates it silently. */
+export const orgPolicyKeygen = () => invoke<OrgKeyInfo>("org_policy_keygen");
+
+// ── Policy authoring / publish (paid, P3, doc 22 §5) ─────────────────────────
+/** `GET /v1/policy` preview — the latest bundle this cockpit can see (may miss a narrowly
+ *  device/BU-scoped bundle; see Rust `fleet::fleet_policy_preview`'s doc comment). `null` when nothing
+ *  is published yet. Shaped as the raw `{bundle: PolicyBundle, signature}` wire object. */
+export const fleetPolicyPreview = () => invoke<{ bundle: PolicyBundleDraft; signature: string } | null>(
+  "fleet_policy_preview",
+);
+
+/** Mirrors Rust `kriya_verify::PolicyBundle`'s editable fields (snake_case — the wire shape). */
+export interface PolicyBundleDraft {
+  org_id: string;
+  version: number;
+  issued_ms: number;
+  expires_ms?: number | null;
+  scope: { business_unit?: string | null; device_pubs?: string[] | null };
+  policy: Record<string, unknown>;
+  budgets: Record<string, unknown>;
+  govern: { target: string; action: string }[];
+  envelope_verbosity: string;
+}
+
+/** Mirrors Rust `control_plane::fleet::PublishResult`. */
+export interface PublishResult {
+  version: number;
+  duplicate: boolean;
+}
+
+/** Author → sign (OS-keychain org key) → publish. `version` is computed server-side (never trust a
+ *  client-supplied version — anti-rollback). Requires `fleet-console` AND a generated org key
+ *  (`orgPolicyKeygen`). */
+export const fleetPublishPolicy = (args: {
+  orgId: string;
+  businessUnit?: string | null;
+  devicePubs?: string[] | null;
+  expiresMs?: number | null;
+  policy: Record<string, unknown>;
+  budgets: Record<string, unknown>;
+  govern: { target: string; action: string }[];
+  envelopeVerbosity: string;
+}) => invoke<PublishResult>("fleet_publish_policy", args);

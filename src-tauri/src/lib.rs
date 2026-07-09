@@ -22,6 +22,16 @@ pub mod receipts;
 #[cfg(feature = "control-plane")]
 pub mod control_plane;
 
+/// The ONE shared lock every `$HOME`-mutating unit test in this crate must take before touching the
+/// process-global `HOME` env var. `cargo test` runs every module's unit tests within ONE binary on
+/// parallel threads by default; a per-module `static ENV_LOCK` only serializes tests WITHIN that
+/// module — it does nothing to stop `govern.rs`'s tests from racing `control_plane::policy`'s, since
+/// each had its own independent mutex. This crate-wide lock is the actual fix (found live: P3 added
+/// enough new `$HOME`-touching tests, e.g. `control_plane::policy`'s ~10, to make the pre-existing gap
+/// trigger a real, reproducible failure in `control_plane::org_key`'s tests).
+#[cfg(test)]
+pub(crate) static HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Build + run the Tauri app. On launch it starts the audit-dir watcher so the cockpit shows live
 /// governance the moment the window opens.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -82,6 +92,18 @@ pub fn run() {
             control_plane::fleet::fleet_coverage,
             #[cfg(feature = "control-plane")]
             control_plane::fleet::fleet_device_evidence,
+            // Fleet cockpit (P3, license-gated on `fleet-console`) — org policy keygen (the operator's
+            // signing identity for PolicyBundles; kriyad never holds it) + author/preview/publish.
+            #[cfg(feature = "control-plane")]
+            control_plane::org_key::org_policy_keygen,
+            #[cfg(feature = "control-plane")]
+            control_plane::fleet::fleet_policy_preview,
+            #[cfg(feature = "control-plane")]
+            control_plane::fleet::fleet_publish_policy,
+            // Device policy downlink (P3) — air-gap apply. Gated on enrollment + a pinned org key, NOT
+            // on `fleet-console` (a device-side act any enrolled device can do, not an operator-only one).
+            #[cfg(feature = "control-plane")]
+            control_plane::policy::policy_apply_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Kriya Console");

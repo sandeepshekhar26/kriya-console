@@ -67,6 +67,11 @@ hmac = { version = "0.12", optional = true }
 getrandom = "0.3"
 # The mTLS push client (2.7). Optional + feature-gated, so the FREE build links no reqwest/rustls.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"], optional = true }
+# The org policy key's PRIVATE half (P3 org_policy_keygen) — the OS-native credential store on every
+# platform we ship (macOS Keychain / Windows Credential Manager / Linux Secret Service), never a file
+# on disk. Optional + feature-gated (fleet-console authoring is control-plane-only), so the free build
+# links none of it.
+keyring = { version = "3", optional = true, features = ["apple-native", "windows-native", "sync-secret-service"] }
 
 [features]
 # Custom protocol is the default Tauri runtime; this mirrors the scaffolder's default.
@@ -77,7 +82,7 @@ dev-issuer = []
 # (enrollment/redact/envelope/compiler/push) + their deps, so the free tier compiles none of it
 # (build-time half of the dormancy firewall; the runtime gate is enrollment::control_plane_active).
 # (getrandom left this list with W1-5 — the free-tier Coverage Map needs the CSPRNG too.)
-control-plane = ["dep:hmac", "dep:reqwest"]
+control-plane = ["dep:hmac", "dep:reqwest", "dep:keyring"]
 
 [dev-dependencies]
 # For the redaction-manifest gate (1.12) + the device e2e (1.19): sign receipts, re-verify envelopes,

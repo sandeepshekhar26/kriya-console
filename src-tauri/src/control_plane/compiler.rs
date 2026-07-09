@@ -169,6 +169,8 @@ pub fn compile_window(
     produced_ms: u64,
     key: &SigningKey,
     pepper: &[u8],
+    envelope_verbosity: &str,
+    policy_state: Option<kriya_verify::PolicyStateEcho>,
 ) -> Result<(SignedEnvelope, CompilerState), String> {
     let (sources, next) = collect_new_windows(audit_dir, state);
     let input = WindowInput {
@@ -180,6 +182,8 @@ pub fn compile_window(
         prev_envelope_hash,
         produced_ms,
         sources,
+        envelope_verbosity: envelope_verbosity.to_string(),
+        policy_state,
     };
     let signed = build_signed_envelope(&input, key, pepper)?;
     Ok((signed, next))
@@ -246,6 +250,10 @@ fn now_ms() -> u64 {
 /// `~/.kriya/audit/`, append the signed envelope to the outbox, and persist the advanced state. Mints
 /// `evidence.key` + `pepper` on first use. This is the unit the positive-control test exercises and the
 /// spawn loop calls per boundary. Errors when not enrolled (a safety net behind the dormancy guard).
+/// The redaction dial (`envelope_verbosity`) and the v1.1 `policy_state` echo are both read from the P3
+/// policy downlink's applied state (`policy::load_state()`) — `"standard"` verbosity and no
+/// `policy_state` at all until an operator publishes a bundle and this device applies one, so this is
+/// byte-for-byte unchanged pre-P3.
 pub fn compile_once(window: (u64, u64), produced_ms: u64) -> Result<(), String> {
     let enrollment = crate::control_plane::enrollment::load_enrollment().ok_or("not enrolled")?;
     let key = crate::control_plane::envelope::evidence_signing_key()?;
@@ -253,6 +261,21 @@ pub fn compile_once(window: (u64, u64), produced_ms: u64) -> Result<(), String> 
     let state = load_state();
     let head = crate::control_plane::outbox::head()?;
     let audit_dir = crate::audit::default_audit_dir();
+    let policy_downlink_state = crate::control_plane::policy::load_state();
+    let verbosity = policy_downlink_state
+        .envelope_verbosity
+        .clone()
+        .unwrap_or_else(|| "standard".into());
+    let policy_state = match (
+        policy_downlink_state.last_applied_version,
+        policy_downlink_state.last_applied_bundle_hash,
+        policy_downlink_state.last_applied_ms,
+    ) {
+        (Some(version), Some(bundle_hash), Some(applied_ms)) => {
+            Some(kriya_verify::PolicyStateEcho { version, bundle_hash, applied_ms })
+        }
+        _ => None,
+    };
     let (signed, next) = compile_window(
         &audit_dir,
         &state,
@@ -264,6 +287,8 @@ pub fn compile_once(window: (u64, u64), produced_ms: u64) -> Result<(), String> 
         produced_ms,
         &key,
         &pepper,
+        &verbosity,
+        policy_state,
     )?;
     crate::control_plane::outbox::append(&signed)?;
     save_state(&next)?;
@@ -395,6 +420,8 @@ mod tests {
             1000,
             &key,
             &[3u8; 32],
+            "standard",
+            None,
         )
         .unwrap();
         assert!(verify_envelope(&serde_json::to_value(&e1).unwrap()).is_ok());
@@ -416,6 +443,8 @@ mod tests {
             2000,
             &key,
             &[3u8; 32],
+            "standard",
+            None,
         )
         .unwrap();
         assert!(verify_envelope(&serde_json::to_value(&e2).unwrap()).is_ok());

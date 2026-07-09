@@ -584,6 +584,12 @@ table.audit tbody tr:hover { background: var(--surface-2); }
 .field-label { font-size: 12px; font-weight: 500; color: var(--ink); }
 .field-hint { font-size: 11.5px; color: var(--ink-muted); line-height: 1.45; }
 .field input, .field select, .field textarea { width: 100%; }
+.field-inline { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink); }
+
+/* Policy authoring diff (P3, doc 22 §5) — additive lines green, removed lines red, over the existing
+   monospace `.well` block. */
+.diff-added { color: var(--ok-text); background: var(--ok-bg); }
+.diff-removed { color: var(--bad-text); background: var(--bad-bg); }
 
 /* inline-actionable step rows (permission walk) */
 .step-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); }

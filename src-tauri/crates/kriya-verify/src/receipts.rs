@@ -2,6 +2,7 @@
 //! Console's `receipts.rs`, 0.3). The verdict an auditor relies on is produced here, by compiled code
 //! the Console, the `kriyad` server, and the auditor CLI all share.
 
+use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -147,6 +148,45 @@ pub fn verify_value(v: &Value) -> Result<(), String> {
     };
     let msg = serde_json::to_vec(&canon).map_err(|e| format!("canonicalize: {e}"))?;
     verify_detached(public_key, signature, &msg)
+}
+
+/// Sign a NEW receipt — the production counterpart to [`verify_value`]'s reconstruction, reusing the
+/// exact same [`CanonicalReceipt`] shape so the result round-trips through the identical
+/// verify/chain/Compiler pipeline as any front-signed receipt. For control-plane-internal events the
+/// Console itself needs to attest (e.g. `kriya.policy.applied`, doc 22 §5) — not a general-purpose
+/// front-signing API; the runtime's own hooks/gateway sign their receipts independently in
+/// `experiment1`. Returns the full signed JSON line (params canonically key-sorted, `actor`/`prev_hash`
+/// omitted when absent, `public_key`/`signature` appended) — the caller writes/chains it into an audit
+/// source file exactly like any other receipt.
+#[allow(clippy::too_many_arguments)] // mirrors CanonicalReceipt's own field count 1:1 (compile_window has the same allow)
+pub fn sign_receipt(
+    key: &SigningKey,
+    step_id: &str,
+    action_id: &str,
+    params: Value,
+    success: bool,
+    ts_ms: u64,
+    actor: Option<Actor>,
+    prev_hash: Option<String>,
+) -> Value {
+    let canon = CanonicalReceipt {
+        step_id: step_id.to_string(),
+        action_id: action_id.to_string(),
+        params: canonical_value(&params),
+        success,
+        ts_ms,
+        actor,
+        prev_hash,
+    };
+    let msg = serde_json::to_vec(&canon).expect("CanonicalReceipt always serializes");
+    let signature = hex::encode(key.sign(&msg).to_bytes());
+    let public_key = hex::encode(key.verifying_key().to_bytes());
+    let mut v = serde_json::to_value(&canon).unwrap_or(Value::Null);
+    if let Value::Object(ref mut obj) = v {
+        obj.insert("public_key".into(), Value::String(public_key));
+        obj.insert("signature".into(), Value::String(signature));
+    }
+    v
 }
 
 fn field_str<'a>(v: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -323,6 +363,46 @@ mod tests {
         assert_eq!(chain_break(&good), None);
         // Drop the genesis line: line "b" now declares a prev_hash with nothing before it → break at 1.
         assert_eq!(chain_break(&format!("{b}\n")), Some(1));
+    }
+
+    #[test]
+    fn sign_receipt_produces_a_line_verify_value_accepts_and_chains() {
+        let key = SigningKey::from_bytes(&[19u8; 32]);
+        let genesis = sign_receipt(
+            &key,
+            "policy-apply-1",
+            "kriya.policy.applied",
+            json!({ "version": 13, "bundle_hash": "deadbeef" }),
+            true,
+            1000,
+            None,
+            None,
+        );
+        assert!(verify_value(&genesis).is_ok(), "a freshly signed receipt verifies");
+        assert!(looks_like_receipt(&genesis));
+
+        let line1 = serde_json::to_string(&genesis).unwrap();
+        let h1 = sha256_hex(line1.as_bytes());
+        let second = sign_receipt(
+            &key,
+            "policy-apply-2",
+            "kriya.policy.stale",
+            json!({}),
+            false,
+            2000,
+            Some(Actor { agent: "kriya-console".into(), user: "system".into() }),
+            Some(h1.clone()),
+        );
+        assert!(verify_value(&second).is_ok());
+        let line2 = serde_json::to_string(&second).unwrap();
+
+        // The chain check accepts consecutive sign_receipt output exactly like front-signed receipts.
+        assert_eq!(chain_break(&format!("{line1}\n{line2}\n")), None);
+
+        // Tamper after signing → verification fails (proves this isn't a rubber stamp).
+        let mut tampered = second.clone();
+        tampered["success"] = json!(true);
+        assert!(verify_value(&tampered).is_err());
     }
 
     #[test]

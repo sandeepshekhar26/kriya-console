@@ -228,6 +228,57 @@ pub fn fetch_healthz(cfg: &FleetConfig) -> Result<(), String> {
     }
 }
 
+/// GET `/v1/policy?device_pub=…&business_unit=…` (P3) — the operator cockpit's OWN preview fetch, used
+/// to seed the authoring editor and diff a draft against what's currently published. Uses a synthetic
+/// `device_pub` (the cockpit isn't a device) so this only sees an ALL-scoped (or matching-BU-scoped)
+/// bundle — a narrowly device-list-scoped bundle may not show up here. That's an accepted v1 rough edge
+/// (documented, not silently wrong): building a scope-BYPASS "show me the true latest regardless of
+/// scope" route is deliberately deferred to P6 (cert-role separation), which is what would let kriyad
+/// trust "this caller is the operator" from the TLS layer itself rather than from a shared dev CA any
+/// cert can present today. `404` (nothing published, or an old kriyad lacking the route) → `Ok(None)`,
+/// never an error — mirrors the device downlink's own BC-4 handling of the identical route.
+#[cfg(feature = "control-plane")]
+pub fn fetch_policy_preview(
+    cfg: &FleetConfig,
+    device_pub: &str,
+    business_unit: Option<&str>,
+) -> Result<Option<String>, String> {
+    let mut req = mtls_client(cfg)?
+        .get(format!("{}/v1/policy", cfg.server_url))
+        .query(&[("device_pub", device_pub)]);
+    if let Some(bu) = business_unit {
+        req = req.query(&[("business_unit", bu)]);
+    }
+    let resp = req.send().map_err(|e| format!("GET /v1/policy: {e}"))?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        return Err(format!("GET /v1/policy rejected: HTTP {}", resp.status()));
+    }
+    resp.text().map(Some).map_err(|e| format!("read /v1/policy response: {e}"))
+}
+
+/// POST `/v1/policy` (P3) — publish an org-key-signed `PolicyBundle`. `body` is the ALREADY-SIGNED
+/// bundle JSON (signed operator-side via the OS-keychain-held org key, `org_key::sign_with_org_key`) —
+/// this function only transports it; kriyad does the real verification on ingest (this Console never
+/// needs to trust its own POST succeeding as proof of anything — the publish result it returns is a
+/// convenience echo, not the source of truth). Returns kriyad's raw response body (the ingest
+/// `{version, duplicate}` JSON on success) alongside the HTTP status, so the caller can distinguish a
+/// clean 200 from a 400 (rejected — should be impossible for a bundle THIS Console just signed, unless
+/// the pinned org key on kriyad doesn't match) or a 409 (version collision with different content).
+#[cfg(feature = "control-plane")]
+pub fn publish_policy(cfg: &FleetConfig, signed_bundle_json: &str) -> Result<(u16, String), String> {
+    let resp = mtls_client(cfg)?
+        .post(format!("{}/v1/policy", cfg.server_url))
+        .body(signed_bundle_json.to_owned())
+        .send()
+        .map_err(|e| format!("POST /v1/policy: {e}"))?;
+    let status = resp.status().as_u16();
+    let body = resp.text().map_err(|e| format!("read publish response: {e}"))?;
+    Ok((status, body))
+}
+
 /// Build the mTLS client: present this Console's client cert, and trust ONLY the pinned server CA.
 /// Verbatim mirror of `push::mtls_client` (same builder calls, same error-message shape) — the ONE
 /// difference is the config type (`FleetConfig` vs. `PushTarget`), since the two are deliberately kept
@@ -266,6 +317,18 @@ mod tests {
             client_identity_pem: "/nonexistent/client.pem".into(),
             server_ca_pem: "/nonexistent/ca.pem".into(),
         }
+    }
+
+    #[test]
+    fn fetch_policy_preview_errors_cleanly_on_missing_certs() {
+        let err = fetch_policy_preview(&missing_target(), "_fleet_console_preview_", None).unwrap_err();
+        assert!(err.contains("client identity"), "graceful, not a panic: {err}");
+    }
+
+    #[test]
+    fn publish_policy_errors_cleanly_on_missing_certs() {
+        let err = publish_policy(&missing_target(), "{}").unwrap_err();
+        assert!(err.contains("client identity"), "graceful, not a panic: {err}");
     }
 
     #[test]

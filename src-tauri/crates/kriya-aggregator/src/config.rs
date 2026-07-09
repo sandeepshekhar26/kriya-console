@@ -2,7 +2,7 @@
 //! it like self-hosted Vault/GitLab: config in, no outbound calls.
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -28,6 +28,31 @@ impl Config {
             license_path: env_path("KRIYAD_LICENSE", "kriyad-license.json"),
             ca_dir: env_path("KRIYAD_CA_DIR", "ca"),
         }
+    }
+
+    /// The pinned **org policy public key** (P3, doc 22 §3/§5) — kriyad's trust anchor for verifying a
+    /// `POST /v1/policy` bundle. Resolved fresh on every call (cheap: an env read + a small file read)
+    /// rather than cached at startup, so an operator can drop `org-policy.pub` into the CA dir (or set
+    /// the env var) without restarting kriyad. Two sources, `KRIYAD_ORG_POLICY_PUB` taking priority:
+    /// - the env var holding the raw lowercase-hex key directly (container/K8s-secret friendly), or
+    /// - `<ca_dir>/org-policy.pub` (mirrors how the server cert/key/CA already live under `ca_dir`).
+    ///
+    /// `None` when neither source is configured — policy distribution is simply not set up yet; kriyad
+    /// still authors nothing (doc 22 §3), it just has nothing to verify a bundle against.
+    ///
+    /// Takes `ca_dir` directly (rather than `&self`) so `AppState` (`main.rs`), which threads only
+    /// `ca_dir` through to route handlers rather than a whole `Config`, can share this exact logic.
+    pub fn resolve_org_policy_pub(ca_dir: &Path) -> Option<String> {
+        if let Ok(v) = std::env::var("KRIYAD_ORG_POLICY_PUB") {
+            let v = v.trim().to_string();
+            if !v.is_empty() {
+                return Some(v);
+            }
+        }
+        std::fs::read_to_string(ca_dir.join("org-policy.pub"))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
     }
 }
 

@@ -42,6 +42,8 @@ fn no_sentinel_survives_the_envelope_builder() {
             lines: vec![sentinel_receipt(&host)],
             prev_tail_hash: None,
         }],
+        envelope_verbosity: "standard".into(),
+        policy_state: None,
     };
     let key = SigningKey::from_bytes(&[11u8; 32]);
     let signed = build_signed_envelope(&input, &key, &[3u8; 32]).expect("build envelope");

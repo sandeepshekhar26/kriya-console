@@ -8,6 +8,7 @@ mod license;
 mod store;
 mod tls;
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -34,19 +35,30 @@ pub struct Metrics {
 pub struct AppState {
     pub metrics: Metrics,
     pub store: store::Store,
+    /// Only `ca_dir` (not a full `Config`) is threaded through — the one field route handlers actually
+    /// need, to resolve the pinned org policy public key (P3, `config::Config::org_policy_pub`).
+    pub ca_dir: PathBuf,
 }
 
 impl AppState {
-    pub fn new(store: store::Store) -> Self {
+    pub fn new(store: store::Store, ca_dir: PathBuf) -> Self {
         Self {
             metrics: Metrics::default(),
             store,
+            ca_dir,
         }
     }
 
     #[cfg(test)]
     pub fn in_memory() -> Self {
-        Self::new(store::Store::open_in_memory().expect("in-memory store"))
+        Self::new(store::Store::open_in_memory().expect("in-memory store"), PathBuf::from("."))
+    }
+
+    /// Resolve the pinned org policy public key for this server — see
+    /// `config::Config::org_policy_pub`'s doc comment for the two-source precedence
+    /// (`KRIYAD_ORG_POLICY_PUB` env, else `<ca_dir>/org-policy.pub`).
+    pub fn org_policy_pub(&self) -> Option<String> {
+        config::Config::resolve_org_policy_pub(&self.ca_dir)
     }
 }
 
@@ -58,6 +70,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/envelopes", post(post_envelopes))
         .route("/v1/heartbeat", post(post_heartbeat))
         .route("/v1/device-info", post(post_device_info))
+        .route("/v1/policy", post(post_policy).get(get_policy))
         .route("/v1/coverage", get(get_coverage))
         .route("/v1/verify", get(get_verify))
         .with_state(state)
@@ -248,6 +261,64 @@ async fn post_device_info(State(state): State<Arc<AppState>>, body: String) -> (
     }
 }
 
+/// POST /v1/policy (P3, doc 22 §5) — the operator's cockpit publishes a `PolicyBundle` here.
+/// **kriyad authors nothing** (doc 22 §3): it verifies the org signature ON THE RAW BODY BYTES against
+/// the PINNED `org_policy_pub` (never a key the payload itself asserts — a bundle carries none) and, on
+/// success, appends to the `policy_bundles` table verbatim. Garbage — an unparseable body, a forged
+/// signature, or (with no org key pinned at all) ANY body — never enters the store.
+async fn post_policy(State(state): State<Arc<AppState>>, body: String) -> (StatusCode, String) {
+    let Some(org_pub) = state.org_policy_pub() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no org policy public key is pinned on this server \
+             (set KRIYAD_ORG_POLICY_PUB or drop org-policy.pub in the CA dir) — \
+             policy distribution is not configured yet\n"
+                .to_string(),
+        );
+    };
+    let v: Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("parse: {e}\n")),
+    };
+    if let Err(reason) = kriya_verify::verify_policy_bundle(&v, &org_pub) {
+        return (StatusCode::BAD_REQUEST, format!("{reason}\n"));
+    }
+    let signed: kriya_verify::SignedPolicyBundle = match serde_json::from_value(v) {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("decode: {e}\n")),
+    };
+    let version = signed.bundle.version;
+    match state.store.insert_policy_bundle(&signed, body.as_bytes(), now_ms()) {
+        Ok(store::PolicyIngest::Accepted) => {
+            (StatusCode::OK, json!({ "version": version, "duplicate": false }).to_string())
+        }
+        Ok(store::PolicyIngest::DuplicateSameContent) => {
+            (StatusCode::OK, json!({ "version": version, "duplicate": true }).to_string())
+        }
+        // A version collision with DIFFERENT content — never silently overwritten (store.rs); the
+        // operator must bump the version. 409, not 400: the bundle itself is validly signed, the
+        // conflict is with server-side state, not the request's own well-formedness.
+        Err(e) => (StatusCode::CONFLICT, format!("{e}\n")),
+    }
+}
+
+/// GET /v1/policy?device_pub=…&business_unit=… (P3) — serve the LATEST bundle whose `scope` covers
+/// this device (scope filtering is SERVING, not deciding: the device re-verifies the signature and its
+/// own anti-rollback check regardless). `404` when nothing is published in scope — deliberately
+/// indistinguishable from an old kriyad lacking this route at all (BC-4): either way the device does
+/// the same thing, skip this cycle, so no separate signal is needed.
+async fn get_policy(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<String, StatusCode> {
+    let device_pub = q.get("device_pub").ok_or(StatusCode::BAD_REQUEST)?;
+    let business_unit = q.get("business_unit").map(String::as_str);
+    state
+        .store
+        .latest_policy_bundle(device_pub, business_unit)
+        .ok_or(StatusCode::NOT_FOUND)
+}
+
 async fn healthz() -> &'static str {
     "ok\n"
 }
@@ -275,7 +346,7 @@ async fn main() {
         std::process::exit(1);
     }
     let store = store::Store::open(&config.db_path).expect("open store");
-    let state = AppState::new(store);
+    let state = AppState::new(store, config.ca_dir.clone());
 
     // Air-gap receive: `kriyad ingest-file <outbox.ndjson>` side-loads signed bytes carried across on
     // approved media, runs the SAME offline re-verification as the wire path, then exits (no serve).
@@ -409,6 +480,35 @@ mod tests {
             1,
             "forged rejected + counted"
         );
+    }
+
+    /// BC-5 cross-version parity (P3, doc 22 §5/§8): `POST /v1/envelopes` accepts a genuine v1.1
+    /// envelope (carrying `policy_state`) exactly like a v1.0 one — the ingest path never special-cases
+    /// the new field, it flows through the same `kriya_verify::verify_envelope` + `insert_envelope`.
+    #[tokio::test]
+    async fn post_envelopes_accepts_a_v1_1_envelope_with_policy_state() {
+        let state = Arc::new(AppState::in_memory());
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../src/sample/sample-envelope-v1.1.json"
+        ))
+        .unwrap();
+        assert!(
+            fixture["envelope"]["policy_state"]["version"] == json!(13),
+            "fixture sanity: must genuinely carry policy_state"
+        );
+        let line = serde_json::to_string(&fixture).unwrap();
+
+        let (_, body) = post(state.clone(), "/v1/envelopes", line.clone()).await;
+        let r: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(r["accepted"], 1, "a v1.1 envelope is accepted like any other");
+
+        let device_pub = fixture["envelope"]["device_pub"].as_str().unwrap();
+        let rb: Value = serde_json::from_slice(
+            &get(state, &format!("/v1/verify?device_pub={device_pub}")).await,
+        )
+        .unwrap();
+        let returned = rb["envelopes"][0].as_str().unwrap();
+        assert_eq!(returned, line, "the served bytes are exactly what was stored, policy_state intact");
     }
 
     #[tokio::test]
@@ -669,6 +769,165 @@ mod tests {
         );
     }
 
+    // ── P3: POST/GET /v1/policy (doc 22 §5) ─────────────────────────────────────────────────────────
+
+    /// `KRIYAD_ORG_POLICY_PUB` is process-global state; cargo runs tests within one binary on parallel
+    /// threads by default, so every test below that sets/clears it takes this lock first (mirrors the
+    /// `ENV_LOCK` pattern already used for `$HOME`-mutating tests elsewhere in this codebase, e.g.
+    /// `control_plane::fleet::tests`). A `tokio::sync::Mutex` (not `std::sync::Mutex`) since these are
+    /// `#[tokio::test]` async tests that hold the guard across `.await` points by design (the whole
+    /// point is serializing these tests against each other, including their awaited HTTP calls).
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    fn org_key() -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[51u8; 32])
+    }
+
+    fn signed_bundle_json(key: &ed25519_dalek::SigningKey, version: u64, scope: Value) -> String {
+        let scope: kriya_verify::PolicyScope = serde_json::from_value(scope).unwrap();
+        let signed = kriya_verify::sign_policy_bundle(
+            key,
+            kriya_verify::PolicyBundle {
+                org_id: "acme".into(),
+                version,
+                issued_ms: 1000 + version,
+                expires_ms: None,
+                scope,
+                policy: json!({ "rules": [{ "action": "*", "allow": true }] }),
+                budgets: json!({ "max_actions_per_minute": 60 }),
+                govern: vec![kriya_verify::GovernDirective {
+                    target: "claude-code".into(),
+                    action: "wire".into(),
+                }],
+                envelope_verbosity: "standard".into(),
+            },
+        );
+        serde_json::to_string(&signed).unwrap()
+    }
+
+    /// With NO org key pinned at all, `POST /v1/policy` refuses ANY body — garbage never enters the
+    /// store even when it's honestly signed by SOME key, because kriyad has nothing to check it against.
+    #[tokio::test]
+    async fn post_policy_without_a_pinned_org_key_refuses_everything() {
+        let _guard = ENV_LOCK.lock().await;
+        let state = Arc::new(AppState::in_memory()); // ca_dir "." with no org-policy.pub — and the env
+        std::env::remove_var("KRIYAD_ORG_POLICY_PUB"); // var must be absent too, or a parallel test leaks it
+        let body = signed_bundle_json(&org_key(), 1, json!({}));
+        let (status, _) = post(state, "/v1/policy", body).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// The real ingest path: a genuinely org-key-signed bundle is accepted, and is then served back by
+    /// `GET /v1/policy` — kriyad never modifies it (the served bytes re-verify against the same pinned
+    /// key, byte-for-byte).
+    #[tokio::test]
+    async fn post_then_get_policy_round_trips_and_reverifies() {
+        let _guard = ENV_LOCK.lock().await;
+        let key = org_key();
+        let pub_hex = hex::encode(key.verifying_key().to_bytes());
+        std::env::set_var("KRIYAD_ORG_POLICY_PUB", &pub_hex);
+        let state = Arc::new(AppState::in_memory());
+
+        let body = signed_bundle_json(&key, 1, json!({}));
+        let (status, resp_body) = post(state.clone(), "/v1/policy", body).await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&resp_body));
+        let report: Value = serde_json::from_slice(&resp_body).unwrap();
+        assert_eq!(report["version"], 1);
+        assert_eq!(report["duplicate"], false);
+
+        let served = get(state.clone(), "/v1/policy?device_pub=devA").await;
+        let served_v: Value = serde_json::from_slice(&served).unwrap();
+        assert_eq!(served_v["bundle"]["version"], 1);
+        assert!(
+            kriya_verify::verify_policy_bundle(&served_v, &pub_hex).is_ok(),
+            "the served bytes re-verify against the pinned org key"
+        );
+
+        std::env::remove_var("KRIYAD_ORG_POLICY_PUB");
+    }
+
+    /// THE forged-signature rejection test: a bundle "signed" by a DIFFERENT key than the one pinned on
+    /// this server must be rejected 400 and never enter the store (proving the ingest-time verify is
+    /// real, not a rubber stamp).
+    #[tokio::test]
+    async fn post_policy_rejects_a_bundle_signed_by_the_wrong_key() {
+        let _guard = ENV_LOCK.lock().await;
+        let pinned = org_key();
+        let pub_hex = hex::encode(pinned.verifying_key().to_bytes());
+        std::env::set_var("KRIYAD_ORG_POLICY_PUB", &pub_hex);
+        let state = Arc::new(AppState::in_memory());
+
+        let attacker = ed25519_dalek::SigningKey::from_bytes(&[52u8; 32]);
+        let forged = signed_bundle_json(&attacker, 1, json!({}));
+        let (status, body) = post(state.clone(), "/v1/policy", forged).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{}", String::from_utf8_lossy(&body));
+
+        // Nothing was ingested — a subsequent GET has nothing to serve.
+        let (status, _) = get_raw(state, "/v1/policy?device_pub=devA").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "the forged bundle must not have been stored");
+
+        std::env::remove_var("KRIYAD_ORG_POLICY_PUB");
+    }
+
+    /// A bundle that's well-formed JSON but whose signature was tampered with AFTER signing (not just
+    /// "wrong key") must also be rejected — the same guarantee, exercised via post-signing mutation
+    /// rather than a different signer.
+    #[tokio::test]
+    async fn post_policy_rejects_tampered_bundle_content() {
+        let _guard = ENV_LOCK.lock().await;
+        let key = org_key();
+        let pub_hex = hex::encode(key.verifying_key().to_bytes());
+        std::env::set_var("KRIYAD_ORG_POLICY_PUB", &pub_hex);
+        let state = Arc::new(AppState::in_memory());
+
+        let body = signed_bundle_json(&key, 1, json!({}));
+        let mut v: Value = serde_json::from_str(&body).unwrap();
+        v["bundle"]["policy"]["rules"][0]["allow"] = json!(false); // tamper after signing
+        let (status, resp) = post(state, "/v1/policy", v.to_string()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{}", String::from_utf8_lossy(&resp));
+
+        std::env::remove_var("KRIYAD_ORG_POLICY_PUB");
+    }
+
+    /// `GET /v1/policy` 404s when nothing has been published in scope — the SAME response an old
+    /// kriyad (no route at all) would give, so a device's uniform "404 ⇒ skip this cycle" handling
+    /// covers both cases without needing to tell them apart (BC-4).
+    #[tokio::test]
+    async fn get_policy_404s_when_nothing_published() {
+        let state = Arc::new(AppState::in_memory());
+        let (status, _) = get_raw(state, "/v1/policy?device_pub=devA").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// `GET /v1/policy` requires `device_pub` (mirrors `/v1/verify`) — a caller that omits it gets a
+    /// clear 400, not a panic or an unscoped "serve everything".
+    #[tokio::test]
+    async fn get_policy_requires_device_pub() {
+        let state = Arc::new(AppState::in_memory());
+        let (status, _) = get_raw(state, "/v1/policy").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// Re-publishing an EXISTING version with DIFFERENT content is a loud 409 — never a silent
+    /// overwrite of a version devices may already have applied.
+    #[tokio::test]
+    async fn post_policy_conflicting_republish_of_a_version_is_409() {
+        let _guard = ENV_LOCK.lock().await;
+        let key = org_key();
+        let pub_hex = hex::encode(key.verifying_key().to_bytes());
+        std::env::set_var("KRIYAD_ORG_POLICY_PUB", &pub_hex);
+        let state = Arc::new(AppState::in_memory());
+
+        let (status, _) = post(state.clone(), "/v1/policy", signed_bundle_json(&key, 1, json!({}))).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let conflicting = signed_bundle_json(&key, 1, json!({ "business_unit": "different-bu" }));
+        let (status, body) = post(state, "/v1/policy", conflicting).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{}", String::from_utf8_lossy(&body));
+
+        std::env::remove_var("KRIYAD_ORG_POLICY_PUB");
+    }
+
     /// BC-5 cross-version fixture (b): an OLD-shape `/v1/coverage` response (pre-P1: only
     /// `device_pub/org_id/business_unit/last_seq/max_seq_seen/last_seen_ms/status` — none of the P1
     /// device-inventory fields exist yet) still parses correctly against the NEW `store::DeviceCoverage`
@@ -802,6 +1061,7 @@ mod tests {
                 version: "e2e".into(),
                 produced_ms: 2000,
             },
+            policy_state: None,
         };
         let signature = hex::encode(key.sign(&envelope_canonical_bytes(&env)).to_bytes());
         SignedEnvelope {

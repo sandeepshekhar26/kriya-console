@@ -19,6 +19,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use super::fleet_client::{self, DeviceCoverage, FleetConfig};
 use crate::license::require_fleet_console;
@@ -204,13 +205,124 @@ pub fn fleet_device_evidence(
     Ok(DeviceEvidence { envelopes, heartbeat })
 }
 
+// ── Policy authoring (paid, P3, doc 22 §5) ──────────────────────────────────────────────────────────
+
+/// A synthetic, non-device identity for the operator cockpit's own preview fetch — see
+/// `fleet_client::fetch_policy_preview`'s doc comment for the scope-visibility caveat this implies.
+/// Never used as a real device's identity anywhere else.
+const PREVIEW_DEVICE_PUB: &str = "_fleet_console_preview_";
+
+/// `GET /v1/policy` preview — the latest bundle this cockpit can see, parsed as JSON for the authoring
+/// UI to seed its editor from and diff a draft against. `None` when nothing is published yet (or the
+/// connected kriyad predates P3 — same 404, indistinguishable, same result either way). Requires
+/// `fleet-console`.
+#[tauri::command]
+#[cfg(feature = "control-plane")]
+pub fn fleet_policy_preview() -> Result<Option<Value>, String> {
+    require_fleet_console()?;
+    let conn = load_connection()?;
+    let cfg = to_fleet_config(&conn)?;
+    match fleet_client::fetch_policy_preview(&cfg, PREVIEW_DEVICE_PUB, None)? {
+        Some(raw) => serde_json::from_str(&raw)
+            .map(Some)
+            .map_err(|e| format!("kriyad returned malformed policy JSON: {e}")),
+        None => Ok(None),
+    }
+}
+
+/// kriyad's own ingest verdict on a publish, parsed — mirrors the `{version, duplicate}` JSON
+/// `kriya_aggregator::main::post_policy` returns on a successful `POST /v1/policy`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishResult {
+    pub version: u64,
+    pub duplicate: bool,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Author → sign → publish (doc 22 §5's operator flow). Requires `fleet-console`; the SIGNING step
+/// additionally requires an org policy key already generated (`org_policy_keygen`) — checked by
+/// `org_key::sign_with_org_key`, which errors clearly (before any network I/O) if none exists yet.
+///
+/// `version` is COMPUTED here, never operator-supplied — anti-rollback must not be foilable by an
+/// operator fat-fingering a version number. It's one more than the latest version this cockpit can see
+/// (the SAME preview fetch [`fleet_policy_preview`] uses), or `1` if nothing is published yet.
+#[tauri::command]
+#[cfg(feature = "control-plane")]
+#[allow(clippy::too_many_arguments)]
+pub fn fleet_publish_policy(
+    org_id: String,
+    business_unit: Option<String>,
+    device_pubs: Option<Vec<String>>,
+    expires_ms: Option<u64>,
+    policy: Value,
+    budgets: Value,
+    govern: Vec<kriya_verify::GovernDirective>,
+    envelope_verbosity: String,
+) -> Result<PublishResult, String> {
+    require_fleet_console()?;
+    let conn = load_connection()?;
+    let cfg = to_fleet_config(&conn)?;
+
+    let next_version = match fleet_client::fetch_policy_preview(&cfg, PREVIEW_DEVICE_PUB, None)? {
+        Some(raw) => {
+            let v: Value = serde_json::from_str(&raw)
+                .map_err(|e| format!("kriyad returned malformed policy JSON: {e}"))?;
+            v["bundle"]["version"]
+                .as_u64()
+                .ok_or("the latest published bundle has no version field")?
+                + 1
+        }
+        None => 1,
+    };
+
+    // Normalize "nothing restricted" to `None` (never an empty string / empty vec) — so a bundle
+    // that means "every device" stores and round-trips identically regardless of how the operator
+    // left the field blank, and `PolicyScope::all()`-shaped bundles never spuriously diff against
+    // themselves in the cockpit's preview.
+    let business_unit = business_unit.filter(|s| !s.trim().is_empty());
+    let device_pubs = device_pubs.filter(|v| !v.is_empty());
+
+    let bundle = kriya_verify::PolicyBundle {
+        org_id,
+        version: next_version,
+        issued_ms: now_ms(),
+        expires_ms,
+        scope: kriya_verify::PolicyScope { business_unit, device_pubs },
+        policy,
+        budgets,
+        govern,
+        envelope_verbosity,
+    };
+    let signed = crate::control_plane::org_key::sign_with_org_key(bundle)?;
+    let body = serde_json::to_string(&signed).map_err(|e| e.to_string())?;
+
+    let (status, resp_body) = fleet_client::publish_policy(&cfg, &body)?;
+    if status == 200 {
+        let parsed: Value = serde_json::from_str(&resp_body)
+            .map_err(|e| format!("malformed publish response: {e}"))?;
+        Ok(PublishResult {
+            version: parsed["version"].as_u64().unwrap_or(next_version),
+            duplicate: parsed["duplicate"].as_bool().unwrap_or(false),
+        })
+    } else {
+        Err(format!("kriyad rejected the publish (HTTP {status}): {resp_body}"))
+    }
+}
+
 #[cfg(all(test, feature = "control-plane"))]
 mod tests {
     use super::*;
 
-    /// Guards these `$HOME`-mutating tests from racing each other (cargo runs tests within one
-    /// binary on parallel threads by default) — same pattern as `govern.rs`'s `ENV_LOCK`.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// The ONE crate-wide lock (`crate::HOME_ENV_LOCK`) every `$HOME`-mutating test in this crate takes
+    /// — a per-module lock alone doesn't stop this module's tests from racing another module's.
+    use crate::HOME_ENV_LOCK as ENV_LOCK;
 
     /// Every command must reach `require_fleet_console` before touching disk/network — proven by
     /// pointing HOME at an empty temp dir (no license installed at all ⇒ definitely no `fleet-console`
@@ -266,6 +378,38 @@ mod tests {
             assert!(
                 err.contains("fleet-console") || err.contains("fleet cockpit"),
                 "must fail on the license gate: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn fleet_policy_preview_requires_license() {
+        with_empty_home(|| {
+            let err = fleet_policy_preview().unwrap_err();
+            assert!(
+                err.contains("fleet-console") || err.contains("fleet cockpit"),
+                "must fail on the license gate: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn fleet_publish_policy_requires_license_before_any_signing_or_io() {
+        with_empty_home(|| {
+            let err = fleet_publish_policy(
+                "acme".into(),
+                None,
+                None,
+                None,
+                serde_json::json!({}),
+                serde_json::json!({}),
+                vec![],
+                "standard".into(),
+            )
+            .unwrap_err();
+            assert!(
+                err.contains("fleet-console") || err.contains("fleet cockpit"),
+                "must fail on the license gate, not an org-key or connection error: {err}"
             );
         });
     }

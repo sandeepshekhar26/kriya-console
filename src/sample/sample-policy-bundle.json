@@ -1,0 +1,31 @@
+{
+  "bundle": {
+    "org_id": "acme",
+    "version": 1,
+    "issued_ms": 1783500000000,
+    "scope": {},
+    "policy": {
+      "rules": [
+        {
+          "action": "*",
+          "allow": true
+        }
+      ]
+    },
+    "budgets": {
+      "max_actions_per_minute": 60
+    },
+    "govern": [
+      {
+        "target": "claude-code",
+        "action": "wire"
+      },
+      {
+        "target": "hermes",
+        "action": "wire"
+      }
+    ],
+    "envelope_verbosity": "standard"
+  },
+  "signature": "8ab026758076cfcaa86e15590d57817d4eba8218dd2399485b1692fd52c52ded2d913fbdb21da78a14e52ee3af589572b9d805c1a775c05bab4bf14a3c7ede0a"
+}

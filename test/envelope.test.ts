@@ -35,3 +35,38 @@ describe("envelope parity — TS re-verifies a Rust-signed AttestationEnvelope",
     expect((await verifyEnvelope(tampered)).ok).toBe(false);
   });
 });
+
+// BC-5 cross-version parity (doc 22 §8, P3): `sample-envelope.json` (above) is genuinely v1.0-shaped —
+// no `policy_state` at all. `sample-envelope-v1.1.json` carries `policy_state` (envelope v1.1, P3).
+// TS's `canonicalJson` is already fully generic over whatever keys are present (never a typed struct
+// that could silently drop an unknown one), so both verify unchanged with NO code change on this side —
+// this test proves that, and is the companion to Rust's
+// `kriya_verify::envelope::tests::cross_version_fixtures_both_verify`.
+const v1_1Fixture = JSON.parse(
+  readFileSync(join(here, "../src/sample/sample-envelope-v1.1.json"), "utf8"),
+) as SignedEnvelope;
+
+describe("envelope v1.1 policy_state — BC-5 cross-version parity", () => {
+  it("verifies the v1.0 fixture (no policy_state) unchanged", async () => {
+    expect(fixture.envelope.policy_state).toBeUndefined();
+    const outcome = await verifyEnvelope(fixture);
+    expect(outcome.ok, outcome.reason).toBe(true);
+  });
+
+  it("verifies the v1.1 fixture (with policy_state present)", async () => {
+    expect(v1_1Fixture.envelope.policy_state).toBeDefined();
+    const outcome = await verifyEnvelope(v1_1Fixture);
+    expect(outcome.ok, outcome.reason).toBe(true);
+  });
+
+  it("rejects a tampered policy_state field", async () => {
+    const tampered: SignedEnvelope = {
+      ...v1_1Fixture,
+      envelope: {
+        ...v1_1Fixture.envelope,
+        policy_state: { ...(v1_1Fixture.envelope.policy_state as Record<string, unknown>), version: 999 },
+      },
+    };
+    expect((await verifyEnvelope(tampered)).ok).toBe(false);
+  });
+});

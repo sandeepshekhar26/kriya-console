@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-use kriya_verify::{SignedDeviceInfo, SignedEnvelope, SignedHeartbeat};
+use kriya_verify::{PolicyScope, SignedDeviceInfo, SignedEnvelope, SignedHeartbeat, SignedPolicyBundle};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +25,17 @@ pub const READ_BACK_ROW_CAP: i64 = 10_000;
 pub enum Ingest {
     Accepted,
     Duplicate,
+}
+
+/// The outcome of ingesting one policy bundle (P3). Unlike envelope ingest (many devices, gap-tolerant
+/// by construction), a bundle publish is a single authored, monotonic sequence from one operator, so a
+/// version COLLISION with DIFFERENT content is a loud, distinct error (see [`Store::insert_policy_bundle`])
+/// rather than a silently-ignored duplicate — an operator retry with the SAME bytes is still a safe
+/// idempotent no-op.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PolicyIngest {
+    Accepted,
+    DuplicateSameContent,
 }
 
 /// One device's coverage row (the derived liveness/completeness view).
@@ -111,6 +122,13 @@ CREATE TABLE IF NOT EXISTS envelopes (
   signed_bytes  BLOB    NOT NULL,
   signature     TEXT    NOT NULL,
   received_ms   INTEGER NOT NULL,
+  -- Envelope v1.1 (P3, doc 22 §5) — the policy freshness echo, ALL NULLABLE so a pre-P3 envelope (or
+  -- one from a device that has never applied a policy bundle) upserts/serves exactly as before (BC-4).
+  -- Read-only observability columns for a future drift view (P4) — `GET /v1/verify` keeps serving
+  -- `signed_bytes` verbatim regardless; these are never re-derived FROM the stored columns.
+  policy_state_version     INTEGER,
+  policy_state_bundle_hash TEXT,
+  policy_state_applied_ms  INTEGER,
   UNIQUE(device_pub, seq)            -- idempotency key (the roadmap's "(signer, chain_index)")
 );
 
@@ -175,6 +193,23 @@ CREATE TABLE IF NOT EXISTS devices (
 
 CREATE INDEX IF NOT EXISTS idx_env_device_seq ON envelopes(device_pub, seq);
 CREATE INDEX IF NOT EXISTS idx_env_org        ON envelopes(org_id);
+
+-- P3 (doc 22 §5): the org-policy-key-signed bundles an operator publishes. Append-only; `version` is
+-- UNIQUE (the monotonic anti-rollback key devices independently enforce again on their own side).
+-- `signed_bytes` is the EXACT bytes kriyad verified on ingest, stored verbatim for trustless read-back
+-- (GET /v1/policy serves this raw, never a re-render) — kriyad authors nothing (doc 22 §3): it verifies
+-- against the pinned org-policy.pub and stores/serves, it never constructs or modifies a bundle.
+CREATE TABLE IF NOT EXISTS policy_bundles (
+  version            INTEGER NOT NULL UNIQUE,
+  org_id             TEXT    NOT NULL,
+  issued_ms          INTEGER NOT NULL,
+  expires_ms         INTEGER,
+  scope_json         TEXT    NOT NULL,
+  envelope_verbosity TEXT    NOT NULL,
+  signed_bytes       BLOB    NOT NULL,
+  signature          TEXT    NOT NULL,
+  received_ms        INTEGER NOT NULL
+);
 "#;
 
 impl Store {
@@ -214,6 +249,10 @@ impl Store {
         received_ms: u64,
     ) -> Result<Ingest, String> {
         let e = &signed.envelope;
+        let (policy_version, policy_bundle_hash, policy_applied_ms) = match &e.policy_state {
+            Some(p) => (Some(p.version as i64), Some(p.bundle_hash.clone()), Some(p.applied_ms as i64)),
+            None => (None, None, None),
+        };
         let mut conn = self.lock();
         let tx = conn.transaction().map_err(|x| x.to_string())?;
 
@@ -222,8 +261,9 @@ impl Store {
                 "INSERT OR IGNORE INTO envelopes \
                  (device_pub,seq,prev_hash,org_id,business_unit,window_from,window_to,merkle_root,\
                   receipts,verified,failed,destructive,non_egress,non_egress_proof,signed_bytes,\
-                  signature,received_ms) \
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+                  signature,received_ms,policy_state_version,policy_state_bundle_hash,\
+                  policy_state_applied_ms) \
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
                 params![
                     e.device_pub,
                     e.seq,
@@ -242,6 +282,9 @@ impl Store {
                     raw_line,
                     signed.signature,
                     received_ms,
+                    policy_version,
+                    policy_bundle_hash,
+                    policy_applied_ms,
                 ],
             )
             .map_err(|x| x.to_string())?;
@@ -353,6 +396,94 @@ impl Store {
         )
         .map_err(|x| x.to_string())?;
         Ok(())
+    }
+
+    /// Insert one ALREADY-VERIFIED signed `PolicyBundle` (P3, doc 22 §5). `version` is UNIQUE:
+    /// - a version never seen before → inserted, `Accepted`.
+    /// - a version already stored with the IDENTICAL raw bytes (an operator's retried publish, e.g.
+    ///   after a network blip) → a safe no-op, `DuplicateSameContent`.
+    /// - a version already stored with DIFFERENT bytes → a loud `Err` (never a silent overwrite and
+    ///   never conflated with the duplicate case — the operator must bump the version, matching the
+    ///   anti-rollback contract devices enforce independently on their own side).
+    ///
+    /// `raw_line` is the EXACT bytes kriyad verified on ingest, stored verbatim so `GET /v1/policy` can
+    /// serve trustless read-back — kriyad authors nothing (doc 22 §3): it never constructs/reformats a
+    /// bundle, only verifies, stores, and serves the bytes as received.
+    pub fn insert_policy_bundle(
+        &self,
+        signed: &SignedPolicyBundle,
+        raw_line: &[u8],
+        received_ms: u64,
+    ) -> Result<PolicyIngest, String> {
+        let b = &signed.bundle;
+        let scope_json = serde_json::to_string(&b.scope).map_err(|e| e.to_string())?;
+        let conn = self.lock();
+
+        let existing: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT signed_bytes FROM policy_bundles WHERE version=?1",
+                params![b.version as i64],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some(existing_bytes) = existing {
+            return if existing_bytes == raw_line {
+                Ok(PolicyIngest::DuplicateSameContent)
+            } else {
+                Err(format!(
+                    "version {} was already published with DIFFERENT content — versions must be \
+                     strictly increasing; bump the version to publish a change",
+                    b.version
+                ))
+            };
+        }
+
+        conn.execute(
+            "INSERT INTO policy_bundles \
+             (version,org_id,issued_ms,expires_ms,scope_json,envelope_verbosity,signed_bytes,\
+              signature,received_ms) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![
+                b.version as i64,
+                b.org_id,
+                b.issued_ms as i64,
+                b.expires_ms.map(|v| v as i64),
+                scope_json,
+                b.envelope_verbosity,
+                raw_line,
+                signed.signature,
+                received_ms as i64,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(PolicyIngest::Accepted)
+    }
+
+    /// Serve the LATEST version in scope for a device (P3) — the exact stored signed bytes, verbatim
+    /// (trustless: the device re-verifies the signature itself; this is serving, never deciding).
+    /// Scans versions newest-first and returns the first whose `scope` covers this
+    /// `(device_pub, business_unit)` pair; `None` when no published bundle covers this device (the
+    /// route layer turns that into a 404, indistinguishable from — and handled identically to — an
+    /// old kriyad that lacks the route at all: either way there is nothing to apply this cycle).
+    pub fn latest_policy_bundle(&self, device_pub: &str, business_unit: Option<&str>) -> Option<String> {
+        let conn = self.lock();
+        let mut stmt = conn
+            .prepare("SELECT scope_json, signed_bytes FROM policy_bundles ORDER BY version DESC")
+            .ok()?;
+        let mut rows = stmt.query([]).ok()?;
+        while let Ok(Some(row)) = rows.next() {
+            let scope_json: String = row.get(0).ok()?;
+            let bytes: Vec<u8> = row.get(1).ok()?;
+            let scope: PolicyScope = match serde_json::from_str(&scope_json) {
+                Ok(s) => s,
+                Err(_) => continue, // a corrupt scope row is skipped, never a 500
+            };
+            if scope.covers(device_pub, business_unit) {
+                return Some(String::from_utf8_lossy(&bytes).into_owned());
+            }
+        }
+        None
     }
 
     /// Append one ALREADY-VERIFIED signed heartbeat (liveness log) and update the device's
@@ -618,6 +749,55 @@ mod tests {
         assert_eq!(last_seq as u64, signed.envelope.seq, "coverage upserted");
     }
 
+    /// Envelope v1.1 (P3, doc 22 §5): a pre-P3 envelope (no `policy_state`) stores NULL in the new
+    /// columns (BC-4 — additive, never a fabricated value); a v1.1 envelope WITH `policy_state`
+    /// populates them. Two separate stores (the two fixtures share the same fixed signing key/seq, so
+    /// inserting both into one store would collide on `UNIQUE(device_pub, seq)` — irrelevant to what
+    /// this test actually checks: what each shape stores).
+    #[test]
+    fn policy_state_columns_are_null_for_v1_0_and_populated_for_v1_1() {
+        let v1_0_store = Store::open_in_memory().unwrap();
+        let v1_0_fixture = include_str!("../../../../src/sample/sample-envelope.json");
+        let v1_0: SignedEnvelope =
+            serde_json::from_value(serde_json::from_str(v1_0_fixture).unwrap()).unwrap();
+        assert!(v1_0.envelope.policy_state.is_none(), "the v1.0 fixture must genuinely lack it");
+        v1_0_store
+            .insert_envelope(&v1_0, v1_0_fixture.as_bytes(), 1000)
+            .unwrap();
+        let (v1_0_version, v1_0_hash): (Option<i64>, Option<String>) = v1_0_store
+            .lock()
+            .query_row(
+                "SELECT policy_state_version, policy_state_bundle_hash FROM envelopes WHERE device_pub=?1",
+                [&v1_0.envelope.device_pub],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(v1_0_version, None, "pre-P3 envelope must store NULL, never a fabricated value");
+        assert_eq!(v1_0_hash, None);
+
+        let v1_1_store = Store::open_in_memory().unwrap();
+        let v1_1_fixture = include_str!("../../../../src/sample/sample-envelope-v1.1.json");
+        let v1_1: SignedEnvelope =
+            serde_json::from_value(serde_json::from_str(v1_1_fixture).unwrap()).unwrap();
+        assert!(v1_1.envelope.policy_state.is_some(), "the v1.1 fixture must genuinely carry it");
+        v1_1_store
+            .insert_envelope(&v1_1, v1_1_fixture.as_bytes(), 2000)
+            .unwrap();
+        let (v1_1_version, v1_1_hash, v1_1_applied_ms): (Option<i64>, Option<String>, Option<i64>) =
+            v1_1_store
+                .lock()
+                .query_row(
+                    "SELECT policy_state_version, policy_state_bundle_hash, policy_state_applied_ms \
+                     FROM envelopes WHERE device_pub=?1",
+                    [&v1_1.envelope.device_pub],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap();
+        assert_eq!(v1_1_version, Some(13));
+        assert_eq!(v1_1_hash, Some("deadbeefcafef00d".to_string()));
+        assert_eq!(v1_1_applied_ms, Some(1_783_500_000_000));
+    }
+
     #[test]
     fn heartbeat_updates_coverage() {
         use kriya_verify::{Heartbeat, SignedHeartbeat};
@@ -726,5 +906,126 @@ mod tests {
             "read-back bytes must re-verify"
         );
         assert_eq!(rb.heartbeat.as_deref(), Some("hbline"));
+    }
+
+    // ── P3: policy_bundles (doc 22 §5) ─────────────────────────────────────────────────────────────
+
+    fn signed_bundle(version: u64, scope: PolicyScope) -> SignedPolicyBundle {
+        use ed25519_dalek::SigningKey;
+        let key = SigningKey::from_bytes(&[31u8; 32]);
+        kriya_verify::sign_policy_bundle(
+            &key,
+            kriya_verify::PolicyBundle {
+                org_id: "acme".into(),
+                version,
+                issued_ms: 1000 + version,
+                expires_ms: None,
+                scope,
+                policy: serde_json::json!({ "rules": [] }),
+                budgets: serde_json::json!({}),
+                govern: vec![],
+                envelope_verbosity: "standard".into(),
+            },
+        )
+    }
+
+    #[test]
+    fn insert_policy_bundle_accepts_dedups_and_rejects_version_collisions() {
+        let store = Store::open_in_memory().unwrap();
+        let v1 = signed_bundle(1, PolicyScope::all());
+        let line = serde_json::to_string(&v1).unwrap();
+
+        assert_eq!(
+            store.insert_policy_bundle(&v1, line.as_bytes(), 100).unwrap(),
+            PolicyIngest::Accepted
+        );
+        // A retried publish of the IDENTICAL bytes is a safe no-op, not an error.
+        assert_eq!(
+            store.insert_policy_bundle(&v1, line.as_bytes(), 200).unwrap(),
+            PolicyIngest::DuplicateSameContent
+        );
+
+        // A DIFFERENT bundle claiming the SAME version is a loud error — never a silent overwrite.
+        let v1_different = signed_bundle(1, PolicyScope { business_unit: Some("bu-2".into()), device_pubs: None });
+        let different_line = serde_json::to_string(&v1_different).unwrap();
+        let err = store
+            .insert_policy_bundle(&v1_different, different_line.as_bytes(), 300)
+            .unwrap_err();
+        assert!(err.contains("already published"), "{err}");
+
+        let conn = store.lock();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM policy_bundles", [], |r| r.get(0))
+            .unwrap();
+        drop(conn);
+        assert_eq!(count, 1, "the rejected collision must not create a second row");
+    }
+
+    #[test]
+    fn latest_policy_bundle_serves_newest_in_scope_version() {
+        let store = Store::open_in_memory().unwrap();
+        let v1 = signed_bundle(1, PolicyScope::all());
+        let v2 = signed_bundle(2, PolicyScope::all());
+        store
+            .insert_policy_bundle(&v1, serde_json::to_string(&v1).unwrap().as_bytes(), 100)
+            .unwrap();
+        store
+            .insert_policy_bundle(&v2, serde_json::to_string(&v2).unwrap().as_bytes(), 200)
+            .unwrap();
+
+        let served = store.latest_policy_bundle("any-device", None).expect("a bundle in scope");
+        let parsed: serde_json::Value = serde_json::from_str(&served).unwrap();
+        assert_eq!(parsed["bundle"]["version"], 2, "the newest version wins");
+    }
+
+    #[test]
+    fn latest_policy_bundle_scope_filters_by_business_unit_and_device_pub() {
+        let store = Store::open_in_memory().unwrap();
+        let bu_scoped = signed_bundle(
+            1,
+            PolicyScope { business_unit: Some("enclave-7".into()), device_pubs: None },
+        );
+        store
+            .insert_policy_bundle(&bu_scoped, serde_json::to_string(&bu_scoped).unwrap().as_bytes(), 100)
+            .unwrap();
+
+        assert!(
+            store.latest_policy_bundle("devA", Some("enclave-7")).is_some(),
+            "a device in the scoped BU is served"
+        );
+        assert!(
+            store.latest_policy_bundle("devA", Some("other-bu")).is_none(),
+            "a device in a different BU is NOT served — scope filtering is serving, not deciding, but \
+             still narrows what's handed out"
+        );
+        assert!(
+            store.latest_policy_bundle("devA", None).is_none(),
+            "a device with no configured BU doesn't match a BU-scoped bundle"
+        );
+
+        // A device-list-scoped bundle at a higher version, restricted to one device.
+        let device_scoped = signed_bundle(
+            2,
+            PolicyScope { business_unit: None, device_pubs: Some(vec!["devB".into()]) },
+        );
+        store
+            .insert_policy_bundle(&device_scoped, serde_json::to_string(&device_scoped).unwrap().as_bytes(), 200)
+            .unwrap();
+
+        // devB is covered by v2 (device-scoped) — the newest version in ITS scope.
+        let served = store.latest_policy_bundle("devB", None).expect("devB is explicitly scoped");
+        let parsed: serde_json::Value = serde_json::from_str(&served).unwrap();
+        assert_eq!(parsed["bundle"]["version"], 2);
+
+        // devA is still only covered by the BU-scoped v1 (v2 doesn't cover it) — falls through to v1.
+        let served = store.latest_policy_bundle("devA", Some("enclave-7")).expect("devA covered by v1");
+        let parsed: serde_json::Value = serde_json::from_str(&served).unwrap();
+        assert_eq!(parsed["bundle"]["version"], 1);
+    }
+
+    #[test]
+    fn latest_policy_bundle_is_none_when_nothing_published() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.latest_policy_bundle("devA", None).is_none());
     }
 }

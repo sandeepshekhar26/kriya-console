@@ -123,6 +123,8 @@ mod tests {
             prev_envelope_hash: prev,
             produced_ms: 1,
             sources: vec![],
+            envelope_verbosity: "standard".into(),
+            policy_state: None,
         };
         build_signed_envelope(&input, &SigningKey::from_bytes(&[11u8; 32]), &[3u8; 32]).unwrap()
     }
