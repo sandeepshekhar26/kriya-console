@@ -7,11 +7,14 @@
 //! the license grants `control-plane` AND `~/.kriya/console/enrollment.json` exists.
 //!
 //! Modules: [`enrollment`] (1.3), [`envelope`] (1.8/1.10), [`redact`] (1.9), [`outbox`] (1.11),
-//! [`compiler`] (1.14–1.18), [`push`] (2.7 — mTLS + air-gap transport).
+//! [`compiler`] (1.14–1.18), [`push`] (2.7 — mTLS + air-gap transport), [`fleet_client`] (P0 — the
+//! OPERATOR cockpit's outbound mTLS pull client), [`fleet`] (P0 — the Tauri IPC layer over it).
 
 pub mod compiler;
 pub mod enrollment;
 pub mod envelope;
+pub mod fleet;
+pub mod fleet_client;
 pub mod outbox;
 pub mod push;
 pub mod redact;

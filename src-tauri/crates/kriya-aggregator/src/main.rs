@@ -71,8 +71,19 @@ async fn get_coverage(
     Json(state.store.coverage(now_ms(), SILENT_AFTER_MS, org))
 }
 
+/// The maximum `to_seq - from_seq` window this route accepts from an EXPLICIT range (doc 22 §11 DoS
+/// hardening). Mirrors `store::READ_BACK_ROW_CAP` — kept as its own constant (rather than reusing the
+/// store's) because this one gates the wire contract (what the route rejects), not the data layer.
+const MAX_VERIFY_WINDOW: u64 = 10_000;
+
 /// GET /v1/verify?device_pub=…&from_seq=…&to_seq=… — trustless read-back: the EXACT stored signed
 /// bytes for the contiguous slice + the device's most-recent signed heartbeat (the tail anchor).
+///
+/// DoS hardening (doc 22 §11): an EXPLICITLY supplied window wider than `MAX_VERIFY_WINDOW` is
+/// rejected with 400 + a JSON error body. A caller that omits `to_seq` (legacy behavior: defaults to
+/// `u64::MAX`, i.e. "everything from `from_seq` on") is NOT rejected here — that's an implicit
+/// unbounded request, not an explicit oversized one, so it keeps working exactly as before (BC-4) and
+/// is instead capped at the data layer by `store::read_back`'s row limit (defense in depth).
 async fn get_verify(
     State(state): State<Arc<AppState>>,
     Query(q): Query<HashMap<String, String>>,
@@ -80,11 +91,24 @@ async fn get_verify(
     let device_pub = q
         .get("device_pub")
         .ok_or((StatusCode::BAD_REQUEST, "device_pub required\n".to_string()))?;
-    let from_seq = q.get("from_seq").and_then(|s| s.parse().ok()).unwrap_or(0);
-    let to_seq = q
-        .get("to_seq")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(u64::MAX);
+    let from_seq: u64 = q.get("from_seq").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let to_seq_explicit: Option<u64> = q.get("to_seq").and_then(|s| s.parse().ok());
+    if let Some(to_seq) = to_seq_explicit {
+        if to_seq.saturating_sub(from_seq) > MAX_VERIFY_WINDOW {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                json!({
+                    "error": "window_too_large",
+                    "message": format!(
+                        "to_seq - from_seq exceeds the maximum window of {MAX_VERIFY_WINDOW}"
+                    ),
+                    "max_window": MAX_VERIFY_WINDOW,
+                })
+                .to_string(),
+            ));
+        }
+    }
+    let to_seq = to_seq_explicit.unwrap_or(u64::MAX);
     Ok(Json(state.store.read_back(device_pub, from_seq, to_seq)))
 }
 
@@ -401,6 +425,23 @@ mod tests {
             .to_vec()
     }
 
+    /// Like `get`, but doesn't assert 200 — for exercising 4xx paths (e.g. the /v1/verify range cap).
+    async fn get_raw(state: Arc<AppState>, uri: &str) -> (StatusCode, Vec<u8>) {
+        let resp = app(state)
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = resp
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec();
+        (status, bytes)
+    }
+
     /// A real device-signed envelope (seq 1, genesis) the kriya-verify core accepts: coherent counts,
     /// well-formed merkle_root, no sealed `MinimizedAction` (empty actions). Signed with `key`.
     fn build_envelope(
@@ -533,6 +574,103 @@ mod tests {
             rb2.envelopes[0], env_line,
             "air-gap read-back is byte-identical to the wire path"
         );
+    }
+
+    /// doc 22 §11 DoS hardening: /v1/verify rejects an EXPLICIT window wider than `MAX_VERIFY_WINDOW`
+    /// with 400 + a JSON error body, while a request with no range (or a small range) — the legacy
+    /// caller's shape — keeps working exactly as before (BC-4: additive, never breaks an old client).
+    #[tokio::test]
+    async fn get_verify_rejects_oversized_window_but_keeps_legacy_callers_working() {
+        use ed25519_dalek::SigningKey;
+        let key = SigningKey::from_bytes(&[9u8; 32]);
+        let device_pub = hex::encode(key.verifying_key().to_bytes());
+        let state = Arc::new(AppState::in_memory());
+        let env_line = serde_json::to_string(&build_envelope(&key, 1, None)).unwrap();
+        let (_, body) = post(state.clone(), "/v1/envelopes", env_line.clone()).await;
+        let r: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(r["accepted"], 1);
+
+        // An explicit window > 10_000 is rejected with 400 + a JSON error body.
+        let (status, body) = get_raw(
+            state.clone(),
+            &format!("/v1/verify?device_pub={device_pub}&from_seq=0&to_seq=10001"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "oversized window rejected");
+        let err: Value = serde_json::from_slice(&body)
+            .expect("the 400 body is JSON, not the plain-text style used elsewhere");
+        assert_eq!(err["error"], "window_too_large");
+        assert_eq!(err["max_window"], 10_000);
+
+        // A window exactly AT the cap is accepted (boundary — not off-by-one rejected).
+        let (status, _) = get_raw(
+            state.clone(),
+            &format!("/v1/verify?device_pub={device_pub}&from_seq=0&to_seq=10000"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "a window exactly at the cap is fine");
+
+        // A legacy caller with NO range at all keeps working (defaults to 0..=u64::MAX server-side,
+        // which is never rejected at the route layer — it's capped, not refused, at the data layer).
+        let (status, body) =
+            get_raw(state.clone(), &format!("/v1/verify?device_pub={device_pub}")).await;
+        assert_eq!(status, StatusCode::OK, "no-range legacy request still works");
+        let rb: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            rb["envelopes"][0].as_str().unwrap(),
+            env_line,
+            "legacy no-range read-back is unchanged"
+        );
+
+        // A small explicit range (the common case) is unaffected.
+        let (status, _) = get_raw(
+            state,
+            &format!("/v1/verify?device_pub={device_pub}&from_seq=0&to_seq=5"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "a small explicit range still works");
+    }
+
+    /// doc 22 §11 DoS hardening, data layer: `store::read_back` never returns more than
+    /// `READ_BACK_ROW_CAP` rows, even when asked for an enormous (or fully unbounded) window — the
+    /// defense-in-depth backstop behind the route-layer 400 in `get_verify`.
+    #[test]
+    fn read_back_row_cap_bounds_result_size_regardless_of_window() {
+        use ed25519_dalek::SigningKey;
+        let key = SigningKey::from_bytes(&[11u8; 32]);
+        let device_pub = hex::encode(key.verifying_key().to_bytes());
+        let store = store::Store::open_in_memory().unwrap();
+
+        // Insert more rows than the cap so the cap is actually exercised, not vacuously true.
+        let n: u64 = store::READ_BACK_ROW_CAP as u64 + 25;
+        let mut prev_hash: Option<String> = None;
+        for seq in 1..=n {
+            let env = build_envelope(&key, seq, prev_hash.clone());
+            let line = serde_json::to_string(&env).unwrap();
+            prev_hash = Some(kriya_verify::sha256_hex(&kriya_verify::canonical_json_bytes(
+                &serde_json::to_value(&env).unwrap(),
+            )));
+            store
+                .insert_envelope(&env, line.as_bytes(), seq)
+                .expect("insert");
+        }
+
+        // Fully unbounded (the legacy no-range default) is capped, not exhaustive.
+        let rb = store.read_back(&device_pub, 0, u64::MAX);
+        assert_eq!(
+            rb.envelopes.len(),
+            store::READ_BACK_ROW_CAP as usize,
+            "unbounded read-back is capped at READ_BACK_ROW_CAP, not the full {n} rows"
+        );
+        assert_eq!(
+            rb.envelopes[0],
+            serde_json::to_string(&build_envelope(&key, 1, None)).unwrap(),
+            "capped read-back still returns the earliest rows in seq order, byte-identical"
+        );
+
+        // A small range well under the cap is returned in full, unaffected.
+        let small = store.read_back(&device_pub, 1, 5);
+        assert_eq!(small.envelopes.len(), 5, "a small range is unaffected by the cap");
     }
 
     /// Emitter (not a test): regenerate the committed pilot fixtures the real-binary demo

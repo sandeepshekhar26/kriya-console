@@ -72,6 +72,16 @@ pub fn run() {
             // Paid (Rust, license-gated).
             paid::fleet_correlation,
             paid::export_compliance,
+            // Fleet cockpit (P0, license-gated on `fleet-console` — separate from `control-plane`,
+            // which gates the device-side subtree these commands live under). Present in the
+            // generated handler ONLY in a control-plane build; a default/free build has neither the
+            // `control_plane` module nor these three entries (BC-1).
+            #[cfg(feature = "control-plane")]
+            control_plane::fleet::fleet_connect,
+            #[cfg(feature = "control-plane")]
+            control_plane::fleet::fleet_coverage,
+            #[cfg(feature = "control-plane")]
+            control_plane::fleet::fleet_device_evidence,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Kriya Console");

@@ -127,6 +127,25 @@ pub fn require_control_plane() -> Result<(), String> {
     }
 }
 
+/// True when `s` is a valid license granting the `fleet-console` feature flag. Pure (testable without
+/// touching disk); the disk read happens in [`require_fleet_console`].
+fn has_fleet_console(s: &LicenseStatus) -> bool {
+    s.valid && s.features.iter().any(|f| f == "fleet-console")
+}
+
+/// The gate the fleet cockpit consults (P0+) — the analog of [`require_control_plane`] for the
+/// `fleet-console` feature. `Ok(())` only when a valid installed license grants it.
+pub fn require_fleet_console() -> Result<(), String> {
+    let s = current_status();
+    if has_fleet_console(&s) {
+        Ok(())
+    } else {
+        Err(s.reason.unwrap_or_else(|| {
+            "the fleet cockpit requires a license with the `fleet-console` feature".into()
+        }))
+    }
+}
+
 // ── Tauri commands ───────────────────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -267,6 +286,39 @@ mod tests {
                 ..granted.clone()
             }),
             "an invalid license never grants control-plane"
+        );
+    }
+
+    /// The fleet-console grant requires BOTH validity AND the `fleet-console` feature flag (the
+    /// pure predicate behind `require_fleet_console`; seed-independent — no disk, no dev key).
+    #[test]
+    fn has_fleet_console_requires_validity_and_the_flag() {
+        let granted = LicenseStatus {
+            tier: "pro".into(),
+            valid: true,
+            holder: Some("Acme Regulated Co".into()),
+            features: vec!["compliance-export".into(), "fleet-console".into()],
+            expires_ms: None,
+            license_id: Some("dev-1".into()),
+            reason: None,
+        };
+        assert!(
+            has_fleet_console(&granted),
+            "valid license with the flag grants it"
+        );
+        assert!(
+            !has_fleet_console(&LicenseStatus {
+                features: vec!["compliance-export".into()],
+                ..granted.clone()
+            }),
+            "the fleet-console flag is required"
+        );
+        assert!(
+            !has_fleet_console(&LicenseStatus {
+                valid: false,
+                ..granted.clone()
+            }),
+            "an invalid license never grants fleet-console"
         );
     }
 }
