@@ -5,9 +5,9 @@
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-use kriya_verify::{SignedEnvelope, SignedHeartbeat};
+use kriya_verify::{SignedDeviceInfo, SignedEnvelope, SignedHeartbeat};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -28,7 +28,13 @@ pub enum Ingest {
 }
 
 /// One device's coverage row (the derived liveness/completeness view).
-#[derive(Debug, Serialize)]
+///
+/// Derives `Deserialize` too (not just `Serialize`) so BC-5 cross-version fixture tests can parse a
+/// COMMITTED pre-P1 `/v1/coverage` JSON sample straight into this (new, superset) shape and assert
+/// every P1 field lands as `None` — see
+/// `main::tests::old_shape_coverage_fixture_parses_as_new_device_coverage_shape`. Production code
+/// only ever serializes this type; deserialization is a test-only convenience of the same derive.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DeviceCoverage {
     pub device_pub: String,
     pub org_id: Option<String>,
@@ -38,6 +44,39 @@ pub struct DeviceCoverage {
     pub last_seen_ms: i64,
     /// `current` · `behind` (a heartbeat claims a higher seq than is stored) · `silent` (stale).
     pub status: String,
+
+    // --- doc 22 §7 device-inventory passthrough (P1) — ADDITIVE, optional, ABSENT (not null) when a
+    // device has never posted a DeviceInfo beacon (pre-P1 devices, or ones that simply haven't beaconed
+    // yet). Old cockpit clients parsing this JSON ignore unknown fields (BC-4); new clients get `null`/
+    // absent as the honest "inventory: n/a" signal, never an error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub console_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verify_crate_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_platform: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_arch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_applied_version: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_bundle_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outbox_pending: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enrolled_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_label: Option<String>,
+    /// The full `agents[]` array (doc 22 §7), stored/returned as opaque JSON — not worth its own table
+    /// for a fleet-table passthrough; the cockpit already has `kriya_verify::AgentInfo` to parse it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agents: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub info_collected_ms: Option<i64>,
 }
 
 /// A trustless read-back: the EXACT stored signed bytes + the device's most-recent signed heartbeat
@@ -110,7 +149,28 @@ CREATE TABLE IF NOT EXISTS devices (
   business_unit TEXT,
   last_seq      INTEGER,
   max_seq_seen  INTEGER,
-  last_seen_ms  INTEGER
+  last_seen_ms  INTEGER,
+
+  -- doc 22 §7 device-inventory beacon (P1) — ALL NULLABLE so old rows (pre-P1 devices, or ones that
+  -- haven't beaconed yet) keep upserting/serving exactly as before (BC-4). `info_signed_bytes` is the
+  -- RAW bytes verbatim (BC-5: re-verification must run on received bytes, never a reconstruction);
+  -- everything else is a parsed convenience column for querying/filtering. NEVER a source-IP column —
+  -- doc 22 §7's GDPR exclusion table forbids persisting it (kriyad sees it at the transport layer only).
+  info_signed_bytes        BLOB,
+  info_signature            TEXT,
+  info_collected_ms         INTEGER,
+  console_version           TEXT,
+  runtime_version            TEXT,
+  verify_crate_version       TEXT,
+  os_platform                TEXT,
+  os_version                 TEXT,
+  os_arch                    TEXT,
+  policy_applied_version     INTEGER,
+  policy_bundle_hash         TEXT,
+  outbox_pending             INTEGER,
+  enrolled_ms                INTEGER,
+  device_label               TEXT,
+  agents_json                TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_env_device_seq ON envelopes(device_pub, seq);
@@ -225,6 +285,76 @@ impl Store {
         Ok(Ingest::Accepted)
     }
 
+    /// Upsert one ALREADY-VERIFIED signed DeviceInfo beacon (doc 22 §7, P1) into the `devices` row —
+    /// creating the row if this is the FIRST beacon kriyad has ever seen from this `device_pub` (mirrors
+    /// `insert_envelope`/`insert_heartbeat`'s own upsert convention: a never-before-seen device gets a
+    /// row created, never rejected). `raw_line` is the EXACT bytes the device signed, stored verbatim in
+    /// `info_signed_bytes` for future re-verification/read-back (BC-5) — everything else here is a
+    /// parsed convenience column threaded onto the SAME row `insert_envelope`/`insert_heartbeat` already
+    /// maintain, never persisting a source/peer IP (doc 22 §7's GDPR exclusion table).
+    pub fn insert_device_info(
+        &self,
+        signed: &SignedDeviceInfo,
+        raw_line: &[u8],
+        received_ms: u64,
+    ) -> Result<(), String> {
+        let info = &signed.info;
+        let (policy_applied_version, policy_bundle_hash) = match &info.policy {
+            Some(p) => (Some(p.applied_version as i64), Some(p.bundle_hash.clone())),
+            None => (None, None),
+        };
+        let agents_json = serde_json::to_string(&info.agents).map_err(|e| e.to_string())?;
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO devices \
+             (device_pub,last_seq,max_seq_seen,last_seen_ms,info_signed_bytes,info_signature,\
+              info_collected_ms,console_version,runtime_version,verify_crate_version,os_platform,\
+              os_version,os_arch,policy_applied_version,policy_bundle_hash,outbox_pending,enrolled_ms,\
+              device_label,agents_json) \
+             VALUES (?1,COALESCE((SELECT last_seq FROM devices WHERE device_pub=?1),0),\
+                     COALESCE((SELECT max_seq_seen FROM devices WHERE device_pub=?1),0),?2,\
+                     ?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17) \
+             ON CONFLICT(device_pub) DO UPDATE SET \
+               last_seen_ms=MAX(COALESCE(last_seen_ms,0), excluded.last_seen_ms), \
+               info_signed_bytes=excluded.info_signed_bytes, \
+               info_signature=excluded.info_signature, \
+               info_collected_ms=excluded.info_collected_ms, \
+               console_version=excluded.console_version, \
+               runtime_version=excluded.runtime_version, \
+               verify_crate_version=excluded.verify_crate_version, \
+               os_platform=excluded.os_platform, \
+               os_version=excluded.os_version, \
+               os_arch=excluded.os_arch, \
+               policy_applied_version=excluded.policy_applied_version, \
+               policy_bundle_hash=excluded.policy_bundle_hash, \
+               outbox_pending=excluded.outbox_pending, \
+               enrolled_ms=excluded.enrolled_ms, \
+               device_label=excluded.device_label, \
+               agents_json=excluded.agents_json",
+            params![
+                signed.device_pub,
+                received_ms,
+                raw_line,
+                signed.signature,
+                signed.collected_ms,
+                info.console_version,
+                info.runtime_version,
+                info.verify_crate_version,
+                info.os.platform,
+                info.os.version,
+                info.os.arch,
+                policy_applied_version,
+                policy_bundle_hash,
+                info.outbox_pending as i64,
+                info.enrolled_ms as i64,
+                info.device_label,
+                agents_json,
+            ],
+        )
+        .map_err(|x| x.to_string())?;
+        Ok(())
+    }
+
     /// Append one ALREADY-VERIFIED signed heartbeat (liveness log) and update the device's
     /// `max_seq_seen` + `last_seen_ms` (the coverage anchor).
     pub fn insert_heartbeat(
@@ -268,7 +398,11 @@ impl Store {
         let mut stmt = conn
             .prepare(
                 "SELECT device_pub, org_id, business_unit, COALESCE(last_seq,0), \
-                 COALESCE(max_seq_seen,0), COALESCE(last_seen_ms,0) FROM devices ORDER BY device_pub",
+                 COALESCE(max_seq_seen,0), COALESCE(last_seen_ms,0), \
+                 console_version, runtime_version, verify_crate_version, os_platform, os_version, \
+                 os_arch, policy_applied_version, policy_bundle_hash, outbox_pending, enrolled_ms, \
+                 device_label, agents_json, info_collected_ms \
+                 FROM devices ORDER BY device_pub",
             )
             .expect("prepare coverage");
         let rows = stmt
@@ -280,13 +414,46 @@ impl Store {
                     r.get::<_, i64>(3)?,
                     r.get::<_, i64>(4)?,
                     r.get::<_, i64>(5)?,
+                    r.get::<_, Option<String>>(6)?,
+                    r.get::<_, Option<String>>(7)?,
+                    r.get::<_, Option<String>>(8)?,
+                    r.get::<_, Option<String>>(9)?,
+                    r.get::<_, Option<String>>(10)?,
+                    r.get::<_, Option<String>>(11)?,
+                    r.get::<_, Option<i64>>(12)?,
+                    r.get::<_, Option<String>>(13)?,
+                    r.get::<_, Option<i64>>(14)?,
+                    r.get::<_, Option<i64>>(15)?,
+                    r.get::<_, Option<String>>(16)?,
+                    r.get::<_, Option<String>>(17)?,
+                    r.get::<_, Option<i64>>(18)?,
                 ))
             })
             .expect("query coverage");
         rows.filter_map(Result::ok)
             .filter(|(_, org, ..)| org_filter.map_or(true, |o| org.as_deref() == Some(o)))
             .map(
-                |(device_pub, org_id, business_unit, last_seq, max_seq_seen, last_seen_ms)| {
+                |(
+                    device_pub,
+                    org_id,
+                    business_unit,
+                    last_seq,
+                    max_seq_seen,
+                    last_seen_ms,
+                    console_version,
+                    runtime_version,
+                    verify_crate_version,
+                    os_platform,
+                    os_version,
+                    os_arch,
+                    policy_applied_version,
+                    policy_bundle_hash,
+                    outbox_pending,
+                    enrolled_ms,
+                    device_label,
+                    agents_json,
+                    info_collected_ms,
+                )| {
                     let status = if now_ms.saturating_sub(last_seen_ms as u64) > silent_after_ms {
                         "silent"
                     } else if max_seq_seen > last_seq {
@@ -294,6 +461,9 @@ impl Store {
                     } else {
                         "current"
                     };
+                    let agents = agents_json
+                        .as_deref()
+                        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
                     DeviceCoverage {
                         device_pub,
                         org_id,
@@ -302,6 +472,19 @@ impl Store {
                         max_seq_seen,
                         last_seen_ms,
                         status: status.into(),
+                        console_version,
+                        runtime_version,
+                        verify_crate_version,
+                        os_platform,
+                        os_version,
+                        os_arch,
+                        policy_applied_version,
+                        policy_bundle_hash,
+                        outbox_pending,
+                        enrolled_ms,
+                        device_label,
+                        agents,
+                        info_collected_ms,
                     }
                 },
             )

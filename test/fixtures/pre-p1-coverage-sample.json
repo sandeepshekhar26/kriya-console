@@ -1,0 +1,11 @@
+[
+  {
+    "device_pub": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+    "org_id": "acme",
+    "business_unit": null,
+    "last_seq": 2,
+    "max_seq_seen": 2,
+    "last_seen_ms": 1500,
+    "status": "current"
+  }
+]
