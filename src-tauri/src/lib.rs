@@ -57,6 +57,9 @@ pub fn run() {
             govern::governable_surface,
             govern::install_hook,
             govern::uninstall_hook,
+            // Free: the Console-authored policy file every seam above wires via --policy (B0).
+            govern::save_agent_policy,
+            govern::load_agent_policy,
             // Free: govern-all orchestrator (GA-1) — preview → apply → revert, idempotent.
             govern::govern_preview,
             govern::govern_all,

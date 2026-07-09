@@ -123,6 +123,101 @@ pub fn hermes_config_path() -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The Console-authored policy (B0, doc 22 §11) — persistence + wiring into every enforcement
+// seam. Before this, PolicyView.tsx authored a policy that was never written to any file the
+// runtime could load, and every install path below omitted --policy entirely: a policy the
+// operator marked "deny" was silently unenforced (the built-in default is allow-all), which is
+// the founder-reported B0 bug. Fixed by (a) persisting the authored YAML to one stable,
+// runtime-visible path, and (b) always passing --policy at it from every seam that installs a
+// hook or wraps an MCP server.
+// ---------------------------------------------------------------------------------------------
+
+/// `~/.kriya/agent-policy.yaml` — the stable path `onboarding.rs::policy_present()` already
+/// checks for as "where the runtime would load it." Lives directly under `~/.kriya/` (not
+/// `~/.kriya/console/`, which is Console-private state) because the runtime binaries
+/// (`kriya-hook`, `kriya-hermes-hook`, `kriya-gateway`) must read it too.
+pub fn agent_policy_path() -> PathBuf {
+    home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".kriya")
+        .join("agent-policy.yaml")
+}
+
+/// Byte-identical to `kriya-hook`'s/`kriya-hermes-hook`'s own built-in `DEFAULT_POLICY_YAML` —
+/// record-only, allow everything. Writing this changes nothing about current enforcement
+/// behavior until the operator authors a real rule; it exists purely so `--policy <path>` always
+/// points at a real file (never a dangling one) the moment any seam starts passing the flag.
+const PERMISSIVE_DEFAULT_POLICY_YAML: &str = "rules:\n  - { action: \"*\", allow: true }\n";
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicySaveResult {
+    pub path: String,
+    pub bytes: usize,
+}
+
+/// Persist the Console-authored policy YAML to the stable, runtime-visible path. Called on every
+/// policy edit (debounced from the frontend) so every seam that resolves `--policy` via
+/// [`ensure_policy_file`] always points at what the operator most recently authored.
+#[tauri::command]
+pub fn save_agent_policy(yaml: String) -> Result<PolicySaveResult, String> {
+    let path = agent_policy_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("creating {}: {e}", parent.display()))?;
+    }
+    std::fs::write(&path, &yaml).map_err(|e| format!("writing {}: {e}", path.display()))?;
+    Ok(PolicySaveResult { path: path.to_string_lossy().into_owned(), bytes: yaml.len() })
+}
+
+/// Read the currently-persisted policy YAML, so a relaunched Console restores what was last
+/// saved instead of resetting to the frontend's in-memory default every launch. `None` if the
+/// file doesn't exist yet (a fresh install that has never saved a policy).
+#[tauri::command]
+pub fn load_agent_policy() -> Option<String> {
+    std::fs::read_to_string(agent_policy_path()).ok()
+}
+
+/// Ensure `agent_policy_path()` exists — writing the permissive built-in default if absent —
+/// BEFORE any enforcement-install path references it via `--policy`. Idempotent and
+/// **never overwrites an already-authored policy** (unlike [`save_agent_policy`], which always
+/// overwrites: that split is what preserves doc 19's "never brick the agent on install" intent
+/// now that `--policy` is always passed — an operator who runs "Govern everything" without ever
+/// opening the Policy view still gets a valid, existing `--policy` target). The one place that
+/// answers "which file does `--policy` point at" — every enforcement-install call site (this
+/// module's hook/hermes-hook/gateway-wrap installers, and `onboarding.rs::build_args`) resolves
+/// the path through this function, never re-derives it, so there is exactly one source of truth.
+pub(crate) fn ensure_policy_file() -> Result<PathBuf, String> {
+    let path = agent_policy_path();
+    if !path.is_file() {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("creating {}: {e}", parent.display()))?;
+        }
+        std::fs::write(&path, PERMISSIVE_DEFAULT_POLICY_YAML)
+            .map_err(|e| format!("writing {}: {e}", path.display()))?;
+    }
+    Ok(path)
+}
+
+/// Mirrors `onboarding.rs::wire_claude_config`'s own `unwrap_or_else(|| "gui".to_string())`
+/// convention (line ~312) — the hook-install path below never adopted it, silently falling back
+/// to `kriya-hook`'s own hardcoded `"deny"` default instead: a `RequiresApproval` decision would
+/// auto-deny with **zero interactive surface** (no tty prompt, no GUI dialog — nothing), which is
+/// indistinguishable, from the operator's chair, from "the approval tier didn't do anything" —
+/// the second half of the B0 bug report. `GuiApproval` is macOS-only in the runtime; `"tty"` is
+/// the correct non-macOS fallback, not `"deny"` — that would just relocate the same bug. Unlike a
+/// hardcoded `"deny"`, `"tty"` at least attempts an interactive prompt when Claude Code runs in a
+/// real terminal, and degrades safely to a denial (now self-bounded at 300s, closing a related
+/// fail-open gap) when no `/dev/tty` is reachable.
+pub(crate) fn default_approval_mode() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "gui"
+    } else {
+        "tty"
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Config read / write — all merge logic runs on a serde_json::Value; format is an edge concern.
 // ---------------------------------------------------------------------------------------------
 
@@ -253,8 +348,10 @@ fn is_local_stdio(entry: &Value) -> bool {
 
 /// Wrap a local stdio server entry so its `tools/call`s route through the gateway (policy → approval
 /// → signed receipt). Preserves every sibling key (`env`, …); only `command`/`args` change. Returns
-/// `None` when the entry is not a wrappable local stdio server.
-fn wrap_entry(entry: &Value, gateway: &str, actor: &str, approval: &str) -> Option<Value> {
+/// `None` when the entry is not a wrappable local stdio server. `policy` is inserted BEFORE the
+/// `--` separator (a gateway flag, never forwarded to the downstream command), so [`unwrap_entry`]'s
+/// reconstruction — which only looks after `--` — is unaffected by its presence (B0).
+fn wrap_entry(entry: &Value, gateway: &str, actor: &str, approval: &str, policy: &str) -> Option<Value> {
     if !is_local_stdio(entry) {
         return None;
     }
@@ -266,6 +363,8 @@ fn wrap_entry(entry: &Value, gateway: &str, actor: &str, approval: &str) -> Opti
         .unwrap_or_default();
     let mut args: Vec<Value> = vec![
         json!("proxy"),
+        json!("--policy"),
+        json!(policy),
         json!("--approval"),
         json!(approval),
         json!("--actor"),
@@ -326,8 +425,13 @@ fn shell_quote(path: &str) -> String {
     }
 }
 
-fn hook_group(hook_cmd_quoted: &str, mode: &str) -> Value {
-    json!({ "hooks": [ { "type": "command", "command": format!("{hook_cmd_quoted} {mode}") } ] })
+/// `policy_quoted` and `approval` close the B0 bug: previously this command carried neither flag,
+/// so an installed hook always ran the permissive built-in default (a policy the operator marked
+/// "deny" was silently unenforced) and any `RequiresApproval` decision silently auto-denied with
+/// zero interactive surface (`kriya-hook`'s own hardcoded fallback). `policy_quoted` is expected
+/// pre-quoted by the caller (same convention as `hook_cmd_quoted`).
+fn hook_group(hook_cmd_quoted: &str, mode: &str, policy_quoted: &str, approval: &str) -> Value {
+    json!({ "hooks": [ { "type": "command", "command": format!("{hook_cmd_quoted} {mode} --policy {policy_quoted} --approval {approval}") } ] })
 }
 
 /// Does a settings config already carry a kriya-hook block? Mirrors [`crate::coverage::hook_configured`]
@@ -358,7 +462,7 @@ fn group_is_kriya(group: &Value) -> bool {
 
 /// Merge the kriya-hook `PreToolUse`/`PostToolUse` groups into a settings `Value`. Idempotent (drops
 /// any prior kriya group before appending) and non-clobbering (leaves every other group untouched).
-fn install_hook_block(config: &mut Value, hook_cmd_quoted: &str) {
+fn install_hook_block(config: &mut Value, hook_cmd_quoted: &str, policy_quoted: &str, approval: &str) {
     if !config.is_object() {
         *config = json!({});
     }
@@ -375,7 +479,7 @@ fn install_hook_block(config: &mut Value, hook_cmd_quoted: &str) {
         }
         let list = arr.as_array_mut().unwrap();
         list.retain(|g| !group_is_kriya(g));
-        list.push(hook_group(hook_cmd_quoted, mode));
+        list.push(hook_group(hook_cmd_quoted, mode, policy_quoted, approval));
     }
 }
 
@@ -416,9 +520,10 @@ const HERMES_HOOK_MARK: &str = "kriya-hermes-hook";
 /// matches everything), the same "whole lane, zero per-tool config" property `kriya-hook` has for
 /// Claude Code. `timeout: 300` is Hermes' own hard per-hook cap, matching `GuiApproval`'s own
 /// `osascript … giving up after 300` so a pending approval dialog gets the full window either
-/// side can give it.
-fn hermes_hook_entry(hook_cmd_quoted: &str, mode: &str) -> Value {
-    json!({ "command": format!("{hook_cmd_quoted} {mode}"), "timeout": 300 })
+/// side can give it. `policy_quoted`/`approval` mirror [`hook_group`]'s own B0 fix — same bug,
+/// same seam, same fix.
+fn hermes_hook_entry(hook_cmd_quoted: &str, mode: &str, policy_quoted: &str, approval: &str) -> Value {
+    json!({ "command": format!("{hook_cmd_quoted} {mode} --policy {policy_quoted} --approval {approval}"), "timeout": 300 })
 }
 
 /// Does a Hermes config already carry a kriya-hermes-hook entry? Mirrors
@@ -446,7 +551,7 @@ fn hermes_entry_is_kriya(entry: &Value) -> bool {
 /// flag needed) to skip Hermes' own interactive first-use TTY consent prompt, so installing this
 /// is a single config write with no follow-up terminal step. Idempotent (drops any prior kriya
 /// entry before appending) and non-clobbering of every OTHER hook event/entry.
-fn install_hermes_hook_block(config: &mut Value, hook_cmd_quoted: &str) {
+fn install_hermes_hook_block(config: &mut Value, hook_cmd_quoted: &str, policy_quoted: &str, approval: &str) {
     if !config.is_object() {
         *config = json!({});
     }
@@ -463,7 +568,7 @@ fn install_hermes_hook_block(config: &mut Value, hook_cmd_quoted: &str) {
         }
         let list = arr.as_array_mut().unwrap();
         list.retain(|e| !hermes_entry_is_kriya(e));
-        list.push(hermes_hook_entry(hook_cmd_quoted, mode));
+        list.push(hermes_hook_entry(hook_cmd_quoted, mode, policy_quoted, approval));
     }
     obj.insert("hooks_auto_accept".into(), json!(true));
 }
@@ -783,9 +888,13 @@ pub struct HookResult {
     pub installed: bool,
 }
 
-/// Install the bundled `kriya-hook` block into an agent's config (Claude Code today). Merge-safe and
-/// idempotent — a second run changes nothing. Record-only by default (no `--policy`): evidence
-/// first, never brick a running agent on install (doc 19).
+/// Install the bundled `kriya-hook` block into an agent's config (Claude Code today). Merge-safe
+/// and idempotent — a second run changes nothing. Always wires `--policy` (at
+/// [`agent_policy_path`], seeded with the permissive built-in default if the operator hasn't
+/// authored one yet — never brick a running agent on install, doc 19) and `--approval`
+/// ([`default_approval_mode`]) — previously this command passed neither flag, which was the B0
+/// bug: an installed hook silently ran the permissive default no matter what the Policy view said,
+/// and any `RequiresApproval` decision silently auto-denied with zero interactive surface.
 #[tauri::command]
 pub fn install_hook(agent: String) -> Result<HookResult, String> {
     let client = match Client::from_agent(&agent) {
@@ -807,11 +916,14 @@ pub fn install_hook(agent: String) -> Result<HookResult, String> {
         }
         Client::ClaudeDesktop => unreachable!("supports_hooks() excludes Claude Desktop"),
     };
+    let policy_path = ensure_policy_file()?;
+    let policy_quoted = shell_quote(&policy_path.to_string_lossy());
+    let approval = default_approval_mode();
     let path = client.config_path();
     let mut config = read_config(&path, client.fmt());
     match client {
-        Client::ClaudeCode => install_hook_block(&mut config, &quoted),
-        Client::Hermes => install_hermes_hook_block(&mut config, &quoted),
+        Client::ClaudeCode => install_hook_block(&mut config, &quoted, &policy_quoted, approval),
+        Client::Hermes => install_hermes_hook_block(&mut config, &quoted, &policy_quoted, approval),
         Client::ClaudeDesktop => unreachable!(),
     }
     write_config(&path, client.fmt(), &config)?;
@@ -948,7 +1060,7 @@ fn action_for(t: &GovernTarget) -> Option<GovernAction> {
                 server_key: None,
                 config_path: t.config_path.clone(),
                 detail: format!(
-                    "Install the {bin} block (record-only) so every native tool + attached MCP call signs a receipt."
+                    "Install the {bin} block, wired to your agent-policy.yaml, so every native tool + attached MCP call is policy-gated and signs a receipt."
                 ),
             })
         }
@@ -1032,10 +1144,29 @@ fn resolve_hermes_hook_path() -> String {
         .unwrap_or_default()
 }
 
+/// Mirrors `resolve_hook_path`/`resolve_gateway_path`'s own "resolve once, empty string on
+/// failure, let the specific action report it" pattern (B0) — `ensure_policy_file` only fails on
+/// a real filesystem error (e.g. `~/.kriya/` uncreatable), which is exactly as actionable as a
+/// missing bundled binary and should surface the same way.
+fn resolve_policy_path() -> String {
+    ensure_policy_file()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
 /// Apply one govern action to the relevant client config (file IO). Merge-safe + idempotent.
 /// `hook`/`hermes_hook` are the two independent hook-binary paths — Claude Code and Hermes each
 /// get their own writer (different config shape entirely, not just a different marker string).
-fn apply_action(action: &GovernAction, gateway: &str, hook: &str, hermes_hook: &str) -> Result<(), String> {
+/// `policy` (B0) is the one Console-authored policy file every seam below now wires via
+/// `--policy`, and `approval` ([`default_approval_mode`]) replaces what used to be either a
+/// missing flag (hook install) or an unconditional `"gui"` literal (gateway wrap) — both silently
+/// wrong off macOS, and the missing-flag case being the founder-reported bug itself.
+fn apply_action(action: &GovernAction, gateway: &str, hook: &str, hermes_hook: &str, policy: &str) -> Result<(), String> {
+    if policy.is_empty() {
+        return Err("could not prepare the agent policy file (~/.kriya/agent-policy.yaml)".into());
+    }
+    let policy_quoted = shell_quote(policy);
+    let approval = default_approval_mode();
     let client =
         Client::from_agent(&action.agent).ok_or_else(|| format!("unknown agent '{}'", action.agent))?;
     let path = client.config_path();
@@ -1046,13 +1177,13 @@ fn apply_action(action: &GovernAction, gateway: &str, hook: &str, hermes_hook: &
                 if hook.is_empty() {
                     return Err("the bundled kriya-hook binary could not be located".into());
                 }
-                install_hook_block(&mut config, &shell_quote(hook));
+                install_hook_block(&mut config, &shell_quote(hook), &policy_quoted, approval);
             }
             Client::Hermes => {
                 if hermes_hook.is_empty() {
                     return Err("the bundled kriya-hermes-hook binary could not be located".into());
                 }
-                install_hermes_hook_block(&mut config, &shell_quote(hermes_hook));
+                install_hermes_hook_block(&mut config, &shell_quote(hermes_hook), &policy_quoted, approval);
             }
             Client::ClaudeDesktop => return Err("Claude Desktop has no hook seam".into()),
         },
@@ -1066,7 +1197,7 @@ fn apply_action(action: &GovernAction, gateway: &str, hook: &str, hermes_hook: &
                 .get(key)
                 .cloned()
                 .ok_or_else(|| format!("server '{key}' no longer present"))?;
-            let wrapped = wrap_entry(&entry, gateway, client.agent_id(), "gui")
+            let wrapped = wrap_entry(&entry, gateway, client.agent_id(), approval, &policy_quoted)
                 .ok_or_else(|| format!("server '{key}' is not a wrappable local stdio server"))?;
             servers.insert(key.to_string(), wrapped);
         }
@@ -1152,10 +1283,11 @@ pub fn govern_all(opts: Option<GovernOpts>) -> GovernAllReport {
     let gateway = resolve_gateway_path();
     let hook = resolve_hook_path();
     let hermes_hook = resolve_hermes_hook_path();
+    let policy = resolve_policy_path();
     let mut wired = Vec::new();
     let mut errors = Vec::new();
     for action in &plan.wire {
-        match apply_action(action, &gateway, &hook, &hermes_hook) {
+        match apply_action(action, &gateway, &hook, &hermes_hook, &policy) {
             Ok(()) => wired.push(action.clone()),
             Err(message) => errors.push(GovernError {
                 target_id: action.target_id.clone(),
@@ -1224,12 +1356,108 @@ mod tests {
     use super::*;
     use crate::coverage::hook_configured;
 
+    // --- The Console-authored policy file (B0) -----------------------------------------------
+    // These mutate $HOME, so — like govern_all_then_ungovern_all_round_trips_configs_byte_for_byte
+    // below — they take ENV_LOCK to avoid racing other tests in this same-process, parallel-thread
+    // test run.
+
+    fn with_sandbox_home<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!(
+            "kriya-govern-policy-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", &home);
+        let result = f(&home);
+        match prev {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        result
+    }
+
+    #[test]
+    fn agent_policy_path_is_stable_and_under_dot_kriya() {
+        with_sandbox_home(|home| {
+            let path = agent_policy_path();
+            assert_eq!(path, home.join(".kriya").join("agent-policy.yaml"));
+        });
+    }
+
+    #[test]
+    fn ensure_policy_file_creates_permissive_default_when_absent_never_overwrites_when_present() {
+        with_sandbox_home(|_home| {
+            let path = agent_policy_path();
+            assert!(!path.is_file(), "starts absent");
+
+            let created = ensure_policy_file().unwrap();
+            assert_eq!(created, path);
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                PERMISSIVE_DEFAULT_POLICY_YAML,
+                "seeded with the same permissive default the binaries fall back to anyway"
+            );
+
+            // An operator's authored policy must never be silently clobbered by a later install.
+            std::fs::write(&path, "rules:\n  - { action: \"claude-code__bash\", allow: false }\n").unwrap();
+            ensure_policy_file().unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "rules:\n  - { action: \"claude-code__bash\", allow: false }\n",
+                "ensure_policy_file must never overwrite an already-authored policy"
+            );
+        });
+    }
+
+    #[test]
+    fn save_agent_policy_persists_and_load_agent_policy_restores() {
+        with_sandbox_home(|_home| {
+            assert_eq!(load_agent_policy(), None, "nothing saved yet on a fresh install");
+
+            let yaml = "rules:\n  - { action: \"*\", allow: false }\n";
+            let result = save_agent_policy(yaml.to_string()).unwrap();
+            assert_eq!(result.path, agent_policy_path().to_string_lossy());
+            assert_eq!(load_agent_policy().as_deref(), Some(yaml));
+
+            // Unlike ensure_policy_file, save_agent_policy always overwrites — it's the explicit
+            // authored write, not the install-time safety net.
+            let yaml2 = "rules:\n  - { action: \"*\", allow: true }\n";
+            save_agent_policy(yaml2.to_string()).unwrap();
+            assert_eq!(load_agent_policy().as_deref(), Some(yaml2));
+        });
+    }
+
+    #[test]
+    fn wrap_entry_inserts_policy_flag_before_the_dashdash_separator() {
+        let wrapped = wrap_entry(
+            &json!({ "command": "npx", "args": ["-y", "server-github"] }),
+            "/opt/kriya-gateway",
+            "claude-desktop",
+            "gui",
+            "/x/agent-policy.yaml",
+        )
+        .unwrap();
+        let args: Vec<&str> = wrapped["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+        let policy_idx = args.iter().position(|a| *a == "--policy").expect("--policy present");
+        let dashdash_idx = args.iter().position(|a| *a == "--").expect("-- present");
+        assert_eq!(args[policy_idx + 1], "/x/agent-policy.yaml");
+        assert!(
+            policy_idx < dashdash_idx,
+            "--policy must be a gateway flag, never forwarded to the downstream command: {args:?}"
+        );
+    }
+
     // --- Gateway wrap / unwrap round-trips ---------------------------------------------------
 
     #[test]
     fn wrap_then_unwrap_round_trips_a_canonical_entry() {
         let orig = json!({ "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"] });
-        let wrapped = wrap_entry(&orig, "/opt/kriya-gateway", "claude-desktop", "gui").unwrap();
+        let wrapped = wrap_entry(&orig, "/opt/kriya-gateway", "claude-desktop", "gui", "/x/agent-policy.yaml").unwrap();
         assert!(is_gateway_wrapped(&wrapped));
         assert_eq!(gateway_subcommand(&wrapped).as_deref(), Some("proxy"));
         // The downstream command survives verbatim after `--`.
@@ -1243,24 +1471,25 @@ mod tests {
     #[test]
     fn wrap_preserves_sibling_keys_like_env() {
         let orig = json!({ "command": "node", "args": ["server.js"], "env": { "TOKEN": "x" } });
-        let wrapped = wrap_entry(&orig, "/opt/kriya-gateway", "hermes", "gui").unwrap();
+        let wrapped = wrap_entry(&orig, "/opt/kriya-gateway", "hermes", "gui", "/x/agent-policy.yaml").unwrap();
         assert_eq!(wrapped["env"], json!({ "TOKEN": "x" }));
         assert_eq!(unwrap_entry(&wrapped).unwrap(), orig);
     }
 
     #[test]
     fn wrap_refuses_remote_and_already_wrapped() {
-        assert!(wrap_entry(&json!({ "url": "https://x/mcp" }), "/g", "a", "gui").is_none());
-        assert!(wrap_entry(&json!({ "type": "sse", "url": "https://x" }), "/g", "a", "gui").is_none());
+        assert!(wrap_entry(&json!({ "url": "https://x/mcp" }), "/g", "a", "gui", "/x/p.yaml").is_none());
+        assert!(wrap_entry(&json!({ "type": "sse", "url": "https://x" }), "/g", "a", "gui", "/x/p.yaml").is_none());
         let wrapped = wrap_entry(
             &json!({ "command": "npx", "args": ["x"] }),
             "/g/kriya-gateway",
             "a",
             "gui",
+            "/x/p.yaml",
         )
         .unwrap();
         // Wrapping an already-wrapped entry is a no-op (idempotent at the entry level).
-        assert!(wrap_entry(&wrapped, "/g/kriya-gateway", "a", "gui").is_none());
+        assert!(wrap_entry(&wrapped, "/g/kriya-gateway", "a", "gui", "/x/p.yaml").is_none());
     }
 
     #[test]
@@ -1296,7 +1525,7 @@ mod tests {
                 let servers = servers_mut(cfg, client);
                 let keys: Vec<String> = servers.keys().cloned().collect();
                 for k in keys {
-                    if let Some(w) = wrap_entry(&servers[&k], "/g/kriya-gateway", client.agent_id(), "gui") {
+                    if let Some(w) = wrap_entry(&servers[&k], "/g/kriya-gateway", client.agent_id(), "gui", "/x/p.yaml") {
                         servers.insert(k, w);
                     }
                 }
@@ -1324,18 +1553,22 @@ mod tests {
     #[test]
     fn hook_block_is_idempotent_and_reversible_on_empty_config() {
         let mut cfg = json!({});
-        install_hook_block(&mut cfg, "/opt/kriya-hook");
+        install_hook_block(&mut cfg, "/opt/kriya-hook", "/x/agent-policy.yaml", "gui");
         let once = cfg.clone();
-        install_hook_block(&mut cfg, "/opt/kriya-hook");
+        install_hook_block(&mut cfg, "/opt/kriya-hook", "/x/agent-policy.yaml", "gui");
         assert_eq!(cfg, once, "installing twice yields one set of groups");
 
         // The block is well-formed: pre + post, each a command mentioning kriya-hook.
         assert_eq!(cfg["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
         assert_eq!(cfg["hooks"]["PostToolUse"].as_array().unwrap().len(), 1);
-        assert!(cfg["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        let cmd = cfg["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
             .as_str()
-            .unwrap()
-            .contains("kriya-hook"));
+            .unwrap();
+        assert!(cmd.contains("kriya-hook"));
+        // B0: --policy and --approval must always be present — an installed hook that omits
+        // either silently enforces nothing (the founder-reported bug).
+        assert!(cmd.contains("--policy /x/agent-policy.yaml"), "{cmd}");
+        assert!(cmd.contains("--approval gui"), "{cmd}");
 
         // Uninstall restores the empty object byte-for-byte.
         uninstall_hook_block(&mut cfg);
@@ -1353,7 +1586,7 @@ mod tests {
             "permissions": { "allow": ["Read"] }
         });
         let mut cfg = user.clone();
-        install_hook_block(&mut cfg, "/opt/kriya-hook");
+        install_hook_block(&mut cfg, "/opt/kriya-hook", "/x/agent-policy.yaml", "gui");
         // The user's groups survive; ours are appended.
         assert_eq!(cfg["hooks"]["Stop"], user["hooks"]["Stop"]);
         assert_eq!(cfg["hooks"]["PreToolUse"].as_array().unwrap().len(), 2);
@@ -1369,15 +1602,18 @@ mod tests {
     #[test]
     fn hermes_hook_block_is_idempotent_and_reversible_on_empty_config() {
         let mut cfg = json!({});
-        install_hermes_hook_block(&mut cfg, "/opt/kriya-hermes-hook");
+        install_hermes_hook_block(&mut cfg, "/opt/kriya-hermes-hook", "/x/agent-policy.yaml", "tty");
         let once = cfg.clone();
-        install_hermes_hook_block(&mut cfg, "/opt/kriya-hermes-hook");
+        install_hermes_hook_block(&mut cfg, "/opt/kriya-hermes-hook", "/x/agent-policy.yaml", "tty");
         assert_eq!(cfg, once, "installing twice yields one set of entries");
 
         assert_eq!(cfg["hooks"]["pre_tool_call"].as_array().unwrap().len(), 1);
         assert_eq!(cfg["hooks"]["post_tool_call"].as_array().unwrap().len(), 1);
         let pre = &cfg["hooks"]["pre_tool_call"][0];
-        assert_eq!(pre["command"], "/opt/kriya-hermes-hook pre");
+        assert_eq!(
+            pre["command"],
+            "/opt/kriya-hermes-hook pre --policy /x/agent-policy.yaml --approval tty"
+        );
         assert_eq!(pre["timeout"], 300);
         assert!(pre.get("matcher").is_none(), "no matcher — fires for every tool_name");
         assert_eq!(cfg["hooks_auto_accept"], true);
@@ -1397,7 +1633,7 @@ mod tests {
             "model": "some-model"
         });
         let mut cfg = user.clone();
-        install_hermes_hook_block(&mut cfg, "/opt/kriya-hermes-hook");
+        install_hermes_hook_block(&mut cfg, "/opt/kriya-hermes-hook", "/x/agent-policy.yaml", "tty");
         assert_eq!(cfg["hooks"]["pre_llm_call"], user["hooks"]["pre_llm_call"], "unrelated event untouched");
         assert_eq!(cfg["hooks"]["pre_tool_call"].as_array().unwrap().len(), 2, "user's entry survives, ours appended");
         assert_eq!(cfg["model"], "some-model");
@@ -1413,7 +1649,7 @@ mod tests {
         // value alone, so uninstall removes it unconditionally when true. Document + lock the
         // narrow, safe-direction divergence this causes: a user's own true flag also gets cleared.
         let mut cfg = json!({ "hooks_auto_accept": true });
-        install_hermes_hook_block(&mut cfg, "/opt/kriya-hermes-hook");
+        install_hermes_hook_block(&mut cfg, "/opt/kriya-hermes-hook", "/x/agent-policy.yaml", "tty");
         uninstall_hermes_hook_block(&mut cfg);
         assert_eq!(
             cfg, json!({}),
@@ -1559,7 +1795,7 @@ mod tests {
         // Simulate what install_hook does to the settings file (the resolve_hook binary isn't
         // bundled in a unit test, so drive the writer directly against the temp settings path).
         let mut cfg = read_config(&settings, Fmt::Json);
-        install_hook_block(&mut cfg, "/opt/kriya-hook");
+        install_hook_block(&mut cfg, "/opt/kriya-hook", "/x/agent-policy.yaml", "gui");
         write_config(&settings, Fmt::Json, &cfg).unwrap();
 
         // coverage.rs must now report the hook as configured.
@@ -1571,7 +1807,7 @@ mod tests {
         // Idempotent: a second install leaves the file byte-identical.
         let first = std::fs::read_to_string(&settings).unwrap();
         let mut cfg = read_config(&settings, Fmt::Json);
-        install_hook_block(&mut cfg, "/opt/kriya-hook");
+        install_hook_block(&mut cfg, "/opt/kriya-hook", "/x/agent-policy.yaml", "gui");
         write_config(&settings, Fmt::Json, &cfg).unwrap();
         assert_eq!(std::fs::read_to_string(&settings).unwrap(), first);
 
@@ -1815,10 +2051,15 @@ mod tests {
         let gw = "/opt/kriya-gateway";
         let hook = "/opt/kriya-hook";
         let hermes_hook = "/opt/kriya-hermes-hook";
+        // Exercises the real policy-file resolution (B0): HOME is already redirected above, so
+        // this lands inside the sandbox, proving ensure_policy_file's "always exists before any
+        // --policy reference" invariant end-to-end, not just in isolation.
+        let policy = resolve_policy_path();
+        assert!(!policy.is_empty(), "the sandboxed ~/.kriya/agent-policy.yaml must be creatable");
         let plan = classify_plan(&detect(&read_client_states(), Some(true), &[], true, true, true));
         let wire_ids: Vec<String> = plan.wire.iter().map(|a| a.target_id.clone()).collect();
         for a in &plan.wire {
-            apply_action(a, gw, hook, hermes_hook).unwrap();
+            apply_action(a, gw, hook, hermes_hook, &policy).unwrap();
         }
         // github + Hermes' fs wrapped; both hooks installed (coverage would detect both).
         assert!(is_gateway_wrapped(&read_config(&desktop_path, Fmt::Json)["mcpServers"]["github"]));

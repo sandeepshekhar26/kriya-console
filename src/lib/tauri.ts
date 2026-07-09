@@ -149,6 +149,15 @@ export const governableSurface = () => invoke<GovernableSurface>("governable_sur
 export const installHook = (agent: string) => invoke<HookResult>("install_hook", { agent });
 export const uninstallHook = (agent: string) => invoke<HookResult>("uninstall_hook", { agent });
 
+/** The Console-authored policy YAML, persisted to `~/.kriya/agent-policy.yaml` — the file every
+ *  seam above wires via `--policy` (B0). Mirrors Rust `govern::PolicySaveResult`. */
+export interface PolicySaveResult {
+  path: string;
+  bytes: number;
+}
+export const saveAgentPolicy = (yaml: string) => invoke<PolicySaveResult>("save_agent_policy", { yaml });
+export const loadAgentPolicy = () => invoke<string | null>("load_agent_policy");
+
 // ── Govern-all orchestrator (free, GA-1) ─────────────────────────────────────
 /** One planned/performed change. Mirrors Rust `govern::GovernAction`. */
 export interface GovernAction {

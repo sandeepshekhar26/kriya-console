@@ -65,6 +65,35 @@ tamper-*proofing*:
   one session. A deployment only shows multiple signer keys if it runs with the ephemeral
   per-process key instead of a persisted one — the Console shows you exactly how many. Hardware-backed
   (Secure Enclave) anchoring of that identity is the remaining hardening.
+- **Policy enforcement now actually reaches every install path (B0, fixed).** Until this fix, the
+  Policy view authored a policy that was never written to any file the runtime could load, and
+  every "Install hook" / "Govern everything" / manual-connection action installed `kriya-hook`,
+  `kriya-hermes-hook`, and `kriya-gateway` with **no `--policy` flag at all** — every enforcement
+  point silently ran the permissive built-in default, regardless of what the Policy view showed.
+  A deny rule the operator saved was never actually enforced. Fixed: the authored policy now
+  persists to `~/.kriya/agent-policy.yaml` on every edit, and every install path wires `--policy`
+  at that file. Stated here retroactively, in the same spirit as the rest of this document — an
+  honest account includes bugs that shipped, not just the ones caught before release.
+- **The approval tier is a `tty`/GUI-dialog prompt, not a live Console popup.** `RequiresApproval`
+  actions are decided by the hook/gateway process itself (a terminal prompt or a macOS dialog),
+  self-bounded at 300s. We deliberately do **not** use Claude Code's native
+  `permissionDecision:"ask"` — it has documented, reproducible reliability gaps (unreliable in
+  headless `claude -p` mode, and has been observed silently overridden by a broad
+  `permissions.allow` rule elsewhere in a user's settings, letting the tool run with no prompt at
+  all). The **Approvals** view in this Console is a separate, manual/historical decision queue —
+  load a JSONL file of pending requests, decide with a reason, and the decision is recorded in the
+  local trail — it is not wired to unblock a paused hook process live. A true remote,
+  Console-mediated approval flow is a possible future addition, not something this build claims.
+- **A hook that times out, crashes, or emits malformed output on Claude Code's own side fails
+  open — kriya cannot change that from this side of the seam.** Claude Code's hook timeout
+  (600s default) is documented to let the tool proceed if a hook doesn't answer in time; the same
+  is true of a hook that crashes or produces output Claude Code can't parse. `kriya-hook`
+  mitigates this everywhere it can control the outcome — the approval gates self-bound well under
+  that ceiling, and the hook's own internal errors (bad payload, unreadable policy) always fail
+  closed — but a cooperative seam is still cooperative: whoever controls `settings.json`, or
+  whatever kills the hook process externally, has the last word. See `kriya`'s
+  [`docs/SECURITY.md`](https://github.com/sandeepshekhar26/kriya/blob/main/docs/SECURITY.md) for
+  the full detail.
 
 These boundaries are shared with the open runtime's threat model and are not unique to the paid
 tier; we publish them rather than paper over them.

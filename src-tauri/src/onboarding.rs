@@ -309,7 +309,10 @@ pub struct WireResult {
 /// other servers. Returns the snippet (also useful for manual paste) and whether the merge landed.
 #[tauri::command]
 pub fn wire_claude_config(req: WireRequest) -> Result<WireResult, String> {
-    let approval = req.approval.clone().unwrap_or_else(|| "gui".to_string());
+    // Was unconditionally "gui" — silently wrong off macOS (GuiApproval doesn't exist there; any
+    // RequiresApproval action would hard-error at the binary). Same B0 bug class as govern.rs's
+    // hook-install default; same fix (crate::govern::default_approval_mode).
+    let approval = req.approval.clone().unwrap_or_else(|| crate::govern::default_approval_mode().to_string());
 
     // The `kriya` (bolt-on / serve) front is special: a kriya-instrumented MCP server governs and
     // signs its own named actions in-process, so the MCP client launches it DIRECTLY — no gateway
@@ -332,7 +335,11 @@ pub fn wire_claude_config(req: WireRequest) -> Result<WireResult, String> {
     } else {
         let (gateway, _bundled) =
             resolve_gateway().ok_or("the bundled gateway binary could not be located")?;
-        let (key, args) = build_args(&req, &approval)?;
+        // B0: every gateway-routed front now wires --policy at the same Console-authored file
+        // install_hook/govern_all point at (crate::govern::ensure_policy_file) — previously this
+        // path, like the hook installers, never passed --policy at all.
+        let policy_path = crate::govern::ensure_policy_file()?;
+        let (key, args) = build_args(&req, &approval, &policy_path.to_string_lossy())?;
         (key, gateway.to_string_lossy().into_owned(), args)
     };
 
@@ -385,7 +392,10 @@ fn slug(s: &str) -> String {
 }
 
 /// Build the `(server_key, args)` for the chosen front. Mirrors the gateway's subcommand contract.
-fn build_args(req: &WireRequest, approval: &str) -> Result<(String, Vec<String>), String> {
+/// `policy` (B0) is inserted alongside `--approval` in every branch — previously omitted
+/// entirely, so a wrapped server always ran the permissive built-in default regardless of what
+/// the operator authored in the Policy view.
+fn build_args(req: &WireRequest, approval: &str, policy: &str) -> Result<(String, Vec<String>), String> {
     match req.front.as_str() {
         "reach-in" => {
             let app = req
@@ -399,6 +409,8 @@ fn build_args(req: &WireRequest, approval: &str) -> Result<(String, Vec<String>)
                     "reach-in".into(),
                     "--app".into(),
                     app.to_string(),
+                    "--policy".into(),
+                    policy.to_string(),
                     "--approval".into(),
                     approval.to_string(),
                 ],
@@ -408,6 +420,8 @@ fn build_args(req: &WireRequest, approval: &str) -> Result<(String, Vec<String>)
             "kriya-computer-use".into(),
             vec![
                 "computer-use".into(),
+                "--policy".into(),
+                policy.to_string(),
                 "--approval".into(),
                 approval.to_string(),
             ],
@@ -418,6 +432,8 @@ fn build_args(req: &WireRequest, approval: &str) -> Result<(String, Vec<String>)
                 args.push("--reach-in".into());
                 args.push(app.to_string());
             }
+            args.push("--policy".into());
+            args.push(policy.to_string());
             args.push("--approval".into());
             args.push(approval.to_string());
             Ok(("kriya-router".into(), args))
@@ -430,6 +446,8 @@ fn build_args(req: &WireRequest, approval: &str) -> Result<(String, Vec<String>)
                 .ok_or("proxy needs a downstream command (everything after `--`)")?;
             let mut args = vec![
                 "proxy".into(),
+                "--policy".into(),
+                policy.to_string(),
                 "--approval".into(),
                 approval.to_string(),
                 "--".into(),
