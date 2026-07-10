@@ -179,6 +179,8 @@ fn p5_org_wide_evidence_proof() {
         .env("KRIYAD_DB", &db_path)
         .env("KRIYAD_LICENSE", &license_path)
         .env("KRIYAD_CA_DIR", &ca_dir)
+        // Predates P6 role-stamped certs (its certs are role-less) → documented legacy-grace mode.
+        .env("KRIYAD_ALLOW_LEGACY_CERTS", "1")
         .spawn()
         .expect("spawn kriyad");
     let _kriyad = KriyadProcess { child };

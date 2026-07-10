@@ -138,6 +138,10 @@ fn p3_end_to_end_policy_downlink_proof() {
         .env("KRIYAD_DB", &db_path)
         .env("KRIYAD_LICENSE", &license_path)
         .env("KRIYAD_CA_DIR", &ca_dir)
+        // This proof predates P6 role-stamped certs — its `kriyd-ca.sh <dir> N` certs are role-LESS,
+        // so it runs in the documented legacy-grace compensating mode (doc 22 §11-B2), which also
+        // exercises that grace path end-to-end.
+        .env("KRIYAD_ALLOW_LEGACY_CERTS", "1")
         .spawn()
         .expect("spawn kriyad");
     let _kriyad = KriyadProcess { child };

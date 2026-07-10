@@ -5,8 +5,11 @@
 
 mod config;
 mod license;
+mod peer;
 mod store;
 mod tls;
+
+use peer::PeerAuth;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -81,13 +84,17 @@ pub fn app(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// GET /v1/coverage[?org_id=…] — per-device current/behind/silent.
+/// GET /v1/coverage[?org_id=…] — per-device current/behind/silent. **Operator-only (P6):** reading the
+/// whole fleet's liveness is a cockpit action; a device cert is 403'd (closes the "any fleet cert reads
+/// the whole fleet" hole, doc 22 §11-B2).
 async fn get_coverage(
     State(state): State<Arc<AppState>>,
+    peer: PeerAuth,
     Query(q): Query<HashMap<String, String>>,
-) -> Json<Vec<store::DeviceCoverage>> {
+) -> Result<Json<Vec<store::DeviceCoverage>>, (StatusCode, String)> {
+    peer.require_operator()?;
     let org = q.get("org_id").map(String::as_str);
-    Json(state.store.coverage(now_ms(), state.silent_after_ms, org))
+    Ok(Json(state.store.coverage(now_ms(), state.silent_after_ms, org)))
 }
 
 /// The maximum `to_seq - from_seq` window this route accepts from an EXPLICIT range (doc 22 §11 DoS
@@ -105,8 +112,11 @@ const MAX_VERIFY_WINDOW: u64 = 10_000;
 /// is instead capped at the data layer by `store::read_back`'s row limit (defense in depth).
 async fn get_verify(
     State(state): State<Arc<AppState>>,
+    peer: PeerAuth,
     Query(q): Query<HashMap<String, String>>,
 ) -> Result<Json<store::Readback>, (StatusCode, String)> {
+    // Operator-only (P6): trustless read-back of any device's evidence is an auditor/cockpit action.
+    peer.require_operator()?;
     let device_pub = q
         .get("device_pub")
         .ok_or((StatusCode::BAD_REQUEST, "device_pub required\n".to_string()))?;
@@ -154,18 +164,29 @@ fn reject(report: &mut IngestReport, metrics: &Metrics, line: usize, reason: Str
         .fetch_add(1, Ordering::Relaxed);
 }
 
-/// POST /v1/envelopes — NDJSON batch. Re-verify each envelope OFFLINE (the anti-forgery guarantee),
-/// then gap-tolerant idempotent insert. Out-of-order / missing seqs are a coverage gap (→ /v1/coverage),
-/// never a 4xx; only forged/malformed/incoherent envelopes are rejected (and counted, not dropped).
-async fn post_envelopes(State(state): State<Arc<AppState>>, body: String) -> Json<IngestReport> {
-    Json(ingest_ndjson(&state, &body))
+/// POST /v1/envelopes — NDJSON batch. **Device-only (P6):** a device pushes its OWN evidence; an
+/// operator cert is 403'd. Every envelope in the batch is additionally bound to the cert's
+/// `device_pub` — a line for any other device is rejected (counted, like a forged one), closing the
+/// evidence-injection vector (doc 22 §11-B2 / doc 13's two-key binding). Under legacy grace / plain
+/// HTTP there is no binding to enforce (`None`), exactly as pre-P6.
+async fn post_envelopes(
+    State(state): State<Arc<AppState>>,
+    peer: PeerAuth,
+    body: String,
+) -> Result<Json<IngestReport>, (StatusCode, String)> {
+    let bound = peer.require_device()?;
+    Ok(Json(ingest_ndjson(&state, &body, bound)))
 }
 
 /// Verify + ingest an NDJSON batch. Shared by the HTTP handler (online mode) and the `ingest-file`
 /// subcommand (air-gap side-load) — the verifier is transport-agnostic, so both run the SAME offline
 /// re-verification + gap-tolerant idempotent insert. Only forged/malformed/incoherent lines are
 /// rejected (counted, not dropped); out-of-order / missing seqs are a coverage gap, never an error.
-fn ingest_ndjson(state: &AppState, body: &str) -> IngestReport {
+///
+/// `bound_device_pub` (P6): when `Some`, every envelope's own `device_pub` MUST equal it (the cert
+/// binding); a mismatched line is rejected. `None` for air-gap side-load (sneaker-net has no live cert;
+/// the operator carrying the media is the trust boundary) and for legacy-grace / plain-HTTP requests.
+fn ingest_ndjson(state: &AppState, body: &str, bound_device_pub: Option<&str>) -> IngestReport {
     let mut report = IngestReport {
         accepted: 0,
         duplicates: 0,
@@ -191,6 +212,24 @@ fn ingest_ndjson(state: &AppState, body: &str) -> IngestReport {
                 continue;
             }
         };
+        // P6: a device cert may only introduce evidence for its OWN device_pub. (verify_envelope
+        // already proved `envelope.device_pub == public_key`, so this binds the transport cert to the
+        // envelope's signer — a stolen cert still can't forge, and now can't even replay another
+        // device's real envelopes into the store under its own connection.)
+        if let Some(bound) = bound_device_pub {
+            if signed.envelope.device_pub != bound {
+                reject(
+                    &mut report,
+                    &state.metrics,
+                    line_no,
+                    format!(
+                        "device_pub {} does not match the client certificate's bound device_pub",
+                        signed.envelope.device_pub
+                    ),
+                );
+                continue;
+            }
+        }
         match state
             .store
             .insert_envelope(&signed, line.as_bytes(), now_ms())
@@ -209,8 +248,18 @@ fn ingest_ndjson(state: &AppState, body: &str) -> IngestReport {
     report
 }
 
-/// POST /v1/heartbeat — one signed heartbeat. Verify, append to the liveness log, update coverage.
-async fn post_heartbeat(State(state): State<Arc<AppState>>, body: String) -> (StatusCode, String) {
+/// POST /v1/heartbeat — one signed heartbeat. **Device-only (P6)**, bound to the cert's `device_pub`:
+/// this closes the coverage-poisoning vector (a cert could otherwise post heartbeats — the liveness
+/// tail anchor — for arbitrary devices). Verify, append to the liveness log, update coverage.
+async fn post_heartbeat(
+    State(state): State<Arc<AppState>>,
+    peer: PeerAuth,
+    body: String,
+) -> (StatusCode, String) {
+    let bound = match peer.require_device() {
+        Ok(b) => b,
+        Err((code, msg)) => return (code, msg),
+    };
     let v: Value = match serde_json::from_str(&body) {
         Ok(v) => v,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("parse: {e}\n")),
@@ -222,6 +271,17 @@ async fn post_heartbeat(State(state): State<Arc<AppState>>, body: String) -> (St
         Ok(s) => s,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("decode: {e}\n")),
     };
+    if let Some(bound) = bound {
+        if signed.heartbeat.device_pub != bound {
+            return (
+                StatusCode::FORBIDDEN,
+                format!(
+                    "device_pub {} does not match the client certificate's bound device_pub\n",
+                    signed.heartbeat.device_pub
+                ),
+            );
+        }
+    }
     match state
         .store
         .insert_heartbeat(&signed, body.as_bytes(), now_ms())
@@ -245,7 +305,16 @@ async fn post_heartbeat(State(state): State<Arc<AppState>>, body: String) -> (St
 /// the parsed value and therefore the recomputed canonical bytes, so tampering is caught), then upsert.
 /// An unknown `device_pub` is NOT rejected — mirrors `insert_envelope`/`insert_heartbeat`: this may be
 /// the device's very FIRST beacon, posted before it has ever pushed an envelope.
-async fn post_device_info(State(state): State<Arc<AppState>>, body: String) -> (StatusCode, String) {
+async fn post_device_info(
+    State(state): State<Arc<AppState>>,
+    peer: PeerAuth,
+    body: String,
+) -> (StatusCode, String) {
+    // Device-only (P6), bound to the cert's device_pub — closes the inventory-poisoning vector.
+    let bound = match peer.require_device() {
+        Ok(b) => b,
+        Err((code, msg)) => return (code, msg),
+    };
     let v: Value = match serde_json::from_str(&body) {
         Ok(v) => v,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("parse: {e}\n")),
@@ -257,6 +326,17 @@ async fn post_device_info(State(state): State<Arc<AppState>>, body: String) -> (
         Ok(s) => s,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("decode: {e}\n")),
     };
+    if let Some(bound) = bound {
+        if signed.device_pub != bound {
+            return (
+                StatusCode::FORBIDDEN,
+                format!(
+                    "device_pub {} does not match the client certificate's bound device_pub\n",
+                    signed.device_pub
+                ),
+            );
+        }
+    }
     match state
         .store
         .insert_device_info(&signed, body.as_bytes(), now_ms())
@@ -271,7 +351,17 @@ async fn post_device_info(State(state): State<Arc<AppState>>, body: String) -> (
 /// the PINNED `org_policy_pub` (never a key the payload itself asserts — a bundle carries none) and, on
 /// success, appends to the `policy_bundles` table verbatim. Garbage — an unparseable body, a forged
 /// signature, or (with no org key pinned at all) ANY body — never enters the store.
-async fn post_policy(State(state): State<Arc<AppState>>, body: String) -> (StatusCode, String) {
+async fn post_policy(
+    State(state): State<Arc<AppState>>,
+    peer: PeerAuth,
+    body: String,
+) -> (StatusCode, String) {
+    // Operator-only (P6): publishing a fleet policy is a cockpit action. (Security does NOT rest on
+    // this — a forged bundle still dies twice, at kriyad ingest-verify below and at each device's own
+    // verify; but a device cert has no business POSTing policy, so gate it out cleanly.)
+    if let Err((code, msg)) = peer.require_operator() {
+        return (code, msg);
+    }
     let Some(org_pub) = state.org_policy_pub() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -314,23 +404,47 @@ async fn post_policy(State(state): State<Arc<AppState>>, body: String) -> (Statu
 /// the same thing, skip this cycle, so no separate signal is needed.
 async fn get_policy(
     State(state): State<Arc<AppState>>,
+    peer: PeerAuth,
     Query(q): Query<HashMap<String, String>>,
-) -> Result<String, StatusCode> {
-    let device_pub = q.get("device_pub").ok_or(StatusCode::BAD_REQUEST)?;
+) -> Result<String, (StatusCode, String)> {
+    // P6: a DEVICE pulls its OWN scoped bundle — bound to its cert's device_pub, so it can't fetch
+    // another device's policy. An OPERATOR is ALSO permitted here (with no binding): the cockpit reads
+    // this route for its publish-preview and org-evidence bundle fetch (P3–P5), which must keep
+    // working — so this route allows device-or-operator, unlike the strictly-operator reads above.
+    let bound = peer.require_device_or_operator()?;
+    let device_pub = q
+        .get("device_pub")
+        .ok_or((StatusCode::BAD_REQUEST, "device_pub required\n".to_string()))?;
+    if let Some(bound) = bound {
+        if device_pub != bound {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "a device certificate may only pull policy for its own device_pub\n".to_string(),
+            ));
+        }
+    }
     let business_unit = q.get("business_unit").map(String::as_str);
     state
         .store
         .latest_policy_bundle(device_pub, business_unit)
-        .ok_or(StatusCode::NOT_FOUND)
+        .ok_or((StatusCode::NOT_FOUND, String::new()))
 }
 
-async fn healthz() -> &'static str {
-    "ok\n"
+/// `/healthz` — any authenticated role (P6): a validly-role-stamped device OR operator cert (or a
+/// legacy-grace / plain-HTTP peer). Only an outright-rejected cert is 403'd. The operator cockpit's
+/// `fleet_connect` probes this before persisting a connection, and devices may liveness-check too.
+async fn healthz(peer: PeerAuth) -> Result<&'static str, (StatusCode, String)> {
+    peer.require_any()?;
+    Ok("ok\n")
 }
 
-async fn metrics(State(state): State<Arc<AppState>>) -> String {
+async fn metrics(
+    State(state): State<Arc<AppState>>,
+    peer: PeerAuth,
+) -> Result<String, (StatusCode, String)> {
+    peer.require_any()?;
     let m = &state.metrics;
-    format!(
+    Ok(format!(
         "# HELP kriyad_envelopes_total Accepted envelopes.\n\
          # TYPE kriyad_envelopes_total counter\n\
          kriyad_envelopes_total {}\n\
@@ -339,7 +453,7 @@ async fn metrics(State(state): State<Arc<AppState>>) -> String {
         m.envelopes_total.load(Ordering::Relaxed),
         m.envelopes_rejected_total.load(Ordering::Relaxed),
         m.heartbeats_total.load(Ordering::Relaxed),
-    )
+    ))
 }
 
 #[tokio::main]
@@ -361,7 +475,9 @@ async fn main() {
             .get(i + 1)
             .expect("usage: kriyad ingest-file <file.ndjson>");
         let body = std::fs::read_to_string(path).expect("read ingest file");
-        let report = ingest_ndjson(&state, &body);
+        // Air-gap side-load: no live client cert, so no device_pub binding to enforce (`None`) — the
+        // operator carrying the approved media is the trust boundary; every line is still re-verified.
+        let report = ingest_ndjson(&state, &body, None);
         println!(
             "ingest-file {path}: accepted={} duplicates={} rejected={}",
             report.accepted,
@@ -376,14 +492,26 @@ async fn main() {
     // mTLS when the CA dir holds certs (the BOX/online modes); plain HTTP otherwise (local/dev).
     match tls::server_config(&config.ca_dir) {
         Ok(tls_config) => {
-            eprintln!("kriyad listening on https://{} (mTLS)", config.bind);
-            axum_server::bind_rustls(
+            eprintln!(
+                "kriyad listening on https://{} (mTLS, role-gated{})",
                 config.bind,
+                if config.allow_legacy_certs {
+                    "; KRIYAD_ALLOW_LEGACY_CERTS=1 — legacy role-less certs honored during migration"
+                } else {
+                    ""
+                }
+            );
+            // P6: RoleAcceptor extracts each connection's client-cert role (post-handshake) and injects
+            // it, so the route table can gate device vs operator. The handshake verifier is unchanged.
+            let acceptor = tls::RoleAcceptor::new(
                 axum_server::tls_rustls::RustlsConfig::from_config(tls_config),
-            )
-            .serve(router.into_make_service())
-            .await
-            .expect("serve mTLS");
+                config.allow_legacy_certs,
+            );
+            axum_server::bind(config.bind)
+                .acceptor(acceptor)
+                .serve(router.into_make_service())
+                .await
+                .expect("serve mTLS");
         }
         Err(e) => {
             eprintln!(
@@ -1243,6 +1371,196 @@ mod tests {
         signed
     }
 
+    // ── P6 (doc 22 §11-B2): per-route cert-role matrix ────────────────────────────────────────────
+    // These drive the REAL route table via `oneshot`, INJECTING the `PeerAuth` the mTLS acceptor would
+    // inject on the wire (the acceptor's own cert→role SAN parsing is unit-tested in `peer`, and the
+    // whole path is exercised live over real certs by `scripts/e2e-pilot.sh`). With no injection a
+    // request defaults to `Plaintext` (dev mode) — which is exactly why every pre-P6 test above still
+    // passes unchanged: role enforcement is a property of the mTLS layer, and plain HTTP stays open.
+    use crate::peer::PeerRole;
+    use ed25519_dalek::SigningKey;
+
+    async fn post_as(state: Arc<AppState>, uri: &str, body: String, auth: PeerAuth) -> (StatusCode, Vec<u8>) {
+        let resp = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .extension(auth)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes().to_vec();
+        (status, bytes)
+    }
+
+    async fn get_as(state: Arc<AppState>, uri: &str, auth: PeerAuth) -> (StatusCode, Vec<u8>) {
+        let resp = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .extension(auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes().to_vec();
+        (status, bytes)
+    }
+
+    fn device_auth(key: &ed25519_dalek::SigningKey) -> PeerAuth {
+        PeerAuth::Role(PeerRole::Device(hex::encode(key.verifying_key().to_bytes())))
+    }
+
+    fn heartbeat_line(key: &ed25519_dalek::SigningKey, seq_seen: u64) -> String {
+        use ed25519_dalek::Signer;
+        let device_pub = hex::encode(key.verifying_key().to_bytes());
+        let hb = kriya_verify::Heartbeat { device_pub: device_pub.clone(), seq_seen, ts_ms: 1500 };
+        json!({
+            "heartbeat": hb,
+            "public_key": device_pub,
+            "signature": hex::encode(key.sign(&kriya_verify::heartbeat_canonical_bytes(&hb)).to_bytes()),
+        })
+        .to_string()
+    }
+
+    /// A DEVICE cert is 403'd on every fleet-read route — it cannot read the whole fleet's coverage or
+    /// any device's evidence (the core B2 hole).
+    #[tokio::test]
+    async fn device_cert_forbidden_on_operator_reads() {
+        let state = Arc::new(AppState::in_memory());
+        let dev = device_auth(&SigningKey::from_bytes(&[1u8; 32]));
+
+        let (status, _) = get_as(state.clone(), "/v1/coverage", dev.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "device cert may not read fleet coverage");
+
+        let (status, _) = get_as(state.clone(), "/v1/verify?device_pub=aa", dev.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "device cert may not read /v1/verify");
+
+        let (status, _) = post_as(state, "/v1/policy", "{}".into(), dev).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "device cert may not publish policy");
+    }
+
+    /// An OPERATOR cert is 403'd on every evidence-POST route — it cannot inject/poison device evidence.
+    /// The gate short-circuits BEFORE the body is parsed, so an empty body still 403s.
+    #[tokio::test]
+    async fn operator_cert_forbidden_on_device_posts() {
+        let state = Arc::new(AppState::in_memory());
+        let op = PeerAuth::Role(PeerRole::Operator);
+
+        for route in ["/v1/envelopes", "/v1/heartbeat", "/v1/device-info"] {
+            let (status, _) = post_as(state.clone(), route, "{}".into(), op.clone()).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "operator cert may not POST to {route}");
+        }
+    }
+
+    /// An OPERATOR cert is allowed on the fleet reads (the cockpit's normal path).
+    #[tokio::test]
+    async fn operator_cert_allowed_on_fleet_reads() {
+        let state = Arc::new(AppState::in_memory());
+        let op = PeerAuth::Role(PeerRole::Operator);
+
+        let (status, _) = get_as(state.clone(), "/v1/coverage", op.clone()).await;
+        assert_eq!(status, StatusCode::OK, "operator reads coverage");
+        // /v1/verify with a device_pub that has no data still returns 200 (an empty read-back), not 403.
+        let (status, _) = get_as(state, "/v1/verify?device_pub=deadbeef", op).await;
+        assert_eq!(status, StatusCode::OK, "operator reads /v1/verify");
+    }
+
+    /// A DEVICE cert may POST its OWN evidence, and is bound to its own `device_pub`: a matching
+    /// envelope is accepted, a mismatched one is rejected (counted, like a forgery), and a mismatched
+    /// heartbeat/device-info is a hard 403 (single-payload routes).
+    #[tokio::test]
+    async fn device_cert_is_bound_to_its_own_device_pub() {
+        let key = SigningKey::from_bytes(&[3u8; 32]);
+        let other = SigningKey::from_bytes(&[4u8; 32]);
+        let env_line = serde_json::to_string(&build_envelope(&key, 1, None)).unwrap();
+
+        // Matching device cert → the device's own envelope is accepted.
+        let state = Arc::new(AppState::in_memory());
+        let (status, body) = post_as(state.clone(), "/v1/envelopes", env_line.clone(), device_auth(&key)).await;
+        assert_eq!(status, StatusCode::OK);
+        let r: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(r["accepted"], 1, "own envelope accepted under a matching device cert");
+
+        // A cert bound to ANOTHER device_pub → the line is rejected, nothing enters the store.
+        let state = Arc::new(AppState::in_memory());
+        let (status, body) = post_as(state, "/v1/envelopes", env_line, device_auth(&other)).await;
+        assert_eq!(status, StatusCode::OK, "batch route stays 200; the mismatched line is rejected in-report");
+        let r: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(r["accepted"], 0);
+        assert_eq!(r["rejected"].as_array().unwrap().len(), 1, "the cross-device envelope is rejected");
+
+        // Heartbeat bound to another device → hard 403.
+        let state = Arc::new(AppState::in_memory());
+        let (status, _) = post_as(state, "/v1/heartbeat", heartbeat_line(&key, 1), device_auth(&other)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "a device cert may not heartbeat for another device");
+
+        // Device-info bound to another device → hard 403.
+        let state = Arc::new(AppState::in_memory());
+        let di = serde_json::to_string(&sample_signed_device_info(&key)).unwrap();
+        let (status, _) = post_as(state, "/v1/device-info", di, device_auth(&other)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "a device cert may not post inventory for another device");
+    }
+
+    /// A DEVICE may pull its OWN scoped policy but not another device's; an OPERATOR may pull any (the
+    /// cockpit preview/evidence path).
+    #[tokio::test]
+    async fn get_policy_device_own_scope_operator_any() {
+        let key = SigningKey::from_bytes(&[5u8; 32]);
+        let dev_pub = hex::encode(key.verifying_key().to_bytes());
+        let state = Arc::new(AppState::in_memory());
+
+        // Own scope: 404 (nothing published) — NOT 403. Reaching NOT_FOUND proves the gate let it through.
+        let (status, _) = get_as(state.clone(), &format!("/v1/policy?device_pub={dev_pub}"), device_auth(&key)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "device pulling its OWN scope passes the gate");
+
+        // Another device's scope → 403.
+        let (status, _) = get_as(state.clone(), "/v1/policy?device_pub=someoneelse", device_auth(&key)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "a device may not pull another device's policy");
+
+        // Operator → allowed for any device_pub (the synthetic preview id included).
+        let (status, _) = get_as(state, "/v1/policy?device_pub=_fleet_console_preview_", PeerAuth::Role(PeerRole::Operator)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "operator preview passes the gate (404 = nothing published)");
+    }
+
+    /// A Rejected cert (role-less with grace OFF, or a malformed role) is 403'd on EVERY route,
+    /// including `/healthz`.
+    #[tokio::test]
+    async fn rejected_cert_is_forbidden_everywhere() {
+        let state = Arc::new(AppState::in_memory());
+        let bad = PeerAuth::Rejected("no role SAN, grace off".into());
+        for route in ["/healthz", "/metrics", "/v1/coverage"] {
+            let (status, _) = get_as(state.clone(), route, bad.clone()).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "rejected cert is 403 on {route}");
+        }
+        let (status, _) = post_as(state, "/v1/envelopes", "{}".into(), bad).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "rejected cert is 403 on POST too");
+    }
+
+    /// BC-4 grace: a Legacy (role-less, grace-on) cert behaves exactly as pre-P6 — every route, no
+    /// `device_pub` binding — so an un-migrated fleet keeps working during cert reissue.
+    #[tokio::test]
+    async fn legacy_grace_behaves_like_pre_p6() {
+        let key = SigningKey::from_bytes(&[6u8; 32]);
+        let env_line = serde_json::to_string(&build_envelope(&key, 1, None)).unwrap();
+
+        // A legacy cert may read the fleet (operator-ish) AND post evidence (device-ish) — both work,
+        // and evidence for ANY device_pub is accepted (no binding), exactly as before P6.
+        let state = Arc::new(AppState::in_memory());
+        let (status, _) = get_as(state.clone(), "/v1/coverage", PeerAuth::Legacy).await;
+        assert_eq!(status, StatusCode::OK, "legacy grace reads coverage");
+        let (status, body) = post_as(state, "/v1/envelopes", env_line, PeerAuth::Legacy).await;
+        assert_eq!(status, StatusCode::OK);
+        let r: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(r["accepted"], 1, "legacy grace posts evidence with no device_pub binding");
+    }
+
     /// The ⭐ end-to-end pilot demo (2.11): device emits a signed envelope + heartbeat → kriyad ingests
     /// and RE-VERIFIES offline → an auditor reads the bytes back over /v1/verify, re-verifies the SAME
     /// bytes, and checks the tail-truncation anchor → coverage reads current, then silent once the device
@@ -1312,7 +1630,7 @@ mod tests {
         // 4. Air-gap variant: the SAME signed bytes, side-loaded from a file, ingest identically.
         let airgap = AppState::in_memory();
         assert_eq!(
-            ingest_ndjson(&airgap, &env_line).accepted,
+            ingest_ndjson(&airgap, &env_line, None).accepted,
             1,
             "sneaker-net == network"
         );

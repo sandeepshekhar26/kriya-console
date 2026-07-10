@@ -18,19 +18,29 @@ mTLS on the wire, or side-loaded from a file in the air-gap model), **re-verifie
 hash-chain offline** (it never trusts the sending device), persists only signed metadata to append-only
 SQLite, and exposes:
 
-| Route | Method | Purpose |
-|---|---|---|
-| `/healthz` | GET | liveness (`ok`) |
-| `/metrics` | GET | Prometheus counters |
-| `/v1/envelopes` | POST | NDJSON batch ingest — verify each, gap-tolerant idempotent insert |
-| `/v1/heartbeat` | POST | one signed heartbeat (the tail-truncation anchor) |
-| `/v1/coverage` | GET | per-device `current` / `behind` / `silent` |
-| `/v1/verify` | GET | trustless read-back: the **exact** stored signed bytes + latest heartbeat |
+Every `/v1/*` route is **role-gated** (P6, doc 22 §11-B2): kriyad reads the role stamped into the client
+cert's SAN URI and enforces it, so a stolen/misused cert is contained.
+
+| Route | Method | Role required | Purpose |
+|---|---|---|---|
+| `/healthz` | GET | any authenticated | liveness (`ok`) |
+| `/metrics` | GET | any authenticated | Prometheus counters |
+| `/v1/envelopes` | POST | **device** (own `device_pub`) | NDJSON batch ingest — verify each, gap-tolerant idempotent insert |
+| `/v1/heartbeat` | POST | **device** (own `device_pub`) | one signed heartbeat (the tail-truncation anchor) |
+| `/v1/device-info` | POST | **device** (own `device_pub`) | signed device-inventory beacon (doc 22 §7) |
+| `/v1/policy` | POST | **operator** | publish a signed `PolicyBundle` (kriyad authors nothing) |
+| `/v1/policy` | GET | **device** (own scope) or **operator** (preview) | serve the latest in-scope bundle |
+| `/v1/coverage` | GET | **operator** | per-device `current` / `behind` / `silent` |
+| `/v1/verify` | GET | **operator** | trustless read-back: the **exact** stored signed bytes + latest heartbeat |
+
+A **device** cert may only introduce evidence for the `device_pub` bound into its own cert (it cannot
+read the fleet or spoof another device's coverage); an **operator** cert may read the fleet + author
+policy (it cannot POST device evidence). See §CERTS below.
 
 It refuses to start ingest without a valid **`control-plane`** license (verified on-device against the
 pinned issuer key — no phone-home).
 
-**The entire config surface is four environment variables** (no other file, no flags):
+**The entire config surface is five environment variables** (no other file, no flags):
 
 | Variable | Default | What |
 |---|---|---|
@@ -38,6 +48,7 @@ pinned issuer key — no phone-home).
 | `KRIYAD_DB` | `/var/lib/kriyad/kriyad.sqlite` | the append-only SQLite store |
 | `KRIYAD_LICENSE` | `/etc/kriyad/kriyad-license.json` | the offline `control-plane` license (start gate) |
 | `KRIYAD_CA_DIR` | `/etc/kriyad/ca` | mTLS material — `{server.pem, server.key, ca.pem}` |
+| `KRIYAD_ALLOW_LEGACY_CERTS` | *(unset = off)* | P6 migration grace: honor pre-P6 role-LESS certs (§CERTS). Default **off** — the shipped posture enforces roles. |
 
 > **Under the BOX systemd unit**, `KRIYAD_BIND` + `KRIYAD_DB` come from `/etc/kriyad/kriyad.env`,
 > while `KRIYAD_LICENSE` + `KRIYAD_CA_DIR` are wired through **systemd credentials**
@@ -49,11 +60,49 @@ pinned issuer key — no phone-home).
 > on older hosts use a static `kriyad` system user that owns the files instead.)
 
 **mTLS is on when `KRIYAD_CA_DIR` holds those three files** (BOX + K8S + online modes). It requires *every*
-client — including `/healthz` — to present a cert chaining to the pinned CA (`ca.pem`). If the directory
-is absent, kriyad serves **plain HTTP** — dev/local only; never expose an un-pinned listener. Bootstrap a
-dev CA + server cert + N device client certs with [`scripts/kriyd-ca.sh`](scripts/kriyd-ca.sh), or drop
-your own CA into `KRIYAD_CA_DIR`. (The dev CA is the pilot enrollment stub; a real CA + per-device
-single-use tokens is Phase 3.)
+client — including `/healthz` — to present a cert chaining to the pinned CA (`ca.pem`), **and** (P6) a
+role stamped into that cert's SAN URI. If the directory is absent, kriyad serves **plain HTTP** —
+dev/local only, no role enforcement; never expose an un-pinned listener. Bootstrap a dev CA + server cert
++ role-stamped client certs with [`scripts/kriyd-ca.sh`](scripts/kriyd-ca.sh) (§CERTS below), or drop your
+own CA into `KRIYAD_CA_DIR`. (The dev CA is the pilot enrollment stub; a real enrollment CA + CSR-binding
++ per-device single-use tokens is Phase 3, doc 13.)
+
+---
+
+## §CERTS — role-stamped mTLS certs + migration (P6, doc 22 §11-B2)
+
+Every client cert carries its **role** in a SAN URI, which kriyad parses after the handshake and gates
+routes on. This contains a stolen/misused cert: a device cert cannot read the fleet or post evidence for
+any other device; an operator cert cannot post device evidence.
+
+| Role | SAN URI | May |
+|---|---|---|
+| device | `kriya://role=device;device_pub=<hex>` | POST its own envelopes/heartbeat/device-info; GET its own policy |
+| operator | `kriya://role=operator` | GET coverage/verify; POST/GET policy |
+
+Bootstrap them with the dev script (the `device_pub` is the device's ed25519 **receipt-signing** pubkey —
+the same key that signs its envelopes, so a device cert can only introduce evidence it is bound to):
+
+```sh
+# an operator cert for the cockpit/auditor, and a device cert bound to a device's receipt pubkey:
+sudo /usr/local/share/kriyad/kriyd-ca.sh /etc/kriyad/ca --operator
+sudo /usr/local/share/kriyad/kriyd-ca.sh /etc/kriyad/ca --device <device_pub_hex>
+#   -> /etc/kriyad/ca/operator.{pem,key} and /etc/kriyad/ca/device.{pem,key}
+# Re-running never rotates the CA (it is reused), so you add certs incrementally without orphaning any.
+```
+
+**Migrating an existing (pre-P6) fleet — reissue, then enforce.** Pre-P6 certs carry no role SAN and are
+**rejected by default**. To roll the new build without an outage:
+
+1. Start kriyad with **`KRIYAD_ALLOW_LEGACY_CERTS=1`** — role-less certs are honored exactly as pre-P6
+   (every route, no `device_pub` binding) while role-stamped certs are already strictly enforced.
+2. Reissue every cert **onto the same CA** with a role (`--operator` / `--device <pub>`) and roll them
+   out (via your MDM in the real flow).
+3. Once every peer presents a role-stamped cert, **unset `KRIYAD_ALLOW_LEGACY_CERTS`** (drop it from
+   `kriyad.env` and restart) — legacy certs are now 403'd and roles are fully enforced.
+
+Until then, a shared-CA pilot without roles runs with **network segmentation as the documented
+compensating control** (doc 22 §11-B2).
 
 ---
 
@@ -83,9 +132,10 @@ sudo ./install.sh
 # a) drop your control-plane license (obtained from kriya; in the pilot it's issued via the dev issuer):
 sudo cp your-control-plane-license.json /etc/kriyad/kriyad-license.json
 
-# b) bootstrap mTLS — a dev CA, the kriyad server cert, and one device client cert:
-sudo /usr/local/share/kriyad/kriyd-ca.sh /etc/kriyad/ca 1
-#   …or drop your own {server.pem, server.key, ca.pem} into /etc/kriyad/ca instead.
+# b) bootstrap mTLS — a dev CA, the kriyad server cert, and role-stamped client certs (§CERTS):
+sudo /usr/local/share/kriyad/kriyd-ca.sh /etc/kriyad/ca --operator
+sudo /usr/local/share/kriyad/kriyd-ca.sh /etc/kriyad/ca --device <device_pub_hex>
+#   …or drop your own {server.pem, server.key, ca.pem} + role-stamped client certs into /etc/kriyad/ca.
 ```
 
 ### 4. Start + confirm it's healthy and hardened
@@ -94,29 +144,31 @@ sudo systemctl enable --now kriyad
 systemctl is-active kriyad                 # → active
 systemd-analyze security kriyad            # overall exposure should NOT read UNSAFE
 
-# /healthz over mTLS — a client cert is required (the CA pins both ends):
+# /healthz over mTLS — any role-stamped client cert works (both ends pinned to the CA):
 curl --cacert /etc/kriyad/ca/ca.pem \
-     --cert /etc/kriyad/ca/client-1.pem --key /etc/kriyad/ca/client-1.key \
+     --cert /etc/kriyad/ca/operator.pem --key /etc/kriyad/ca/operator.key \
      https://localhost:8443/healthz        # → ok
 ```
 
 ### 5. Prove the trust loop — ingest → serve → auditor re-proves offline
 Once a device is pushing evidence (or you side-load an outbox file carried from one), you can re-prove the
-stored bytes yourself — the aggregator is never trusted:
+stored bytes yourself — the aggregator is never trusted. The read-back routes are **operator**-role, so
+use the operator cert:
 ```sh
 DEVICE=<the device's ed25519 public key hex>
 
-# read the EXACT stored signed bytes back over mTLS:
+# read the EXACT stored signed bytes back over mTLS (operator role):
 curl --cacert /etc/kriyad/ca/ca.pem \
-     --cert /etc/kriyad/ca/client-1.pem --key /etc/kriyad/ca/client-1.key \
+     --cert /etc/kriyad/ca/operator.pem --key /etc/kriyad/ca/operator.key \
      "https://localhost:8443/v1/verify?device_pub=$DEVICE" > readback.json
 
 # re-verify them fully offline: signatures + hash-chain + merkle root + tail-truncation anchor:
 kriya-audit --readback readback.json       # exit 0 = authentic; a tampered/truncated set exits 1
 
 curl --cacert /etc/kriyad/ca/ca.pem \
-     --cert /etc/kriyad/ca/client-1.pem --key /etc/kriyad/ca/client-1.key \
+     --cert /etc/kriyad/ca/operator.pem --key /etc/kriyad/ca/operator.key \
      "https://localhost:8443/v1/coverage"   # the device reads `current`
+#   (a DEVICE cert here is 403'd — devices push their own evidence, operators read the fleet.)
 ```
 
 For a self-contained, runnable demo of this exact loop (ingest → serve → read-back → coverage) over the
@@ -218,15 +270,16 @@ zstd -dc kriyad-<ver>-airgap-<arch>.tar.zst | tar -xf - && cd kriyad-<ver>-airga
 sudo install -m0755 binaries/kriyad binaries/kriya-audit /usr/local/bin/
 #   docker load -i image/kriyad-<ver>.image.tar        # if the image was bundled
 
-# 3. License + mTLS (offline):
+# 3. License + mTLS (offline) — role-stamped certs (§CERTS):
 sudo cp kriyad-license.example.json /etc/kriyad/kriyad-license.json   # replace with your real license
-sudo ./kriyd-ca.sh /etc/kriyad/ca 1
+sudo ./kriyd-ca.sh /etc/kriyad/ca --operator
+sudo ./kriyd-ca.sh /etc/kriyad/ca --device <device_pub_hex>
 
-# 4. Ingest side-loaded evidence, serve, and re-prove — entirely offline:
-kriyad ingest-file /media/approved/outbox.ndjson     # offline re-verify on ingest
+# 4. Ingest side-loaded evidence, serve, and re-prove — entirely offline (read-back is operator-role):
+kriyad ingest-file /media/approved/outbox.ndjson     # offline re-verify on ingest (no cert — sneaker-net)
 kriyad &                                             # serve the store
 kriya-audit --readback <(curl -sk --cacert /etc/kriyad/ca/ca.pem \
-     --cert /etc/kriyad/ca/client-1.pem --key /etc/kriyad/ca/client-1.key \
+     --cert /etc/kriyad/ca/operator.pem --key /etc/kriyad/ca/operator.key \
      "https://localhost:8443/v1/verify?device_pub=<pub>")
 ```
 

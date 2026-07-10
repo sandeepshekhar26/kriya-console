@@ -23,6 +23,12 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 rustls = "0.23"
 rustls-pemfile = "2"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
+# P6 (doc 22 §11-B2) cert-role separation: name the tokio-rustls TlsStream to read the verified peer
+# cert post-handshake (already in the tree via axum-server), the Service trait for the extension-
+# injecting wrapper, and a pure-Rust x509 parser to read the role SAN URI (no C deps — musl-friendly).
+tokio-rustls = "0.26"
+tower-service = "0.3"
+x509-parser = "0.18"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
