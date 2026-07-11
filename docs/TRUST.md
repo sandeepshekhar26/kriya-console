@@ -154,12 +154,17 @@ The new `POST /v1/device-info` beacon (used by the enrolled-device tier above, a
 the cockpit's fleet table and per-device drill-in) is schema-constrained to an explicit allowlist
 of device-scoped, technical fields, enforced in code, not just by convention:
 
-| Collected (device-scoped, technical) | Excluded (person-scoped or unnecessary) — never collected, never transmitted |
-|---|---|
-| Console / runtime / verifier / agent / adapter versions | OS **username** |
-| Coarse OS platform, version, and architecture | **Hostname** — never auto-derived; the only device name shown is an optional, enterprise-assigned asset tag from the customer's own MDM, and the fleet cockpit falls back to a short public-key fragment (never a locally-known OS identity string) when that tag is absent |
-| Per-agent wired/unwired status, applied policy version | Source **IP** — seen at the transport layer but not persisted |
-| Outbox depth (a health signal), enrollment time | Timezone, locale, MAC address, hardware serial numbers |
+| Collected (device-scoped, technical) | Excluded — never collected, never transmitted | Excluded — unavoidably seen in transport, never persisted |
+|---|---|---|
+| Console / runtime / verifier / agent / adapter versions | OS **username** | Source **IP** — any TCP connection reveals it to the server; kriyad must not write it to the store |
+| Coarse OS platform, version, and architecture | **Hostname** — never auto-derived; the only device name shown is an optional, enterprise-assigned asset tag from the customer's own MDM, and the fleet cockpit falls back to a short public-key fragment (never a locally-known OS identity string) when that tag is absent | |
+| Per-agent wired/unwired status, applied policy version | Timezone, locale, MAC address, hardware serial numbers | |
+| Outbox depth (a health signal), enrollment time | | |
+
+One scope sentence that must accompany this table wherever it is shown: **on a single-user device,
+device-scoped records are still personal data under GDPR** — `device_pub` plus an MDM asset tag is
+indirectly identifiable (pseudonymization is not anonymization). This table is *minimization within
+scope*, not an exemption from it; the customer is the controller of what their kriyad receives.
 
 This is the same field list documented as canonical in the runtime's `DeviceInfo` schema (see the
 open kriya repo's `kriya-verify` crate), which ships with an adversarial test proving the exclusion
