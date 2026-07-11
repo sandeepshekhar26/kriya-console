@@ -2,82 +2,95 @@
 
 **Proprietary — paid tier. Not open source.** All rights reserved; see [`LICENSE`](LICENSE).
 
-> **The governance plane for on-device AI agents.** Where an organization oversees, governs, and
-> *proves* what every agent did across every app it operates — built on the open-source
-> [kriya](https://github.com/sandeepshekhar26/kriya) runtime. **The engine is open; the cockpit is paid.**
+> **The agent control plane: govern everything your AI agents do — and prove it.** Built on the
+> open-source [kriya](https://github.com/sandeepshekhar26/kriya) runtime (MIT). **The engine is open;
+> the cockpit is paid.** One Mac free; a whole fleet from your own on-prem server (`kriyad`) — air-gap,
+> on-prem, or your VPC, never our cloud.
 
-The open `kriya` runtime (MIT) makes a *single* app safely drivable by an agent: every action runs
-through **policy → human approval → budget → an Ed25519-signed audit receipt**, on-device. That's the
-adoption funnel. kriya Console is the layer **organizations pay for** — the cross-app cockpit that
-aggregates those signed receipts, **re-verifies them locally**, lets you author the policy the
-runtime enforces, routes approvals, and turns the whole trail into compliance evidence.
+The open `kriya` runtime makes any agent surface governable: every action runs through
+**policy → human approval → budget → an Ed25519-signed, hash-chained receipt**, on-device. That's the
+adoption funnel. kriya Console is the layer **organizations pay for** — it aggregates those signed
+receipts, **re-verifies them locally**, authors the policy the runtime enforces, routes approvals,
+exports compliance evidence, and (since v0.2.3) runs the **fleet cockpit** against a
+customer-hosted `kriyad` aggregation server.
+
+**New machine / new contributor? Start at [`SETUP.md`](SETUP.md)** — the from-scratch guide for the
+Console + `kriyad` dev loop. **Strategy/product questions? Start at
+[`docs/ideas/README.md`](docs/ideas/README.md)** (per [`CLAUDE.md`](CLAUDE.md), the repo is the
+source of truth, not memory).
 
 ## Who it's for
 
-Teams and regulated organizations running agents across **more than one** app, where *"an agent did
-something"* is not enough — they must **prove what it did and constrain what it can do**, on-device,
-where a cloud MCP gateway structurally can't reach. POS, CRM, finance, healthcare, legal, gov.
+Teams and regulated organizations running agents where *"an agent did something"* is not enough —
+they must **prove what it did and constrain what it can do**. The sharpest fit: orgs that legally
+can't ship agent activity to a cloud GRC (defense/CMMC, sovereign, air-gapped) — kriya installs where
+a cloud governance product structurally can't.
 
-## What you can do today
+## What you can do today (v0.2.3)
 
 | | The view | The value |
 |---|---|---|
-| **Oversee** | **Monitor** (home) | The live home: an auto-tailing stream of signed receipts **re-verified on-device**, posture at a glance (receipts, verified vs unverified, signers, coverage), and per-app **attestation continuity** — a colored band per receipt so a verification gap is obvious. |
-| **Prove** | **Audit log** | Every signed receipt **verified on-device** against its embedded Ed25519 key — tampered or forged rows fail and get a tamper-flagged row. Filter by action / status / source app. |
-| **Decide** | **Approvals** | One cross-app/agent queue for the actions a policy holds for a human — **risk-ranked** (destructive + financial first), per-app and per-agent, attributed to the requesting agent + operator, approve/deny with a recorded reason. **Role-gated** (RBAC): only an `approve`-capable role may decide. |
-| **Constrain** | **Policy** | Author the `agent-policy.yaml` the runtime enforces: ordered Allow / Require-approval / Deny rules, one-click coverage for ungoverned actions, lint, per-minute action **and** per-hour api-call budget caps, import/export — with a live decision preview. |
-| **Throttle** | **Budgets & rate** | Per-app / per-agent / per-operator usage against the rate caps — peak action rate, utilization, at-limit history. A scope *at* its cap is the host throttling it. |
-| **Attribute** | **Identity & access** | Who operated each app — per-operator + per-agent dashboards from the signed `actor` (verified receipts only) — and **RBAC** roles (admin / approver / operator / viewer) keyed on the operator. |
-| **Report** | **Evidence** | A report builder: pick a framework — **SOC 2 / ISO 42001 / EU AI Act** — and generate an auditor-ready bundle (control mapping, attribution, on-device attestations, action inventory), Markdown + JSON, on-device. |
-| **Connect** | **Connections** | Add/manage **governed MCP connections** across the reach hierarchy: **kriya-native** (bolt-on), **proxy** any MCP server, or **govern a desktop app** via reach-in / computer-use. Wires `claude_desktop_config.json` and walks the macOS permissions for you. |
+| **Oversee** | **Monitor** (home) | Auto-tails `~/.kriya/audit/`, re-verifies every receipt on-device, posture at a glance, per-app attestation continuity. |
+| **Prove** | **Audit log** | Every receipt verified against its embedded Ed25519 key — tampered/forged rows flagged on sight. |
+| **Know the gaps** | **Coverage Map** | Six lanes (Claude Code · remote MCP · stdio MCP · desktop apps · file & exec · egress), each GREEN/AMBER/GREY — and every state change is itself a signed `coverage.snapshot` receipt in its own hash chain. The honest "what *isn't* recorded" answer. |
+| **Decide** | **Approvals** | One cross-app, risk-ranked decision queue (RBAC-gated), attributed to agent + operator, reason recorded. *(A queue/record — the live prompt is the hook/gateway's own dialog; remote unblock is P7, planned.)* |
+| **Constrain** | **Policy** | Author the `agent-policy.yaml` the runtime enforces (auto-persisted; every install path wires `--policy` — the B0 fix): ordered allow/approve/deny, budgets, lint, live preview. |
+| **Wire** | **Connections / Govern-all** | Detect the agents on this Mac (Claude Code, Hermes) and wire hooks + gateway + policy in one click, reversibly; manage governed MCP connections; walks macOS permissions. |
+| **Throttle** | **Budgets & rate** | Per-app/per-agent/per-operator usage vs caps. |
+| **Attribute** | **Identity & access** | Per-operator + per-agent dashboards from the signed `actor`; RBAC roles. |
+| **Report** | **Evidence** *(license)* | 19 controls across 5 frameworks — NIST 800-171/CMMC L2 AU-family (3.3.1–3.3.9), SOC 2, ISO 42001, EU AI Act, data-residency — statuses **computed from re-verified receipts**, gaps shown honestly. Markdown + JSON. |
+| **Correlate** | **Fleet** *(license)* | Cross-app correlation on this machine: verified/failed, signers, policy coverage. |
+| **Command the fleet** | **Control plane** *(license: `fleet-console`)* | The P0–P6 cockpit against your own `kriyad`: fleet table (liveness · inventory · drift), central policy authoring with an **org-key-signed downlink + anti-rollback**, a drift view **re-verified locally from each device's own signed envelopes** (kriyad's row is only a hint — disagreements get a loud mismatch badge), and the org-wide AU+CM evidence export. |
 
-**Freemium:** the **free** tier is the live governance monitor, offline receipt verification, the
-Connections manager, and guided setup — fully usable on its own. An **offline license** unlocks the
-**compliance tier**: auditor-ready evidence export (**Evidence**) and cross-app correlation
-(**Fleet**) across the apps on this machine. (Cross-*machine* fleet is on the roadmap; the license issuer/purchase path is a deferred
-stub.)
+**Freemium:** free = Monitor, offline verification, Coverage, Connections, govern-all, guided setup —
+fully usable, no account. An **offline license** unlocks the compliance tier (Evidence + Fleet) and,
+with the `control-plane`/`fleet-console` flags, device enrollment + the fleet cockpit. Licensed, not
+self-serve (the issuer/purchase path is a deferred stub; design-partner engagements today).
 
-Coming next: **SSO / OIDC** sign-in to back the RBAC roles — a **hosted-tier** feature, deliberately
-gated to a concrete enterprise deal rather than built speculatively (the console currently sells on
-"nothing leaves this machine"). See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+## The control plane (shipped: Phases 0–2 + fleet cockpit P0–P6)
 
-## See it in 30 seconds
+Status board: [`docs/ideas/CONTROL-PLANE-ROADMAP.md`](docs/ideas/CONTROL-PLANE-ROADMAP.md) · spec:
+[doc 13](docs/ideas/13-control-plane-full-spec-and-gtm.md) · cockpit design:
+[doc 22](docs/ideas/22-fleet-cockpit-design.md) · positioning (control + proof, egress honesty):
+[doc 23](docs/ideas/23-egress-ingress-governance.md).
 
-Download and open the Console desktop app. It opens on the **Monitor** — it **auto-discovers and
-tails the standard on-device audit location (`~/.kriya/audit/`)** — no import, no log-hunting — and
-re-verifies every receipt on-device in its compiled backend. Then walk
-**Monitor → Audit → Approvals → Policy → Budgets → Identity → Evidence**, and add a governed app from
-**Connections**. Press **⌘K** to jump anywhere. To produce marketing screenshots, see
-[`docs/screenshots/CAPTURE.md`](docs/screenshots/CAPTURE.md).
-
-Developer path (run from source):
-
-```bash
-npm install
-npm run tauri dev      # build + launch the desktop control-plane app
 ```
+device (Console, enrolled)                    your kriyad (BOX / K8S / air-gap)          operator (Console cockpit)
+  verified receipts                             mTLS on every route                        fleet table · drift · org evidence
+   └→ Evidence Compiler                         verifies EVERYTHING on ingest              author policy → org-key sign
+      allowlist redaction (drop-by-default)     append-only SQLite                          └→ publish
+      signed AttestationEnvelope                stores signed bytes only                   re-verifies every envelope LOCALLY
+   └→ hash-chained outbox ──── push ──────────▶ coverage/liveness hints ◀──── pull ────────┘
+   ◀─── org-key-signed PolicyBundle (pull on heartbeat · verify · anti-rollback · apply · signed receipt)
+```
+
+- **kriyad authors nothing**: evidence is device-signed, policy is operator-signed, the server holds
+  neither key — a compromised kriyad can delay/withhold, never forge; withholding is caught
+  (heartbeat gaps + the auditor CLI's tail-truncation anchor).
+- **Cert roles (P6)**: device certs can't read the fleet; operator certs can't post evidence.
+- **Three-tier data boundary** (free machine-level / enrolled boundary-level / operator) —
+  [`docs/TRUST.md`](docs/TRUST.md) is canonical; the GDPR-minimized DeviceInfo beacon has *no schema
+  field* for usernames/hostnames/IPs.
+- Deferred (demand-pulled): P7 remote approvals, Phase 3 enrollment CA/CRL, Phase 4 HSM issuer +
+  air-gap activation, Phase 5 k8s/Postgres/SSO. **Egress/ingress governance is planned, not built**
+  (doc 23 — validate first; never claim SC-7/DLP).
 
 ## The trust spine — verify, don't trust
 
-The product's spine is **local, independent verification**: every "the agent did X" traces to a
-signed receipt the Console re-verifies **on-device in its compiled (Rust/Tauri) backend**, and every
-policy it shows decides *identically* to the host. Verification is proven **byte-identical** against
-the host's canonical signing (`crates/kriya/src/audit.rs`) on real Rust-signed receipts in the test
-suite, and the policy model is a parity-tested port of `permissions.rs`. Nothing leaves the
-machine.
-
-What that proof does — and, honestly, does **not** — guarantee (pin your signer; whole-record
-deletion needs the R20 hash-chaining; full-host-compromise is out of scope) is written up for
-security reviewers in **[`docs/TRUST.md`](docs/TRUST.md)**. We publish the boundaries rather than
-paper over them — enterprise buyers reward the candor.
+Every claim traces to a signed artifact re-verified locally: receipts (TS ↔ Rust canonical parity on
+real signed bytes), envelopes, DeviceInfo beacons, policy bundles (verified against a **pinned** org
+key, never one the payload asserts). `npm test` is the spine — it fails if the TS verifier and Rust
+signer drift by one byte. The honest boundaries (tamper-*evidence* not tamper-proofing, pin your
+signer, fail-open seams on Claude Code's side, the disclosed B0 bug) live in
+[`docs/TRUST.md`](docs/TRUST.md) — we publish them rather than paper over them.
 
 ## Why now
 
-**EU AI Act** high-risk obligations take effect **August 2, 2026** (penalties up to 7% of worldwide
-turnover); **SOC 2** monitoring and **ISO 42001** ask the same of any agent touching real data. The
-Console is buy-not-build governance plus cryptographic, tamper-evident audit — the willingness-to-pay
-surface those mandates create, on-device. Pricing (open-core tiers) is drafted in
-[`docs/PRICING.md`](docs/PRICING.md).
+**CMMC Level 2 enters new DoD contracts Nov 10, 2026** (Phase 2) — defense suppliers adopting agents
+need AU-family evidence a C3PAO will credit, inside the boundary. EU AI Act record-keeping (high-risk
+enforcement now Dec 2027 after the omnibus postponement), SOC 2, and ISO 42001 ask the same of any
+agent touching real data. Pricing draft: [`docs/PRICING.md`](docs/PRICING.md) · GTM assets:
+[`docs/gtm/`](docs/gtm/FEATURES.md) (features list, deck, playbooks, screenshots).
 
 ## How it relates to the open runtime
 
@@ -86,40 +99,43 @@ surface those mandates create, on-device. Pricing (open-core tiers) is drafted i
                                            ▲                                   │
  paid   kriya-console     ── authors agent-policy.yaml ──┘                     │
                           ── aggregates + re-verifies the signed receipts ─────┘
-                          ── routes approvals · exports compliance evidence
+                          ── evidence export · fleet cockpit · kriyad control plane
 ```
 
 Dependency is **one-way**: the Console consumes the open `kriya` audit + policy formats; the public
 repo never references this one. Don't copy proprietary code into the open repo, and don't relicense
-the open SDK. (Split + rationale: runtime repo `docs/LICENSING.md`, decision **D-011**.)
+the open SDK. The shared trust core lives in the `kriya-verify` crate (workspace member here).
 
 ## Develop
 
 ```bash
-npm test              # verifier + policy + approvals + compliance — cross-checked against the Rust host
-npm run tauri dev     # build + launch the desktop control-plane app
-npm run build         # typecheck (tsc --noEmit) + production build
-npm run demo:approvals    # walk the approval-routing flow in the terminal
-npm run demo:compliance   # print a full compliance-evidence report
+npm install
+npm run tauri dev         # build + launch the desktop app
+npm test                  # THE trust spine: TS verifier ↔ Rust signer parity + policy/approvals/compliance
+npm run typecheck         # tsc --noEmit
+cargo test                # workspace: app + kriya-verify + kriya-aggregator + kriya-audit-cli
+cargo test --features control-plane   # + envelope/outbox/policy/fleet paths
+npm run capture           # marketing stills of the free views (?capture=1 demo seed)
+npm run capture:fleet     # marketing stills of the P2–P6 fleet cockpit (Playwright IPC stub)
 ```
-
-`npm test` is the spine: it proves the TS verifier agrees with the Rust signer on real receipts (and
-rejects tampered ones), and that the policy model decides + lints identically to the host.
 
 ## Layout
 
 ```
-src/lib/verify.ts        canonical bytes + Ed25519 verification (the trust core)
-src/lib/policy.ts        policy model: rules, decide(), lint — a port of permissions.rs
-src/lib/approvals.ts     approval queue: risk ranking, routing, persistence
-src/lib/compliance.ts    verified trail → SOC 2 / ISO 42001 / EU AI Act evidence bundle
-src/lib/receipts.ts      parse a JSONL log → verified rows
-src/views/               Monitor · Audit · Approvals · Policy · Budget · Identity · Reports(Evidence) · Fleet · Connections · Settings
-src/components/          Sidebar · Icon · CommandPalette · AuditTable · LicenseGate
-src/styles.css           the design system — light-first tokens, one rationed accent, hairline structure
-src/sample/              real Rust-signed receipts (zero-setup demo + test fixtures)
-test/                    verify · policy · approvals · compliance · actor (parity with the Rust host)
-docs/                    ROADMAP · TRUST · PRICING · screenshots/CAPTURE
+src/lib/                 verify.ts · envelope.ts · policyBundle.ts · policyDrift.ts · policy.ts ·
+                         approvals.ts · compliance.ts · tauri.ts (bindings)
+src/views/               Monitor · Coverage · Audit · Approvals · Policy · Budget · Identity ·
+                         Reports(Evidence) · Fleet · ControlPlane{View,PolicyTab,EvidenceTab,DrillIn} ·
+                         Connections · GetStarted · Settings
+src-tauri/               the Tauri app (Rust): audit, paid.rs (evidence), license, govern, onboarding,
+                         control_plane/ (compiler · envelope · redact · outbox · enrollment · policy ·
+                         org_key · fleet · fleet_client · fleet_evidence · device_info · push)
+src-tauri/crates/        kriya-verify (shared trust core, Tauri-free) · kriya-aggregator (kriyad) ·
+                         kriya-audit-cli (offline re-prover)
+test/                    TS↔Rust parity suites (receipts · envelopes · drift · org evidence · fixtures)
+docs/                    TRUST · PRICING · ROADMAP · SETUP(root) · ideas/ (strategy, START AT ITS README) ·
+                         gtm/ (FEATURES · deck · playbooks · screenshots)
+demo/capture/            capture-shots.mjs (free views) · capture-fleet.mjs (fleet cockpit)
 ```
 
 Enterprise & regulated deployments → [kriyanative.com](https://kriyanative.com) ·
