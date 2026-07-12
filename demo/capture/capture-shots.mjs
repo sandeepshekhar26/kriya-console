@@ -26,10 +26,14 @@ async function waitReady() {
 
 const VIEWS = [
   ["monitor", "Monitor"],
+  ["coverage", "Coverage"],
   ["audit", "Audit log"],
   ["approvals", "Approvals"],
   ["policy", "Policy"],
+  ["budgets", "Budgets & rate"],
+  ["identity", "Identity & access"],
   ["evidence", "Evidence"],
+  ["fleet", "Fleet"],
   ["connections", "Connections"],
 ];
 
