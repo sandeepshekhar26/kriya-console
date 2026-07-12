@@ -17,9 +17,44 @@ use kriya_console_lib::control_plane::envelope::{
 /// full rollup path — not silently dropped as "failed".
 fn sentinel_receipt(host: &SigningKey) -> String {
     let params = r#"{"reasoning":"because the CEO asked","secret":"SENSITIVE_PARAM"}"#; // keys pre-sorted
-    let fields = format!(
-        r#""step_id":"s1","action_id":"wire_funds","params":{params},"success":true,"ts_ms":1,"actor":{{"agent":"claude","user":"Jane Q. Operator"}}"#
+    signed_line(host, "s1", "wire_funds", params, Some("Jane Q. Operator"))
+}
+
+/// A `kriya.io.egress.mcp.allow` receipt (EG-2/EG-3, doc 24 §4.2) carrying the full high-fidelity
+/// param set an assessor would actually see on-device: `dest_host`, byte counts, and a content hash —
+/// exactly the fields the study is emphatic must stay device-local. `bytes_out`/`bytes_in` use the
+/// spec's own sentinel value (424242) so a leak is unambiguous.
+fn io_sentinel_receipt(host: &SigningKey) -> String {
+    let params = concat!(
+        r#"{"bytes_in":424242,"bytes_out":424242,"content_sha256":"#,
+        r#""SENTINEL0000000000000000000000000000000000000000000000000000",""#,
+        r#"corr":"s-io","decision":"allow","dest_host":"SENSITIVE-TENANT.internal.example","#,
+        r#""dest_kind":"mcp","hash_scheme":"wire-bytes"}"#,
     );
+    signed_line(host, "s-io", "kriya.io.egress.mcp.allow", params, Some("Jane Q. Operator"))
+}
+
+/// A `kriya.watch.net.connect` receipt (doc 20 §2/§5's reserved watcher namespace — "watch params are
+/// never allowlisted verbatim"). Fulfills that doc's outstanding test commitment: the same structural
+/// seal (`minimize_window` reads only `action_id` + `success`) must hold for the watcher vocabulary
+/// too, proven here rather than only asserted in the doc.
+fn watch_sentinel_receipt(host: &SigningKey) -> String {
+    let params = concat!(
+        r#"{"daddr":"10.66.66.66","dport":443,"exe":"/usr/bin/curl","pid":4242,"proto":"tcp","#,
+        r#""scope_token":"SENTINEL-SCOPE-TOKEN","sni_or_host":"SENSITIVE-TENANT.internal.example"}"#,
+    );
+    signed_line(host, "s-watch", "kriya.watch.net.connect", params, None)
+}
+
+/// Build one signed receipt line with the given `action_id`/`params`/optional actor. Canonical bytes
+/// match `verify_value` (declaration order; params pre-sorted) exactly, so every sentinel receipt
+/// genuinely verifies and flows through the full rollup path — not silently dropped as "failed".
+fn signed_line(host: &SigningKey, step_id: &str, action_id: &str, params: &str, user: Option<&str>) -> String {
+    let actor = user
+        .map(|u| format!(r#","actor":{{"agent":"claude","user":"{u}"}}"#))
+        .unwrap_or_default();
+    let fields =
+        format!(r#""step_id":"{step_id}","action_id":"{action_id}","params":{params},"success":true,"ts_ms":1{actor}"#);
     let canon = format!("{{{fields}}}");
     let sig = hex::encode(host.sign(canon.as_bytes()).to_bytes());
     let pk = hex::encode(host.verifying_key().to_bytes());
@@ -39,7 +74,11 @@ fn no_sentinel_survives_the_envelope_builder() {
         produced_ms: 1,
         sources: vec![SourceWindow {
             source: "x.jsonl".into(),
-            lines: vec![sentinel_receipt(&host)],
+            lines: vec![
+                sentinel_receipt(&host),
+                io_sentinel_receipt(&host),
+                watch_sentinel_receipt(&host),
+            ],
             prev_tail_hash: None,
         }],
         envelope_verbosity: "standard".into(),
@@ -48,13 +87,21 @@ fn no_sentinel_survives_the_envelope_builder() {
     let key = SigningKey::from_bytes(&[11u8; 32]);
     let signed = build_signed_envelope(&input, &key, &[3u8; 32]).expect("build envelope");
 
-    // The full serialized envelope must contain NONE of the seeded sensitive tokens.
+    // The full serialized envelope must contain NONE of the seeded sensitive tokens — across the
+    // original wire_funds sentinel, the EG-3 kriya.io.* sentinel, and the doc-20 kriya.watch.*
+    // sentinel (its outstanding "watch params are never allowlisted verbatim" test commitment).
     let bytes = serde_json::to_string(&signed).expect("serialize envelope");
     for sentinel in [
         "SENSITIVE_PARAM",
         "because the CEO asked",
         "Jane Q. Operator",
         "wire_funds",
+        "SENSITIVE-TENANT.internal.example",
+        "SENTINEL0000000000000000000000000000000000000000000000000000",
+        "424242",
+        "SENTINEL-SCOPE-TOKEN",
+        "10.66.66.66",
+        "/usr/bin/curl",
     ] {
         assert!(
             !bytes.contains(sentinel),
@@ -62,10 +109,11 @@ fn no_sentinel_survives_the_envelope_builder() {
         );
     }
 
-    // Positive controls — prove the receipt actually flowed through the path it was redacted on:
+    // Positive controls — prove every sentinel receipt actually flowed through the path it was
+    // redacted on (not silently dropped as "failed"):
     assert_eq!(
-        signed.envelope.counts.verified, 1,
-        "the sentinel receipt verified and was counted (not silently dropped as failed)"
+        signed.envelope.counts.verified, 3,
+        "all three sentinel receipts verified and were counted"
     );
     assert!(
         bytes.contains("\"op_"),
@@ -74,5 +122,12 @@ fn no_sentinel_survives_the_envelope_builder() {
     assert!(
         bytes.contains("destructive"),
         "the non-allowlisted destructive id bucketed to \"destructive\""
+    );
+    // The kriya.io.* id IS allowlisted (EG-3, governance metadata) — it must appear VERBATIM in the
+    // envelope's actions[] with count 1, never bucketed, proving the allowlist change took effect.
+    assert!(
+        bytes.contains(r#""action":"kriya.io.egress.mcp.allow","count":1"#)
+            || bytes.contains(r#""count":1,"action":"kriya.io.egress.mcp.allow""#),
+        "kriya.io.egress.mcp.allow must pass through verbatim with count 1: {bytes}"
     );
 }

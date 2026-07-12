@@ -436,4 +436,30 @@ mod tests {
         // A wrong seed breaks immediately at line 1.
         assert_eq!(chain_continues_from(Some("deadbeef"), &tail), Some(1));
     }
+
+    /// EG-2/EG-3 cross-repo parity: the REAL `kriya.io.*` receipts the public runtime
+    /// (`experiment1/crates/kriya`) actually signs — copied verbatim, not authored here — must verify
+    /// under THIS repo's Rust verifier byte-identically, exactly like the `kriya-audit` CLI proved in
+    /// the runtime's own test suite (`verified 6, failed 0, chain breaks 0`). This is the strongest
+    /// parity claim available: not "the Console's own synthetic fixture round-trips," but "the actual
+    /// runtime's signed bytes verify here too." Regenerate by copying
+    /// `experiment1/crates/kriya/tests/fixtures/egress_ledger.jsonl` over
+    /// `fixtures/runtime-egress-ledger.jsonl` whenever the runtime's fixture changes.
+    #[test]
+    fn runtime_egress_ledger_fixture_verifies_byte_identically() {
+        let text = include_str!("../fixtures/runtime-egress-ledger.jsonl");
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(lines.len(), 6, "the runtime fixture's line count");
+
+        let mut io_seen = 0;
+        for line in &lines {
+            let v: Value = serde_json::from_str(line).expect("fixture line parses");
+            assert!(verify_value(&v).is_ok(), "runtime-signed line must verify under this verifier: {line}");
+            if v["action_id"].as_str().unwrap_or("").starts_with("kriya.io.") {
+                io_seen += 1;
+            }
+        }
+        assert_eq!(io_seen, 5, "five kriya.io.* receipts in the runtime fixture");
+        assert_eq!(chain_break(text), None, "the runtime's chain must be intact under this verifier");
+    }
 }

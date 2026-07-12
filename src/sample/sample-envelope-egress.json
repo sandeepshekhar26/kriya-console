@@ -1,0 +1,73 @@
+{
+  "envelope": {
+    "actions": [
+      {
+        "action": "create_note",
+        "count": 1,
+        "destructive": false,
+        "failures": 0
+      },
+      {
+        "action": "kriya.io.egress.http.approve",
+        "count": 1,
+        "destructive": false,
+        "failures": 0
+      },
+      {
+        "action": "kriya.io.egress.mcp.allow",
+        "count": 2,
+        "destructive": false,
+        "failures": 0
+      },
+      {
+        "action": "kriya.io.egress.mcp.deny",
+        "count": 1,
+        "destructive": false,
+        "failures": 1
+      }
+    ],
+    "compiler": {
+      "produced_ms": 2000,
+      "version": "0.1.0"
+    },
+    "counts": {
+      "attestations": 0,
+      "destructive": 0,
+      "failed": 0,
+      "receipts": 5,
+      "verified": 5
+    },
+    "device_pub": "d54207da194977dcf46adbfec2bc2e75b52d5a8a42184fedfdc00024f0e3e8da",
+    "integrity": {
+      "broken_sources": [],
+      "chain_intact": true,
+      "merkle_root": "deadbeef"
+    },
+    "non_egress": {
+      "attestation_count": 0,
+      "attested": false
+    },
+    "operators": [
+      {
+        "actions": 5,
+        "ref": "op_ab12"
+      }
+    ],
+    "org_id": "acme",
+    "schema": "kriya.envelope.v1",
+    "seq": 1,
+    "signers": [
+      {
+        "fingerprint": "ab12",
+        "receipts": 5,
+        "verified": 5
+      }
+    ],
+    "window": {
+      "from_ms": 1000,
+      "to_ms": 2000
+    }
+  },
+  "public_key": "d54207da194977dcf46adbfec2bc2e75b52d5a8a42184fedfdc00024f0e3e8da",
+  "signature": "6e09e2193d0926ded1a10a5eea6692053ac6f6fee3ad8b0a74f0227877776fe427455f99db80d7a51f988b302c88c95b4792c8fafa156109354d21799307420a"
+}

@@ -26,6 +26,48 @@ export interface Policy {
   /** Max inference/API calls per trailing 60-minute window (R11). `null` = no cap. Independent of
    *  the per-minute action cap: bounds model *cost*, not action bursts. */
   maxApiCallsPerHour: number | null;
+  /** The egress destination tier (doc 24 §7.3 / EG-2). `null` = no `egress:` section authored — the
+   *  runtime's egress governance is OFF, byte-identical to pre-EG-2 (BC-3: no `egress:` key is ever
+   *  written to the YAML for this state, so an unmodified policy round-trips unchanged). */
+  egress: EgressPolicy | null;
+}
+
+/** What happens to an egress destination no rule matches. Mirrors `permissions::UnlistedPosture`. */
+export type UnlistedPosture = "allow" | "deny" | "defer";
+
+/** One egress destination rule: a human-readable host pattern → a decision tier. `*.vendor.com`
+ *  matches the vendor.com domain (subdomains + the apex); `*` matches any host; anything else is an
+ *  exact match. Reuses `Tier` — the egress tier space is the same allow/approval/deny as action rules. */
+export interface EgressRule {
+  host: string;
+  tier: Tier;
+  /** Optional per-destination byte budget (B2 — anti slow-drip exfil). `null` = no budget on this rule. */
+  budgetWindowSecs: number | null;
+  budgetMaxBytes: number | null;
+}
+
+export interface EgressPolicy {
+  rules: EgressRule[];
+  /** The posture for a host no rule matches. Default `allow` (permissive — the runtime ships OFF by
+   *  default and every export prints the mode, doc 24 §6-H10). */
+  unlisted: UnlistedPosture;
+  /** Fail-closed receipt-precondition mode (B3): if the `kriya.io.*` receipt can't be written, the
+   *  egress is denied. Default `false` (fail-open, the documented default). */
+  failClosed: boolean;
+  /** Whether to record ingress digests (keyed HMAC, doc 24 §6-P3). Its OWN switch, default OFF even
+   *  when egress is on. */
+  recordIngress: boolean;
+}
+
+export const UNLISTED_LABEL: Record<UnlistedPosture, string> = {
+  allow: "Allow",
+  deny: "Deny (deny-by-default)",
+  defer: "Defer to approval",
+};
+
+/** An egress policy with no rules and the permissive default posture — the "just turned it on" state. */
+export function emptyEgressPolicy(): EgressPolicy {
+  return { rules: [], unlisted: "allow", failClosed: false, recordIngress: false };
 }
 
 // ── YAML shapes (what the host's serde sees) ──────────────────────────────────
@@ -34,9 +76,21 @@ interface YamlRule {
   allow?: boolean;
   require_approval?: boolean;
 }
+interface YamlEgressRule {
+  host: string;
+  tier?: Tier;
+  budget?: { window_secs?: number; max_bytes?: number } | null;
+}
+interface YamlEgressPolicy {
+  rules?: YamlEgressRule[];
+  unlisted?: UnlistedPosture;
+  fail_closed?: boolean;
+  record_ingress?: boolean;
+}
 interface YamlPolicy {
   rules?: YamlRule[];
   budget?: { max_actions_per_minute?: number | null; max_api_calls_per_hour?: number | null };
+  egress?: YamlEgressPolicy;
 }
 
 export function tierFrom(allow: boolean, requireApproval: boolean): Tier {
@@ -61,6 +115,25 @@ export function defaultPolicy(): Policy {
     ],
     maxActionsPerMinute: 60,
     maxApiCallsPerHour: null,
+    egress: null,
+  };
+}
+
+function parseEgress(doc: YamlEgressPolicy | undefined): EgressPolicy | null {
+  if (!doc) return null;
+  const rules = Array.isArray(doc.rules) ? doc.rules : [];
+  return {
+    rules: rules
+      .filter((r): r is YamlEgressRule => !!r && typeof r.host === "string")
+      .map((r) => ({
+        host: r.host,
+        tier: r.tier === "approval" || r.tier === "deny" ? r.tier : "allow",
+        budgetWindowSecs: typeof r.budget?.window_secs === "number" ? r.budget.window_secs : null,
+        budgetMaxBytes: typeof r.budget?.max_bytes === "number" ? r.budget.max_bytes : null,
+      })),
+    unlisted: doc.unlisted === "deny" || doc.unlisted === "defer" ? doc.unlisted : "allow",
+    failClosed: Boolean(doc.fail_closed),
+    recordIngress: Boolean(doc.record_ingress),
   };
 }
 
@@ -79,6 +152,7 @@ export function parsePolicyYaml(text: string): Policy {
       doc.budget && typeof doc.budget.max_api_calls_per_hour === "number"
         ? doc.budget.max_api_calls_per_hour
         : null,
+    egress: parseEgress(doc.egress),
   };
 }
 
@@ -98,6 +172,22 @@ export function policyToYaml(p: Policy): string {
     doc.budget = {};
     if (p.maxActionsPerMinute !== null) doc.budget.max_actions_per_minute = p.maxActionsPerMinute;
     if (p.maxApiCallsPerHour !== null) doc.budget.max_api_calls_per_hour = p.maxApiCallsPerHour;
+  }
+  // BC-3: no `egress` key at all when the operator never authored one — a policy that never touched
+  // this feature round-trips byte-identically to before EG-2/EG-3 existed.
+  if (p.egress !== null) {
+    doc.egress = {
+      rules: p.egress.rules.map((r) => {
+        const yr: YamlEgressRule = { host: r.host, tier: r.tier };
+        if (r.budgetWindowSecs !== null && r.budgetMaxBytes !== null) {
+          yr.budget = { window_secs: r.budgetWindowSecs, max_bytes: r.budgetMaxBytes };
+        }
+        return yr;
+      }),
+      unlisted: p.egress.unlisted,
+      fail_closed: p.egress.failClosed,
+      record_ingress: p.egress.recordIngress,
+    };
   }
   const body = dump(doc, { lineWidth: -1, quotingType: '"', forceQuotes: true });
   return YAML_HEADER + body;

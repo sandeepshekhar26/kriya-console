@@ -417,6 +417,114 @@ mod tests {
         );
     }
 
+    /// EG-3 (doc 24 §4.2/§8.5): an envelope whose `actions[]` carries `kriya.io.*` ids (the governed-
+    /// lane egress/ingress ledger, EG-2) alongside an ordinary app action — proving zero envelope
+    /// schema change is needed (`MinimizedAction.action` is just a string; the ids are new VALUES, not
+    /// a new shape) and that the allowlist-only redaction discipline holds: allowlisted `kriya.io.*`
+    /// ids pass through VERBATIM with their real counts, exactly like `kriya.policy.*` already does.
+    fn sample_envelope_with_kriya_io(pk: &str, seq: u64, prev: Option<String>) -> AttestationEnvelope {
+        let receipts = vec![
+            json!({ "action_id": "create_note", "success": true }),
+            json!({ "action_id": "kriya.io.egress.mcp.allow", "success": true }),
+            json!({ "action_id": "kriya.io.egress.mcp.allow", "success": true }),
+            json!({ "action_id": "kriya.io.egress.mcp.deny", "success": false }),
+            json!({ "action_id": "kriya.io.egress.http.approve", "success": true }),
+        ];
+        // The exact allowlist doc 24 §4.5 puts in `control_plane::redact::STANDARD_IDS` — inlined here
+        // since kriya-verify (this crate) cannot depend on the app crate that owns that constant.
+        let allow = Allowlist::new([
+            "create_note",
+            "kriya.io.egress.mcp.allow",
+            "kriya.io.egress.mcp.deny",
+            "kriya.io.egress.http.approve",
+        ]);
+        let actions = minimize_window(&receipts, &allow);
+        AttestationEnvelope {
+            schema: "kriya.envelope.v1".into(),
+            device_pub: pk.into(),
+            org_id: "acme".into(),
+            business_unit: None,
+            operators: vec![OperatorRollup {
+                op_ref: "op_ab12".into(),
+                actions: 5,
+            }],
+            seq,
+            prev_envelope_hash: prev,
+            window: Window {
+                from_ms: 1000,
+                to_ms: 2000,
+            },
+            signers: vec![SignerRollup {
+                fingerprint: "ab12".into(),
+                receipts: 5,
+                verified: 5,
+            }],
+            actions,
+            counts: Counts {
+                receipts: 5,
+                verified: 5,
+                failed: 0,
+                destructive: 0,
+                attestations: 0,
+            },
+            integrity: Integrity {
+                merkle_root: "deadbeef".into(),
+                chain_intact: true,
+                broken_sources: vec![],
+            },
+            non_egress: NonEgress {
+                attested: false,
+                attestation_count: 0,
+                proof_digest: None,
+            },
+            compiler: CompilerInfo {
+                version: "0.1.0".into(),
+                produced_ms: 2000,
+            },
+            policy_state: None,
+        }
+    }
+
+    #[test]
+    fn kriya_io_action_ids_render_in_the_envelope_verbatim_and_it_verifies() {
+        let key = SigningKey::from_bytes(&[21u8; 32]);
+        let pk = hex::encode(key.verifying_key().to_bytes());
+        let env = sample_envelope_with_kriya_io(&pk, 1, None);
+
+        let by: std::collections::HashMap<&str, &MinimizedAction> =
+            env.actions.iter().map(|a| (a.action.as_str(), a)).collect();
+        assert_eq!(by["kriya.io.egress.mcp.allow"].count, 2, "allowlisted id aggregates, verbatim");
+        assert_eq!(by["kriya.io.egress.mcp.deny"].count, 1);
+        assert_eq!(by["kriya.io.egress.mcp.deny"].failures, 1, "deny receipts sign success:false");
+        assert_eq!(by["kriya.io.egress.http.approve"].count, 1);
+        assert!(by.contains_key("create_note"));
+
+        let signed = sign_envelope(env, &key);
+        assert!(verify_envelope(&signed).is_ok(), "an envelope carrying kriya.io.* actions verifies");
+        let bytes = serde_json::to_string(&signed).unwrap();
+        assert!(bytes.contains("kriya.io.egress.mcp.allow"));
+    }
+
+    /// The committed EG-3 fixture (`src/sample/sample-envelope-egress.json`) pinning that `kriya.io.*`
+    /// ids render correctly in a real signed envelope, verified by THIS build — the BC-5 companion to
+    /// `cross_version_fixtures_both_verify` above, for the new vocabulary rather than a new field. The
+    /// TS-side proof lives in `test/envelope.test.ts`.
+    #[test]
+    fn egress_fixture_verifies_and_carries_kriya_io_actions() {
+        let v: Value = serde_json::from_str(include_str!(
+            "../../../../src/sample/sample-envelope-egress.json"
+        ))
+        .unwrap();
+        assert!(verify_envelope(&v).is_ok(), "the committed egress fixture verifies");
+        let actions = v["envelope"]["actions"].as_array().expect("actions array");
+        assert!(
+            actions
+                .iter()
+                .any(|a| a["action"] == json!("kriya.io.egress.mcp.allow")),
+            "the fixture must genuinely carry a kriya.io.* action id: {actions:?}"
+        );
+    }
+
     /// Emits the committed Rust↔TS parity fixture (`src/sample/sample-envelope.json`) for the TS
     /// envelope test (1.7). Deterministic (fixed key seed). Regenerate with:
     ///   cargo test -p kriya-verify print_sample_envelope -- --ignored --nocapture
@@ -447,6 +555,18 @@ mod tests {
             applied_ms: 1_783_500_000_000,
         });
         let signed = sign_envelope(env, &key);
+        println!("{}", serde_json::to_string_pretty(&signed).unwrap());
+    }
+
+    /// Emits the EG-3 committed fixture (`src/sample/sample-envelope-egress.json`) — an envelope whose
+    /// `actions[]` carries `kriya.io.*` ids. Deterministic (fixed key seed). Regenerate with:
+    ///   cargo test -p kriya-verify print_sample_envelope_egress -- --ignored --nocapture
+    #[test]
+    #[ignore = "fixture generator; run with --ignored --nocapture to (re)generate the parity fixture"]
+    fn print_sample_envelope_egress() {
+        let key = SigningKey::from_bytes(&[21u8; 32]);
+        let pk = hex::encode(key.verifying_key().to_bytes());
+        let signed = sign_envelope(sample_envelope_with_kriya_io(&pk, 1, None), &key);
         println!("{}", serde_json::to_string_pretty(&signed).unwrap());
     }
 }

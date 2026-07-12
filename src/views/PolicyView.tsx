@@ -3,15 +3,20 @@ import { Icon } from "../components/Icon";
 import {
   decide,
   defaultPolicy,
+  emptyEgressPolicy,
   lintPolicy,
   parsePolicyYaml,
   policyToYaml,
   TIER_LABEL,
+  UNLISTED_LABEL,
+  type EgressRule,
   type Policy,
   type Tier,
+  type UnlistedPosture,
 } from "../lib/policy";
 
 const TIERS: Tier[] = ["allow", "approval", "deny"];
+const UNLISTED_POSTURES: UnlistedPosture[] = ["allow", "deny", "defer"];
 
 export function PolicyView({
   policy,
@@ -63,6 +68,21 @@ export function PolicyView({
     else next.splice(idx, 0, { action, tier });
     onChange({ ...policy, rules: next });
   }
+  function setEgressRule(i: number, patch: Partial<EgressRule>) {
+    if (!policy.egress) return;
+    const rules = policy.egress.rules.map((r, idx) => (idx === i ? { ...r, ...patch } : r));
+    onChange({ ...policy, egress: { ...policy.egress, rules } });
+  }
+  function removeEgressRule(i: number) {
+    if (!policy.egress) return;
+    onChange({ ...policy, egress: { ...policy.egress, rules: policy.egress.rules.filter((_, idx) => idx !== i) } });
+  }
+  function addEgressRule() {
+    const egress = policy.egress ?? emptyEgressPolicy();
+    const rules = [...egress.rules, { host: "", tier: "allow" as Tier, budgetWindowSecs: null, budgetMaxBytes: null }];
+    onChange({ ...policy, egress: { ...egress, rules } });
+  }
+
   function doImport() {
     try {
       const p = parsePolicyYaml(importText);
@@ -339,6 +359,108 @@ export function PolicyView({
           </article>
         </section>
       </div>
+
+      <section className="panel" style={{ marginTop: 16 }}>
+        <div className="panel-head">
+          <h2>Egress destinations</h2>
+          <label className="budget-row" style={{ margin: 0 }}>
+            <input
+              type="checkbox"
+              checked={policy.egress !== null}
+              onChange={(e) => onChange({ ...policy, egress: e.target.checked ? emptyEgressPolicy() : null })}
+            />
+            Govern egress
+          </label>
+        </div>
+        {policy.egress === null ? (
+          <p className="muted small">
+            Off — governed-lane egress (MCP connectors, WebFetch) runs unrestricted, and no{" "}
+            <code>egress:</code> section is written to <code>agent-policy.yaml</code>. Every call still
+            produces a signed evidence receipt when the runtime supports it; this only adds allow /
+            require-approval / deny control by destination host.
+          </p>
+        ) : (
+          <>
+            <p className="muted small" style={{ marginBottom: 12 }}>
+              Host patterns are matched top → bottom against the destination the agent's governed call
+              reaches — <code>*.vendor.com</code> matches the domain and its subdomains, <code>*</code>{" "}
+              matches any host. A destination matching no rule falls to the posture below.
+            </p>
+            <div className="rules">
+              <div className="rule-head">
+                <span>Host pattern</span>
+                <span>Decision</span>
+                <span />
+              </div>
+              {policy.egress.rules.map((r, i) => (
+                <div className="rule" key={i}>
+                  <input
+                    className="rule-action mono"
+                    value={r.host}
+                    onChange={(e) => setEgressRule(i, { host: e.target.value })}
+                    placeholder="*.vendor.com or an exact host"
+                  />
+                  <select
+                    className={`tier-select tier-${r.tier}`}
+                    value={r.tier}
+                    onChange={(e) => setEgressRule(i, { tier: e.target.value as Tier })}
+                  >
+                    {TIERS.map((t) => (
+                      <option key={t} value={t}>
+                        {TIER_LABEL[t]}
+                      </option>
+                    ))}
+                  </select>
+                  <button className="icon-btn danger" onClick={() => removeEgressRule(i)} title="Remove rule" aria-label="Remove egress rule">
+                    <Icon name="x" size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <button className="btn ghost add-rule" onClick={addEgressRule}>
+              + Add destination
+            </button>
+
+            <div className="budget" style={{ marginTop: 16 }}>
+              <h3>Unlisted destinations</h3>
+              <label className="budget-row">
+                Posture for a host no rule matches:
+                <select
+                  className="tier-select"
+                  value={policy.egress.unlisted}
+                  onChange={(e) => onChange({ ...policy, egress: { ...policy.egress!, unlisted: e.target.value as UnlistedPosture } })}
+                >
+                  {UNLISTED_POSTURES.map((u) => (
+                    <option key={u} value={u}>
+                      {UNLISTED_LABEL[u]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="field-hint">
+                <b>Deny (deny-by-default)</b> also arms the broker's startup allowlist check: a remote
+                MCP upstream on a denied host refuses to connect at all, receipted at boot.
+              </p>
+              <label className="budget-row">
+                <input
+                  type="checkbox"
+                  checked={policy.egress.failClosed}
+                  onChange={(e) => onChange({ ...policy, egress: { ...policy.egress!, failClosed: e.target.checked } })}
+                />
+                Fail closed — deny an egress if its signed receipt can't be written
+              </label>
+              <label className="budget-row">
+                <input
+                  type="checkbox"
+                  checked={policy.egress.recordIngress}
+                  onChange={(e) => onChange({ ...policy, egress: { ...policy.egress!, recordIngress: e.target.checked } })}
+                />
+                Record ingress digests (keyed hash of responses; off by default)
+              </label>
+            </div>
+          </>
+        )}
+      </section>
     </div>
   );
 }
