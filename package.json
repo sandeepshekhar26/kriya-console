@@ -19,7 +19,8 @@
     "capture:fleet": "node demo/capture/capture-fleet.mjs",
     "demo:approvals": "node --experimental-strip-types demo/approvals-demo.mts",
     "demo:compliance": "node --experimental-strip-types demo/compliance-demo.mts",
-    "gen:au-sample": "node --experimental-strip-types scripts/gen-au-sample.mts"
+    "gen:au-sample": "node --experimental-strip-types scripts/gen-au-sample.mts",
+    "gen:egress-demo": "node --experimental-strip-types scripts/gen-egress-demo.mts"
   },
   "dependencies": {
     "@noble/ed25519": "^2.1.0",
