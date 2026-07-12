@@ -4,7 +4,7 @@ Repeatable, **automated** capture of the sellable views from a clean, PII-free, 
 dataset — so every shot shows real green "verified" state, never a mock. One command:
 
 ```bash
-npm run capture        # → docs/screenshots/{monitor,audit,approvals,policy,evidence,connections,controlplane}.png
+npm run capture        # → docs/screenshots/{monitor,coverage,audit,approvals,policy,budgets,identity,evidence,fleet,connections,controlplane}.png
 ```
 
 ## How it works
@@ -32,6 +32,10 @@ npm run capture        # → docs/screenshots/{monitor,audit,approvals,policy,ev
 | File | View | What sells |
 |---|---|---|
 | `monitor.png` | **Monitor** | The live home: signed-receipt tail, posture (receipts, **verified vs unverified**, signers, coverage), per-app activity. The 1 unverified row is the tamper being caught. |
+| `coverage.png` | **Coverage Map** | The six-lane GREEN/AMBER/GREY grid — the honest "what *isn't* recorded" answer; every state change is itself a signed `coverage.snapshot` receipt. |
+| `budgets.png` | **Budgets & rate** | Per-app/per-agent/per-operator usage vs caps — the runaway-agent stop (egress-parity item B15, already shipped). |
+| `identity.png` | **Identity & access** | Per-operator + per-agent attribution from the signed `actor`; RBAC roles. |
+| `fleet.png` | **Fleet** | Cross-app correlation on this machine: verified/failed, distinct signers, policy coverage. |
 | `audit.png` | **Audit log** | The signed-receipt table with the **tamper-flagged row** (`delete_transaction` → "signature does not match"). *"Every receipt, verified locally against its embedded key."* |
 | `approvals.png` | **Approvals** | The cross-app/agent queue, **high-risk first** (delete / transfer / close / send), role-handle actors, Approve/Deny. The clearest enterprise shot. |
 | `policy.png` | **Policy** | The rule editor: ordered allow / require-approval / deny, coverage suggestions, lint, decision preview. |
