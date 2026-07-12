@@ -240,7 +240,8 @@ src/views/        Monitor · Coverage · Audit · Approvals · Policy · Budget 
 src-tauri/        Rust backend: audit · paid (evidence) · license · govern · onboarding · control_plane/
 src-tauri/crates/ kriya-verify (shared trust core) · kriya-aggregator (kriyad) · kriya-audit-cli
 test/             TS↔Rust parity suites (receipts · envelopes · drift · org evidence)
-docs/             TRUST · PRICING · ROADMAP · ideas/ (strategy — start at its README) · gtm/
+docs/             TRUST · FEATURE-PROOF (the claim→proof ledger) · PRICING · ROADMAP ·
+                  ideas/ (strategy — start at its README) · gtm/
 ```
 
 ---
