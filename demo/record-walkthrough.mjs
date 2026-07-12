@@ -91,6 +91,25 @@ async function main() {
   await caption(page, "Author the policy the runtime enforces — deny by default.");
   await sleep(4000);
 
+  // Egress (EG-2/EG-3): turn the egress tier ON live and author a rule — the YAML pane updates in real
+  // time, so the beat shows control being created, not a static card. Skipped on a pre-egress build.
+  try {
+    const sec = page.locator("section", { has: page.locator("h2", { hasText: "Egress destinations" }) });
+    await sec.scrollIntoViewIfNeeded({ timeout: 3000 });
+    await caption(page, "NEW — egress governance. Turn it on: destinations become policy.");
+    await sleep(1800);
+    const cb = sec.locator("input[type=checkbox]").first();
+    if (!(await cb.isChecked())) await cb.click();
+    await sleep(1000);
+    await sec.locator("button", { hasText: "+ Add destination" }).click();
+    const row = sec.locator(".rules .rule").last();
+    await row.locator("input").fill("*.github.com");
+    await sleep(600);
+    await sec.locator(".budget select").first().selectOption("deny");
+    await caption(page, "Allow what you name, approve the sensitive, deny the rest — signed per decision.");
+    await sleep(3800);
+  } catch { /* pre-egress build — skip the beat */ }
+
   await nav(page, "Evidence");
   await caption(page, "Compliance evidence — SOC 2 / ISO 42001 / EU AI Act — generated on-device.");
   await sleep(4400);
