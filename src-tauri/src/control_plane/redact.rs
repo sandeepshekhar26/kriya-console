@@ -19,7 +19,7 @@ pub fn default_allowlist() -> Allowlist {
     Allowlist::new(STANDARD_IDS)
 }
 
-const STANDARD_IDS: [&str; 12] = [
+const STANDARD_IDS: [&str; 36] = [
     "create_note",
     "edit_note",
     "delete_note",
@@ -36,6 +36,39 @@ const STANDARD_IDS: [&str; 12] = [
     // without this they'd be indistinguishable from any other non-prefixed action id.
     "kriya.policy.applied",
     "kriya.policy.stale",
+    // EG-3 (doc 24 §4.5): the 24 `kriya.io.<direction>.<kind>.<decision>` ids — the SAME governance-
+    // metadata precedent as `kriya.policy.*` above. Allowlisted verbatim at EVERY verbosity because the
+    // structural seal already does the real work: `minimize_window` (kriya-verify) reads ONLY
+    // `action_id` + `success`, so `params` — dest_host, bytes, content_sha256, everything doc 24 calls
+    // high-fidelity — is UNREACHABLE by construction, at any verbosity, with zero redaction code here.
+    // Allowlisting the id only lets the ENVELOPE say "5 egress-allow events happened", never what they
+    // were. An id under `kriya.io.` NOT in this exact closed set (a future/malformed facet, or drift
+    // like "mcp-connector") is not added here — it falls through to the generic buckets in
+    // `kriya_verify::redact::bucket`, degrading safely rather than leaking (doc 24 §4.2 rule 5 / §6-H6).
+    "kriya.io.egress.mcp.allow",
+    "kriya.io.egress.mcp.deny",
+    "kriya.io.egress.mcp.approve",
+    "kriya.io.egress.http.allow",
+    "kriya.io.egress.http.deny",
+    "kriya.io.egress.http.approve",
+    "kriya.io.egress.model.allow",
+    "kriya.io.egress.model.deny",
+    "kriya.io.egress.model.approve",
+    "kriya.io.egress.file.allow",
+    "kriya.io.egress.file.deny",
+    "kriya.io.egress.file.approve",
+    "kriya.io.ingress.mcp.allow",
+    "kriya.io.ingress.mcp.deny",
+    "kriya.io.ingress.mcp.approve",
+    "kriya.io.ingress.http.allow",
+    "kriya.io.ingress.http.deny",
+    "kriya.io.ingress.http.approve",
+    "kriya.io.ingress.model.allow",
+    "kriya.io.ingress.model.deny",
+    "kriya.io.ingress.model.approve",
+    "kriya.io.ingress.file.allow",
+    "kriya.io.ingress.file.deny",
+    "kriya.io.ingress.file.approve",
 ];
 
 /// `"extended"` verbosity (doc 22 §2/§5's `envelope_verbosity` dial) — a WIDER allowlist an operator
@@ -92,6 +125,56 @@ mod tests {
             unknown.allows("create_note") && !unknown.allows("read_note"),
             "an unrecognized verbosity value degrades to standard, never errors"
         );
+    }
+
+    /// The closed set of 24 `kriya.io.<direction>.<kind>.<decision>` ids (doc 24 §4.2 rule 5).
+    const KRIYA_IO_IDS: [&str; 24] = [
+        "kriya.io.egress.mcp.allow",
+        "kriya.io.egress.mcp.deny",
+        "kriya.io.egress.mcp.approve",
+        "kriya.io.egress.http.allow",
+        "kriya.io.egress.http.deny",
+        "kriya.io.egress.http.approve",
+        "kriya.io.egress.model.allow",
+        "kriya.io.egress.model.deny",
+        "kriya.io.egress.model.approve",
+        "kriya.io.egress.file.allow",
+        "kriya.io.egress.file.deny",
+        "kriya.io.egress.file.approve",
+        "kriya.io.ingress.mcp.allow",
+        "kriya.io.ingress.mcp.deny",
+        "kriya.io.ingress.mcp.approve",
+        "kriya.io.ingress.http.allow",
+        "kriya.io.ingress.http.deny",
+        "kriya.io.ingress.http.approve",
+        "kriya.io.ingress.model.allow",
+        "kriya.io.ingress.model.deny",
+        "kriya.io.ingress.model.approve",
+        "kriya.io.ingress.file.allow",
+        "kriya.io.ingress.file.deny",
+        "kriya.io.ingress.file.approve",
+    ];
+
+    #[test]
+    fn all_24_kriya_io_ids_are_allowlisted_at_every_verbosity() {
+        for verbosity in ["standard", "extended", "some-future-value"] {
+            let allow = allowlist_for(verbosity);
+            for id in KRIYA_IO_IDS {
+                assert!(allow.allows(id), "verbosity={verbosity} must allowlist {id}");
+            }
+        }
+        assert_eq!(KRIYA_IO_IDS.len(), 24, "the closed 2x4x3 facet set (doc 24 §4.2 rule 5)");
+    }
+
+    #[test]
+    fn an_off_vocabulary_kriya_io_id_is_not_allowlisted() {
+        // A malformed/future/drifted id (e.g. a fifth dest_kind) must NOT be added here — it falls
+        // through to the generic buckets in kriya_verify::redact::bucket, degrading safely instead of
+        // being treated as trusted governance metadata (doc 24 §6-H6).
+        let allow = allowlist_for("standard");
+        assert!(!allow.allows("kriya.io.egress.mcp-connector.allow"));
+        assert!(!allow.allows("kriya.io.egress.mcp.allowed")); // wrong decision facet
+        assert!(!allow.allows("kriya.io.something.else"));
     }
 
     #[test]

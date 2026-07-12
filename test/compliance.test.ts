@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { loadAuditLog } from "../src/lib/receipts";
-import { buildEvidence, renderJson, renderMarkdown } from "../src/lib/compliance";
+import { buildEvidence, EGRESS_SCOPE_BLOCK, renderJson, renderMarkdown } from "../src/lib/compliance";
 import { defaultPolicy, type Policy } from "../src/lib/policy";
 import type { AuditRow, SignedReceipt } from "../src/lib/types";
 
@@ -104,6 +104,7 @@ describe("buildEvidence — inventory + oversight", () => {
       ],
       maxActionsPerMinute: 30,
       maxApiCallsPerHour: null,
+      egress: null,
     };
     const b = await bundle(policy);
     const ids = b.actionInventory.map((a) => a.action).sort();
@@ -227,5 +228,115 @@ describe("buildEvidence — coverage-completeness citation (GA-3)", () => {
     const b = buildEvidence(rows, defaultPolicy(), { generatedAt: AT, coverage: { snapshots: 3, chainOk: false } });
     const c331 = b.controls.find((c) => c.control.startsWith("3.3.1"))!;
     expect(c331.evidence).toContain("chain BROKEN");
+  });
+});
+
+describe("buildEvidence — egress/ingress ledger controls (EG-3, doc 24 §3)", () => {
+  // A pre-verified in-memory row, mirroring the R24 helper above but with a `success` param so a
+  // deny receipt (signed success:false) can be constructed.
+  function row(action_id: string, params: SignedReceipt["params"], success = true): AuditRow {
+    return {
+      source: "test",
+      lineNo: 1,
+      raw: "",
+      receipt: { step_id: "s", action_id, params, success, ts_ms: AT, public_key: "pk", signature: "sig" } as SignedReceipt,
+      outcome: { ok: true },
+    };
+  }
+
+  const FORBIDDEN = ["3.13.1", "3.13.6", "SC-7", "SC-8", "CC6.6", "DLP"];
+
+  it("adds no egress control rows or scope block on a trail with zero kriya.io.* receipts", async () => {
+    const b = await bundle();
+    expect(b.egress).toBeNull();
+    expect(b.controls.some((c) => c.control.includes("3.1.3"))).toBe(false);
+    expect(renderMarkdown(b)).not.toContain(EGRESS_SCOPE_BLOCK);
+  });
+
+  it("posture: not_monitored when the governed surface itself is silent (no receipts at all)", () => {
+    const b = buildEvidence([], defaultPolicy(), { generatedAt: AT, organization: "Acme" });
+    expect(b.egressPosture.state).toBe("not_monitored");
+    const md = renderMarkdown(b);
+    expect(md).toContain("NOT MONITORED");
+    expect(md).not.toContain("zero egress"); // the exact banned phrase (§6-H1), case-sensitive
+    expect(md.toLowerCase()).not.toContain("nothing left at all");
+  });
+
+  it("posture: zero_observed when governed-lane activity exists but no egress receipts do", async () => {
+    const b = await bundle(); // the sample trail has app-action receipts, no kriya.io.*
+    expect(b.egressPosture.state).toBe("zero_observed");
+    expect(b.egressPosture.governedLaneReceipts).toBeGreaterThan(0);
+    expect(b.egressPosture.egressReceipts).toBe(0);
+    const md = renderMarkdown(b);
+    expect(md).toContain("does NOT prove the egress ledger was continuously enabled");
+    expect(md).toContain("Coverage Map");
+  });
+
+  it("posture: egress_present when kriya.io.egress.* receipts are observed, and ingress never inflates the egress count", () => {
+    const rows: AuditRow[] = [
+      row("create_note", { title: "hi" }),
+      row("kriya.io.egress.mcp.allow", { dest_host: "api.vendor.com" }),
+      row("kriya.io.ingress.mcp.allow", { bytes_in: 10 }),
+    ];
+    const b = buildEvidence(rows, defaultPolicy(), { generatedAt: AT, organization: "Acme" });
+    expect(b.egressPosture.state).toBe("egress_present");
+    expect(b.egressPosture.egressReceipts, "ingress receipts must not count as egress").toBe(1);
+    expect(renderMarkdown(b)).toContain("NOT zero — 1 kriya.io.egress.* receipt(s)");
+  });
+
+  it("computes egress evidence from verified kriya.io.* receipts only and excludes them from the action inventory", () => {
+    const rows: AuditRow[] = [
+      row("create_note", { title: "hi" }),
+      row("kriya.io.egress.mcp.allow", { dest_host: "api.vendor.com", decision: "allow" }),
+      row("kriya.io.egress.mcp.allow", { dest_host: "api.vendor.com", decision: "allow" }),
+      row("kriya.io.egress.mcp.deny", { dest_host: "evil.example", decision: "deny" }, false),
+      row("kriya.io.egress.http.approve", { dest_host: "partner.example", decision: "approve" }),
+    ];
+    const b = buildEvidence(rows, defaultPolicy(), { generatedAt: AT, organization: "Acme" });
+
+    expect(b.egress).toEqual({ verifiedReceipts: 4, allow: 2, deny: 1, approve: 1 });
+    expect(b.actionInventory.some((a) => a.action.startsWith("kriya.io."))).toBe(false);
+    expect(b.actionInventory.some((a) => a.action === "create_note")).toBe(true);
+  });
+
+  it("adds exactly the doc 24 §3 rows, all capped at partial, and NEVER the killed controls or DLP", () => {
+    const rows: AuditRow[] = [
+      row("kriya.io.egress.mcp.allow", { dest_host: "api.vendor.com" }),
+      row("kriya.io.egress.mcp.deny", { dest_host: "evil.example" }, false),
+    ];
+    const b = buildEvidence(rows, defaultPolicy(), { generatedAt: AT, organization: "Acme" });
+
+    const expectedControls = [
+      "3.1.3", "3.4.2", "3.14.6/3.14.7", "AC-4", "SI-4", "CC6.1", "CC6.7",
+      "CC7.2 — Anomaly monitoring (governed-lane egress)",
+      "Art. 12 — Record-keeping (governed-lane egress)", "Art. 28(3)", "Art. 10(2)",
+    ];
+    for (const c of expectedControls) {
+      const found = b.controls.find((row) => row.control.includes(c));
+      expect(found, `expected a control row containing "${c}"`).toBeTruthy();
+      expect(found!.status).toBe("partial");
+    }
+
+    const full = renderJson(b) + renderMarkdown(b);
+    for (const banned of FORBIDDEN) {
+      expect(full, `"${banned}" must never appear in an egress-bearing export`).not.toContain(banned);
+    }
+  });
+
+  it("embeds the §3.1 scope block verbatim in both JSON and Markdown when egress-bearing", () => {
+    const rows: AuditRow[] = [row("kriya.io.egress.mcp.allow", { dest_host: "api.vendor.com" })];
+    const b = buildEvidence(rows, defaultPolicy(), { generatedAt: AT, organization: "Acme" });
+    expect(renderJson(b)).toContain(EGRESS_SCOPE_BLOCK.slice(0, 60));
+    const md = renderMarkdown(b);
+    expect(md).toContain("Egress/ingress ledger");
+    expect(md).toContain(EGRESS_SCOPE_BLOCK);
+    expect(md).toContain("evidence, not a certification"); // the footer is unchanged
+  });
+
+  it("cites deny counts honestly when zero denials have been observed", () => {
+    const rows: AuditRow[] = [row("kriya.io.egress.mcp.allow", { dest_host: "api.vendor.com" })];
+    const b = buildEvidence(rows, defaultPolicy(), { generatedAt: AT, organization: "Acme" });
+    const si4 = b.controls.find((c) => c.control.includes("3.14.6"))!;
+    expect(si4.evidence).toContain("No denials observed");
   });
 });

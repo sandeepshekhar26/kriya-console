@@ -85,9 +85,9 @@ const LANE_META: LaneMeta[] = [
 const PREVIEW_STATUS: CoverageStatus = {
   windowH: 24,
   lanes: {
-    "claude-code-tools": { state: "green", source: "hook.claude-code", lastReceiptMs: Date.now() - 40 * 60e3, files: 1 },
-    "remote-mcp": { state: "amber", source: "hook.claude-code", files: 0 },
-    "local-stdio-mcp": { state: "green", source: "gateway", lastReceiptMs: Date.now() - 3 * 3600e3, files: 2 },
+    "claude-code-tools": { state: "green", source: "hook.claude-code", lastReceiptMs: Date.now() - 40 * 60e3, files: 1, egressLedger: true },
+    "remote-mcp": { state: "amber", source: "hook.claude-code", files: 0, egressLedger: false },
+    "local-stdio-mcp": { state: "green", source: "gateway", lastReceiptMs: Date.now() - 3 * 3600e3, files: 2, egressLedger: true },
     "desktop-apps": { state: "amber", source: "reach-in/computer-use", lastReceiptMs: Date.now() - 30 * 3600e3, files: 1 },
     "raw-file-exec": { state: "grey", files: 0 },
     "raw-egress": { state: "grey", files: 0 },
@@ -194,6 +194,13 @@ export function CoverageView({ onNavigate }: { onNavigate: (v: View) => void }) 
                 last receipt {ago(info?.lastReceiptMs)}
                 {info && info.files > 0 ? <> · {info.files} chain file{info.files > 1 ? "s" : ""}</> : null}
               </p>
+              {info?.egressLedger != null && (
+                <p className="muted small" style={{ margin: "6px 0 0" }} title="Signed kriya.io.* receipts for governed-lane egress on this seam (doc 24 EG-2) — a bypass via a spawned subprocess or a stdio server's own outbound traffic is not covered; see Trust.">
+                  <span className={`badge ${info.egressLedger ? "ok" : ""}`}>
+                    Egress ledger {info.egressLedger ? "ON" : "OFF"}
+                  </span>
+                </p>
+              )}
               {state !== "green" && (
                 <p className="panel-note">
                   {meta.fix[state === "amber" ? "amber" : "grey"]}

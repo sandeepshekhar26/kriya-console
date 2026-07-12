@@ -174,6 +174,120 @@ seven values — or their field names — can appear anywhere in the signed byte
 the wire. The guarantee here isn't "we chose not to send it today"; it's that the schema has no
 field to put it in.
 
+## Egress governance (E1) — honest limits
+
+The Console can allowlist, budget, and receipt an agent's outbound calls through the governed
+connector lanes (MCP-over-HTTP, gateway-proxied tool calls, and the hook-observed WebFetch/WebSearch
+lane) — a standalone signed receipt in the `kriya.io.<direction>.<kind>.<decision>` vocabulary per
+governed call, correlated to the underlying action receipt. Read this section before treating any of
+it as a network boundary control, because it isn't one:
+
+- **Governed lanes only, not the host.** *"When a stdio MCP server routed through kriya calls an
+  external API, kriya sees — and signs — only the tool call and result that crossed its stdio pipe;
+  the server's own outbound network traffic (which hosts it contacted, what it sent) is invisible to
+  kriya and appears in no receipt. Host-level observation of that traffic is a separate, later
+  capability."* A spawned subprocess or a stdio MCP server's own sockets bypass this lane entirely —
+  the Coverage Map's grey **raw egress** lane names that gap on purpose; a green chip on a governed
+  lane never colors it.
+- **Two different byte-hash definitions, never conflated.** Every `kriya.io.*` receipt's `params`
+  names `hash_scheme`: `"wire-bytes"` (the gateway/broker lane, where kriya is the TLS client and
+  hashes the exact bytes on the wire) or `"canonical-json"` (the hook lane, which hashes the
+  canonical key-sorted serialization of `tool_input`/`tool_response` — a different, less precise
+  commitment). Byte counts are labeled *observed payload bytes*, never a wire/TLS-level accounting —
+  connection reuse, headers, and keep-alive are invisible either way, and an SSE reply's `bytes_in`
+  is flagged partial (a lower bound, not an exact count).
+- **A denied call is receipted at the decision point.** A `kriya.io.*.deny` receipt is written
+  before/instead of execution — the call never reaches the destination — so `deny` rows exist even
+  though nothing crossed the wire. The one exception: fail-closed mode (below) can itself deny an
+  egress because the receipt couldn't be written; that block carries no receipt by construction (the
+  precondition failed), which is the whole point of the mode.
+- **Fail-closed is opt-in, and inverts the honest default.** "No receipt, no egress" is a policy
+  flag, off by default — the documented default is fail-**open** (a receipt-write failure doesn't
+  block the call). Turning it on makes the signed receipt itself a precondition of the egress, which
+  is unusually strong evidence, but it is not the out-of-the-box behavior.
+- **The egress chip on the Coverage Map is a window observation, not a configuration attestation.**
+  "ON" means at least one `kriya.io.egress.*` receipt was observed on that lane within the window;
+  "OFF" means the lane is otherwise covered but none appeared. Neither state proves the egress tier
+  was configured for the *entire* window — that requires a signed toggle/policy-version receipt this
+  build does not yet emit. The compliance export's governed-surface posture statement says so
+  explicitly (see "not monitored" vs "zero observed" below) rather than overclaiming a bound it can't
+  prove.
+- **What the chip, and the ledger, do NOT claim.** Not a firewall, not "DLP" (that word never appears
+  in an E1-gated export), and never "every byte" — the honest label is "governed connector traffic."
+  Enforcement rides a cooperative hook or gateway process that can be disabled at the host, same as
+  every other governance seam in this document.
+
+**The governed-surface posture statement** a compliance export prints is deliberately three-valued,
+never a bare "zero egress":
+- *"NOT MONITORED"* — zero governed-lane receipts of any kind were observed in the window, so no
+  statement about egress can honestly be made either way (absent-by-configuration, not a finding).
+- *"zero observed"* — the governed surface was active (other governed-lane receipts exist) and
+  produced no egress, but this does **not** prove the ledger was continuously enabled for the full
+  window (no toggle receipt bounds it yet).
+- *"NOT zero"* — at least one `kriya.io.egress.*` receipt was observed and verified.
+
+A physical air gap or network isolation, if one exists, is the organization's own attested posture —
+kriya cannot verify it, and does not claim to.
+
+## Employee privacy — E1
+
+An identity-bound, timestamped record of which destinations an agent reached is employee-behavioral
+data the moment it exists — this is architectural, not a policy choice, and it holds regardless of
+how the feature is used:
+
+- **What is recorded per user:** the destination host, observed payload byte counts, a content hash,
+  the policy decision, and the acting agent + operator identity (the same `actor` field every kriya
+  receipt already carries) — never the request/response content itself.
+- **Purpose limitation, stated once, meant everywhere it's echoed:** compliance and security
+  evidence — never individual performance evaluation, productivity scoring, or general monitoring of
+  an operator's work. This sentence is the one to check any downstream export or fleet purpose-field
+  against.
+- **Who can read it:** whoever has filesystem access to the device (device-local, the default), or
+  operator/console access to an enrolled fleet's customer-run `kriyad` — never a kriya-operated
+  server, at any tier (see "The three-tier data-boundary promise" above).
+- **Retention default:** unset (indefinite) until the operator configures one — see "Retention and
+  the chain" below.
+- **Per-device deny counts already reach an enrolled fleet's `kriyad`.** The minimized envelope's
+  allowlisted action ids include the `kriya.io.*` facets, so an "attempted-policy-violation" tally
+  per device is visible centrally even though the destination itself is not — disclosed here, not
+  discovered later. Raw params (`dest_host`, `content_sha256`, byte counts) are structurally
+  unreachable by the minimizer at any verbosity — see [redaction](#) below — so only the *count* of
+  each `kriya.io.*` id travels, never what it names.
+- **Ingress digests are OFF by default even when egress is ON**, and are keyed (HMAC under a
+  device-local salt) rather than a plain hash when enabled — an unsalted hash of guessable content
+  (a filename, a common phrase) is itself a content-disclosure risk ("did this agent read
+  salary.xlsx?"), which a keyed hash forecloses for anyone without the salt.
+- **The privacy artifact pack.** Deploying the egress/ingress ledger to employee devices is a real
+  co-determination and data-protection question in many jurisdictions, not a formality — see
+  [`docs/privacy/`](privacy/README.md) for a DPIA template (Art. 35), an employee-notice template
+  (Arts. 13/14), and a model works-agreement clause for co-determination jurisdictions (DE/AT/NL/FR
+  and similar). Treat the works-council step as a precondition to deployment there, not paperwork
+  that follows it.
+
+## Retention and the chain
+
+Compliant deletion and tamper-evidence pull in opposite directions by default: pruning old receipts
+to honor a retention limit (or a GDPR Art. 17 erasure request) normally looks exactly like an
+attacker truncating the log. The design that resolves this:
+
+- **A signed epoch-checkpoint receipt** (`kriya.retention.checkpoint`) seals a pruned prefix: its
+  params attest *"receipts before T pruned per policy P; prior chain head was H"*, and its own
+  `prev_hash` equals H — so it sits at the exact point the pruned lines used to be.
+- **Every verifier accepts the checkpoint as a legitimate chain boundary**, not a break — the offline
+  CLI, `kriya-verify`, and the TS verifier all recognize `kriya.retention.checkpoint` and treat the
+  seal as sealed, the same way they already treat a genesis receipt's absent `prev_hash`.
+- **Retained receipts re-chain onto the checkpoint**, re-signed by the same signing key (a prune can
+  never re-attribute a receipt to a different key — that's a hard error, not a silent skip).
+- **`kriya.io.*` gets a shorter default retention class than policy/approval receipts** — the
+  egress/ingress ledger is the most granular, least evidence-durable data on the trail, so it is the
+  first candidate for a shorter window when an operator sets one. Neither class has a retention limit
+  by default; an unset `retention:` policy means indefinite retention, unchanged from before this
+  feature existed.
+- **The organization decides the actual retention period.** kriya provides the mechanism (the
+  checkpoint design + the `retention:` policy field); it does not impose or default to a specific
+  number of days. See [`docs/privacy/README.md`](privacy/README.md#retention-defaults) for suggested
+  starting points tied to the compliance drivers this ledger supports.
+
 ## Why on-device matters here
 
 For local and regulated apps, the audit cannot live in a cloud gateway — the data and the human are

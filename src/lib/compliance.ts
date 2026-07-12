@@ -15,6 +15,48 @@ import type { AuditRow } from "./types";
 /** Reserved action id for the R13 on-device attestation receipt. */
 export const ATTESTATION_ON_DEVICE = "kriya.attestation.on_device";
 
+/** The reserved `kriya.io.*` namespace prefix (EG-2 / doc 24 §4.2) — the governed-lane egress/ingress
+ *  ledger's signed receipts. Excluded from the app-action inventory (governance metadata, like the
+ *  on-device attestation marker) and the sole gate on whether the egress control rows below appear. */
+const KRIYA_IO_PREFIX = "kriya.io.";
+
+/** The doc 24 §3.1 scope block, verbatim — embedded in every egress-bearing compliance export. States
+ *  the honesty ceiling BEFORE it can be asked: which lanes are covered, what a governed-lane receipt
+ *  can never prove, and that this artifact does not by itself render any control MET. */
+export const EGRESS_SCOPE_BLOCK =
+  "Scope: this artifact covers only agent traffic proxied through the kriya gateway (MCP-over-HTTP " +
+  "connectors, gateway-proxied tool calls) and the hook-observed tool lane. Agent processes can " +
+  "generate network traffic outside these lanes — spawned subprocesses, and the outbound connections " +
+  "of stdio MCP servers — which kriya does not observe, control, or record. Enforcement rides a " +
+  "cooperative hook that can be disabled at the host (see TRUST.md). This artifact is supporting " +
+  "evidence toward the identified assessment objectives for the agent-connector lane only; it does " +
+  "not by itself render any control MET, and coverage of non-governed agent egress must be documented " +
+  "in the organization's SSP under its own boundary and flow controls.";
+
+/** Egress/ingress ledger facts computed from VERIFIED `kriya.io.*` receipts in the window — the sole
+ *  gate on whether the doc 24 §3 egress control rows appear at all (never hard-coded; absent, not
+ *  "gap", when the trail carries no such receipts). */
+export interface EgressEvidence {
+  verifiedReceipts: number;
+  allow: number;
+  deny: number;
+  approve: number;
+}
+
+/** The governed-surface posture statement (doc 24 §7.2 row 4) — deliberately WEAKER than the
+ *  document's pinned target text, which assumes a signed toggle/policy-version receipt bounding the
+ *  window (not yet built): this repo cannot yet PROVE the egress ledger was continuously enabled for
+ *  the full window, only that governed-lane activity was (or wasn't) observed. Honesty over
+ *  completeness (§6-H1/H10) — "not monitored" when the governed surface itself was silent, never
+ *  "zero egress" without evidence the surface was even active. */
+export type EgressPostureState = "not_monitored" | "zero_observed" | "egress_present";
+
+export interface EgressPosture {
+  state: EgressPostureState;
+  governedLaneReceipts: number;
+  egressReceipts: number;
+}
+
 const DESTRUCTIVE = ["delete", "remove", "destroy", "drop", "purge", "wipe"];
 const isDestructive = (a: string) => DESTRUCTIVE.some((k) => a.toLowerCase().includes(k));
 
@@ -58,6 +100,11 @@ export interface EvidenceBundle {
   };
   actionInventory: ActionInventoryItem[];
   controls: EvidenceControl[];
+  /** Egress/ingress ledger facts (EG-2/EG-3), `null` when the trail carries no verified `kriya.io.*`
+   *  receipts in the window — the same signal that gates whether the doc 24 §3 control rows appear. */
+  egress: EgressEvidence | null;
+  /** The governed-surface posture statement (doc 24 §7.2 row 4) — always present, unlike `egress`. */
+  egressPosture: EgressPosture;
 }
 
 function iso(ms: number): string {
@@ -104,11 +151,13 @@ export function buildEvidence(
     }
   }
 
-  // Action inventory (verified app actions, excluding the attestation marker).
+  // Action inventory (verified app actions, excluding the attestation marker and the kriya.io.*
+  // governance-metadata ledger — both are meta-evidence, not "things the agent did", same treatment
+  // as the coverage-snapshot exclusion (GA-3)).
   const counts = new Map<string, number>();
   for (const r of verified) {
     const id = r.receipt!.action_id;
-    if (id === ATTESTATION_ON_DEVICE) continue;
+    if (id === ATTESTATION_ON_DEVICE || id.startsWith(KRIYA_IO_PREFIX)) continue;
     counts.set(id, (counts.get(id) ?? 0) + 1);
   }
   const actionInventory: ActionInventoryItem[] = [...counts.entries()]
@@ -119,6 +168,35 @@ export function buildEvidence(
       destructive: isDestructive(action),
     }))
     .sort((a, b) => b.count - a.count);
+
+  // Egress/ingress ledger evidence (EG-2/EG-3, doc 24 §3) — COMPUTED from verified kriya.io.*
+  // receipts only; `null` (not zeroed-out) when the trail carries none, which is what gates the
+  // egress control rows below from appearing at all.
+  const ioVerified = verified.filter((r) => r.receipt!.action_id.startsWith(KRIYA_IO_PREFIX));
+  const egress: EgressEvidence | null = ioVerified.length
+    ? {
+        verifiedReceipts: ioVerified.length,
+        allow: ioVerified.filter((r) => r.receipt!.action_id.endsWith(".allow")).length,
+        deny: ioVerified.filter((r) => r.receipt!.action_id.endsWith(".deny")).length,
+        approve: ioVerified.filter((r) => r.receipt!.action_id.endsWith(".approve")).length,
+      }
+    : null;
+
+  // Governed-surface posture (doc 24 §7.2 row 4, weakened honestly — see EgressPosture's doc comment):
+  // "was the governed surface even active" (actionInventory's total) vs "did it produce egress"
+  // (egress-direction kriya.io.* receipts only, never ingress).
+  const governedLaneReceipts = actionInventory.reduce((sum, a) => sum + a.count, 0);
+  const egressReceiptCount = verified.filter((r) => r.receipt!.action_id.startsWith("kriya.io.egress.")).length;
+  const egressPosture: EgressPosture = {
+    state:
+      governedLaneReceipts === 0 && egressReceiptCount === 0
+        ? "not_monitored"
+        : egressReceiptCount === 0
+          ? "zero_observed"
+          : "egress_present",
+    governedLaneReceipts,
+    egressReceipts: egressReceiptCount,
+  };
 
   const approvalGatedActions = actionInventory.filter((a) => a.tier === "approval").map((a) => a.action);
   const denyByDefault = policy.rules.some((r) => r.action === "*" && r.tier === "deny") ||
@@ -144,6 +222,8 @@ export function buildEvidence(
       budgetCapPerMinute: policy.maxActionsPerMinute,
     },
     actionInventory,
+    egress,
+    egressPosture,
   };
 
   const distinctApps = new Set(withReceipt.map((r) => r.source)).size;
@@ -162,7 +242,7 @@ function mapControls(
   b: Omit<EvidenceBundle, "controls">,
   meta: { distinctApps: number; distinctAgents: number; coverage?: CoverageEvidence },
 ): EvidenceControl[] {
-  const { integrity, attribution, onDevice, humanOversight } = b;
+  const { integrity, attribution, onDevice, humanOversight, egress } = b;
   const hasReceipts = integrity.totalReceipts > 0;
   const allVerified = hasReceipts && integrity.failed === 0;
   // GA-3: cite the signed coverage-completeness chain as AU-2/AU-12 completeness evidence. Only when
@@ -190,7 +270,7 @@ function mapControls(
   // complete — so evidence alone can push these to "partial", never "satisfied".
   const partialWhenReceipts: ControlStatus = hasReceipts ? "partial" : "gap";
 
-  return [
+  const rows: EvidenceControl[] = [
     {
       framework: "EU AI Act",
       control: "Art. 12 — Record-keeping",
@@ -364,6 +444,115 @@ function mapControls(
       status: "gap",
     },
   ];
+
+  // Egress/ingress ledger controls (EG-2/EG-3, doc 24 §3) — appear ONLY when the trail carries
+  // verified `kriya.io.*` receipts in the window; never hard-coded, never present as "gap" on an
+  // egress-silent trail (that trail simply carries none of these rows at all). Every status here is
+  // capped at "partial" (◐) — never "satisfied" — because the governed-lane ceiling (doc 24 §7.2) is
+  // structural: a spawned subprocess or a stdio server's own outbound traffic bypasses this lane, so
+  // no egress control here can honestly claim full/total flow enforcement. Deliberately absent:
+  // 3.13.1, 3.13.6, SC-7, SC-8, CC6.6 — killed at the governed-lane layer (doc 24 §3); adding them
+  // would break the honesty moat. The word "DLP" never appears.
+  if (egress) {
+    const denyCite = egress.deny > 0
+      ? `${egress.deny} denial(s) against the allowlist observed in this window (unapproved-endpoint / anomalous-destination detection on governed lanes).`
+      : "No denials observed in this window — the allowlist has not yet been exercised against an unlisted destination.";
+    rows.push(
+      {
+        framework: "NIST 800-171",
+        control: "3.1.3 (AC) — CUI flow enforcement",
+        requirement: "Control CUI flows in accordance with approved authorizations.",
+        evidence: `Egress allow/deny/approve by destination for governed connector lanes (${egress.verifiedReceipts} signed kriya.io.* receipt(s) verified: ${egress.allow} allow, ${egress.deny} deny, ${egress.approve} approve), signed per-decision. Governed lanes only — a spawned subprocess or a stdio MCP server's own outbound traffic is not observed. ${EGRESS_SCOPE_BLOCK}`,
+        status: "partial",
+      },
+      {
+        framework: "NIST 800-171",
+        control: "3.4.2 (CM) — Enforce configuration settings",
+        requirement: "Establish and enforce security configuration settings.",
+        evidence: `The egress allowlist is an enforced, receipted setting — ${egress.verifiedReceipts} governed-lane decision(s) signed against it this window. Product-scoped: this is one enforced setting on one control-plane app, never a system-wide configuration-management claim.`,
+        status: "partial",
+      },
+      {
+        framework: "NIST 800-171",
+        control: "3.14.6/3.14.7 (SI-4) — Monitor / identify unauthorized use",
+        requirement: "Monitor and identify unauthorized use of organizational systems.",
+        evidence: `Unapproved-endpoint and anomalous-egress detection on governed lanes. ${denyCite}`,
+        status: "partial",
+      },
+      {
+        framework: "NIST 800-53",
+        control: "AC-4 — Information flow enforcement",
+        requirement: "Enforce approved authorizations for controlling the flow of information.",
+        evidence: `A signed, per-decision enforcement point on governed connector lanes (${egress.verifiedReceipts} kriya.io.* receipt(s) verified). Nothing at this layer stands in the way of a flow that avoids it entirely — a spawned subprocess bypasses it (see the E2 host-observation roadmap and TRUST.md).`,
+        status: "partial",
+      },
+      {
+        framework: "NIST 800-53",
+        control: "SI-4 — System monitoring",
+        requirement: "Monitor the system to detect attacks and indicators of potential attacks.",
+        evidence: `The governed-lane egress ledger FEEDS an organization's SI-4 monitoring program as one signed source among others — it is a contributing signal, never claimed to BE the organization's system monitoring. ${egress.verifiedReceipts} receipt(s) verified in this window.`,
+        status: "partial",
+      },
+      {
+        framework: "SOC 2",
+        control: "CC6.1 — Logical access boundaries",
+        requirement: "The entity implements logical access security software, infrastructure, and architectures.",
+        evidence: `The gateway is a managed access point for governed connector lanes — ${egress.verifiedReceipts} signed access decision(s) this window (${egress.allow} allow, ${egress.deny} deny, ${egress.approve} approve).`,
+        status: "partial",
+      },
+      {
+        framework: "SOC 2",
+        control: "CC6.7 — Restrict transmission and movement",
+        requirement: "The entity restricts the transmission, movement, and removal of information.",
+        evidence: `A transmission-restriction control for governed agent lanes: destination-based allow/deny/approve, signed per decision (${egress.verifiedReceipts} receipt(s) verified this window). ${denyCite}`,
+        status: "partial",
+      },
+      {
+        framework: "SOC 2",
+        control: "CC7.2 — Anomaly monitoring (governed-lane egress)",
+        requirement: "The entity monitors system components for anomalies indicative of malicious acts, natural disasters, or errors.",
+        evidence: `Detection tooling and logging of unusual egress activity on governed lanes. ${denyCite}`,
+        status: "partial",
+      },
+      {
+        framework: "EU AI Act",
+        control: "Art. 12 — Record-keeping (governed-lane egress)",
+        requirement: "High-risk AI systems must automatically log events over their lifetime.",
+        evidence: `Readiness-framed: ${egress.verifiedReceipts} governed-lane egress/ingress event(s) signed and verified this window; Annex III high-risk obligations are deferred to Dec 2, 2027 pending the Digital Omnibus. If this agent system is not classified high-risk, this row is INAPPLICABLE, not partial — that classification is the deploying organization's own determination, not derived from this trail.`,
+        status: "partial",
+      },
+      {
+        framework: "DORA",
+        control: "Art. 28(3) — Register reconciliation",
+        requirement: "Maintain and keep updated a register of information on all contractual arrangements with ICT third-party service providers.",
+        evidence: `A signed, actual-usage enumeration of governed-lane destinations feeds register reconciliation against the organization's Art. 28(3) ICT third-party register — ${egress.verifiedReceipts} receipt(s) verified this window. This is one input to that register, never a substitute for the organization's own maintained register.`,
+        status: "partial",
+      },
+      {
+        framework: "DORA",
+        control: "Art. 10(2) / Art. 17 — Detection & incident management",
+        requirement: "Put in place mechanisms to promptly detect anomalous activities; maintain an ICT-related incident management process.",
+        evidence: `A lane-scoped detection/incident-timeline layer for governed agent egress — one of the "multiple layers of control" DORA expects, not the organization's full ICT risk framework. ${denyCite}`,
+        status: "partial",
+      },
+    );
+  }
+
+  return rows;
+}
+
+/** Render the governed-surface posture statement (doc 24 §7.2 row 4). Three states, none of them
+ *  ever "nothing left at all" or "zero egress" without governed-lane activity to back it (§6-H1/H10).
+ *  Explicitly names the toggle-receipt gap rather than pretending it's closed. */
+export function renderEgressPosture(p: EgressPosture): string {
+  switch (p.state) {
+    case "not_monitored":
+      return "Governed-lane egress: NOT MONITORED in this window — zero governed-lane receipts of any kind were observed, so no statement about egress can be made either way. This is absent-by-configuration, not a zero-egress finding.";
+    case "zero_observed":
+      return `Governed-lane egress: zero kriya.io.egress.* receipts observed in this window, alongside ${p.governedLaneReceipts} other governed-lane receipt(s) — the governed surface was active and produced no egress. This does NOT prove the egress ledger was continuously enabled for the full window (no signed toggle/policy-version receipt bounds it yet — see docs/TRUST.md). The raw-egress lane (host-level observation) is a separate, GREY-by-default surface — see the Coverage Map. Any physical air gap or network isolation is the organization's own attested posture, not verified by kriya.`;
+    case "egress_present":
+      return `Governed-lane egress: NOT zero — ${p.egressReceipts} kriya.io.egress.* receipt(s) observed and verified in this window.`;
+  }
 }
 
 export function renderJson(bundle: EvidenceBundle): string {
@@ -400,6 +589,16 @@ export function renderMarkdown(b: EvidenceBundle): string {
   L.push(`- Approval-gated actions observed: ${b.humanOversight.approvalGatedActions.join(", ") || "—"}`);
   L.push(`- Budget cap: ${b.humanOversight.budgetCapPerMinute ? `${b.humanOversight.budgetCapPerMinute}/min` : "none"}`);
   L.push(`- On-device attestations: **${b.onDevice.attestations}**${b.onDevice.sealedBackends.length ? ` (${b.onDevice.sealedBackends.join(", ")})` : ""}${b.onDevice.components.length ? ` · via ${b.onDevice.components.join(", ")}` : ""}`);
+  L.push("");
+  L.push("## Egress/ingress ledger (governed lanes)");
+  L.push("");
+  L.push(renderEgressPosture(b.egressPosture));
+  if (b.egress) {
+    L.push("");
+    L.push(`- Signed \`kriya.io.*\` receipts verified in this window: **${b.egress.verifiedReceipts}** (${b.egress.allow} allow, ${b.egress.deny} deny, ${b.egress.approve} approve)`);
+    L.push("");
+    L.push(`> ${EGRESS_SCOPE_BLOCK}`);
+  }
   L.push("");
   L.push("## Action inventory");
   L.push("");

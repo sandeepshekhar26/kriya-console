@@ -70,6 +70,16 @@ pub struct LaneInfo {
     pub last_receipt_ms: Option<u64>,
     /// Chain files currently feeding the lane.
     pub files: usize,
+    /// EG-3 (doc 24 §7.3): whether a `kriya.io.egress.*` receipt was observed on this lane within
+    /// the window — `None` on a lane the egress ledger doesn't apply to (desktop-apps, raw-file-exec,
+    /// and, deliberately, raw-egress: that lane belongs to E2's host watcher, and the visual gap
+    /// between a green `kriya.io.*` chip here and the grey/uncovered raw-egress lane below IS the
+    /// bypass disclosure — never colored to imply this ledger closes it). `Some(true)`/`Some(false)`
+    /// on claude-code-tools / remote-mcp / local-stdio-mcp: whether governed-lane egress evidence
+    /// showed up in-window, not whether the tier is *configured* (this repo has no toggle-receipt to
+    /// prove the latter for a window with zero calls — see docs/TRUST.md's egress section).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub egress_ledger: Option<bool>,
 }
 
 /// What the Coverage view renders (pure read — no side effects, no snapshot writes).
@@ -108,6 +118,8 @@ struct Scan {
     last_watch_net: Option<u64>,
     /// `kriya.watch.heartbeat` (+ run.start/run.exit bookends) — watcher liveness.
     last_watch_heartbeat: Option<u64>,
+    /// `kriya.io.egress.*` (EG-2/EG-3, doc 24 §7.3) — governed-lane egress evidence.
+    last_kriya_io_egress: Option<u64>,
 }
 
 fn max_opt(slot: &mut Option<u64>, v: u64) {
@@ -148,6 +160,9 @@ fn scan_file(path: &Path) -> Scan {
             || aid == "kriya.watch.run.exit"
         {
             max_opt(&mut scan.last_watch_heartbeat, ts);
+        }
+        if aid.starts_with("kriya.io.egress.") {
+            max_opt(&mut scan.last_kriya_io_egress, ts);
         }
     }
     scan
@@ -240,6 +255,7 @@ pub fn classify(
     {
         let last = claude_code.as_ref().and_then(|s| s.last_any);
         let present = claude_code.is_some();
+        let io_last = claude_code.as_ref().and_then(|s| s.last_kriya_io_egress);
         lanes.insert(
             "claude-code-tools".into(),
             LaneInfo {
@@ -247,6 +263,7 @@ pub fn classify(
                 source: (hook || present).then(|| "hook.claude-code".into()),
                 last_receipt_ms: last,
                 files: usize::from(present),
+                egress_ledger: present.then(|| fresh(io_last)),
             },
         );
     }
@@ -266,6 +283,10 @@ pub fn classify(
         } else {
             None
         };
+        let io_last = claude_code
+            .as_ref()
+            .and_then(|s| s.last_kriya_io_egress)
+            .max(broker.as_ref().and_then(|s| s.last_kriya_io_egress));
         lanes.insert(
             "remote-mcp".into(),
             LaneInfo {
@@ -273,6 +294,7 @@ pub fn classify(
                 source,
                 last_receipt_ms: last,
                 files: usize::from(hook_last.is_some()) + usize::from(broker.is_some()),
+                egress_ledger: configured.then(|| fresh(io_last)),
             },
         );
     }
@@ -280,6 +302,7 @@ pub fn classify(
     // local-stdio-mcp — gateway per-server chains (any MCP client wired through kriya-gateway).
     {
         let last = gateway.iter().filter_map(|s| s.last_any).max();
+        let io_last = gateway.iter().filter_map(|s| s.last_kriya_io_egress).max();
         lanes.insert(
             "local-stdio-mcp".into(),
             LaneInfo {
@@ -287,11 +310,13 @@ pub fn classify(
                 source: (!gateway.is_empty()).then(|| "gateway".into()),
                 last_receipt_ms: last,
                 files: gateway.len(),
+                egress_ledger: (!gateway.is_empty()).then(|| fresh(io_last)),
             },
         );
     }
 
-    // desktop-apps — reach-in / computer-use / router chains.
+    // desktop-apps — reach-in / computer-use / router chains. No egress ledger: this lane's traffic
+    // isn't the governed MCP/HTTP connector surface the ledger covers.
     {
         let last = desktop.iter().filter_map(|s| s.last_any).max();
         lanes.insert(
@@ -301,6 +326,7 @@ pub fn classify(
                 source: (!desktop.is_empty()).then(|| "reach-in/computer-use".into()),
                 last_receipt_ms: last,
                 files: desktop.len(),
+                egress_ledger: None,
             },
         );
     }
@@ -332,6 +358,10 @@ pub fn classify(
                 source: configured.then(|| "kriya-watch".into()),
                 last_receipt_ms: last_event.max(last_hb),
                 files: covering.len(),
+                // raw-egress deliberately NEVER gets this chip: it belongs to E2 (the host watcher),
+                // and coloring it from the governed-lane ledger would blur the exact bypass disclosure
+                // this map exists to make honest (doc 24 §7.1 — "never colors the raw-egress lane").
+                egress_ledger: None,
             },
         );
     }
@@ -885,6 +915,68 @@ mod tests {
         write_log(&dir, "claude-code.jsonl", &[line("claude-code__bash", NOW - 30 * HOUR)]);
         let lanes = classify(&dir, None, NOW, WINDOW);
         assert_eq!(lanes["claude-code-tools"].state, LaneState::Amber);
+    }
+
+    #[test]
+    fn egress_ledger_chip_reflects_kriya_io_egress_receipts_in_window_only_on_the_three_lanes() {
+        let dir = tmp("egress-ledger");
+        // claude-code.jsonl: a governed call AND a fresh kriya.io.egress.* receipt.
+        write_log(
+            &dir,
+            "claude-code.jsonl",
+            &[
+                line("claude-code__mcp__github__list_issues", NOW - HOUR),
+                line("kriya.io.egress.http.allow", NOW - HOUR),
+            ],
+        );
+        // gateway.jsonl (local-stdio-mcp): configured, but NO kriya.io.egress.* receipt in window.
+        write_log(&dir, "gateway.jsonl", &[line("get_widget", NOW - HOUR)]);
+        let lanes = classify(&dir, None, NOW, WINDOW);
+
+        assert_eq!(
+            lanes["claude-code-tools"].egress_ledger,
+            Some(true),
+            "a fresh kriya.io.egress.* receipt lights the chip ON"
+        );
+        assert_eq!(
+            lanes["remote-mcp"].egress_ledger,
+            Some(true),
+            "remote-mcp shares the claude-code.jsonl scan"
+        );
+        assert_eq!(
+            lanes["local-stdio-mcp"].egress_ledger,
+            Some(false),
+            "configured but no kriya.io.egress.* receipt observed in window -> chip OFF, not absent"
+        );
+        // Lanes the egress ledger deliberately doesn't apply to stay None (no chip rendered).
+        assert_eq!(lanes["desktop-apps"].egress_ledger, None);
+        assert_eq!(lanes["raw-file-exec"].egress_ledger, None);
+        assert_eq!(
+            lanes["raw-egress"].egress_ledger, None,
+            "raw-egress must NEVER be colored by the governed-lane ledger — that's E2's lane"
+        );
+
+        // A stale (out-of-window) kriya.io.egress.* receipt reads as OFF, not ON.
+        write_log(
+            &dir,
+            "claude-code.jsonl",
+            &[
+                line("claude-code__mcp__github__list_issues", NOW - HOUR),
+                line("kriya.io.egress.http.allow", NOW - 30 * HOUR),
+            ],
+        );
+        let lanes = classify(&dir, None, NOW, WINDOW);
+        assert_eq!(lanes["claude-code-tools"].egress_ledger, Some(false));
+
+        // A lane with NO kriya.io.egress.* traffic at all but not configured (grey) still reports None
+        // — the chip only appears once the lane itself is at least configured/present, matching how
+        // `source`/`files` behave.
+        let _ = std::fs::remove_dir_all(&dir);
+        let dir2 = tmp("egress-ledger-unconfigured");
+        let lanes = classify(&dir2, None, NOW, WINDOW);
+        assert_eq!(lanes["local-stdio-mcp"].egress_ledger, None);
+        let _ = std::fs::remove_dir_all(&dir2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

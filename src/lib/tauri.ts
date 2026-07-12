@@ -45,6 +45,12 @@ export interface LaneInfo {
   source?: string | null;
   lastReceiptMs?: number | null;
   files: number;
+  /** EG-3 (doc 24 §7.3): whether a `kriya.io.egress.*` receipt was observed on this lane within the
+   *  window. `undefined`/`null` on a lane the egress ledger doesn't apply to (desktop-apps,
+   *  raw-file-exec, and deliberately raw-egress — that lane belongs to E2's host watcher; the visual
+   *  gap between this chip and the grey raw-egress lane IS the bypass disclosure). Present only on
+   *  claude-code-tools / remote-mcp / local-stdio-mcp. */
+  egressLedger?: boolean | null;
 }
 /** One lane within an agent's coverage group (GA-2). Mirrors Rust `coverage::AgentLane`. */
 export interface AgentLane {
