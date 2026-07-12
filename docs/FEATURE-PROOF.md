@@ -100,6 +100,12 @@ runtime repo.
 > The founder decision of 2026-07-12 ([doc 24 exec summary](ideas/24-egress-study.md)): build the
 > **complete** egress feature set B1–B18 to full competitive parity, **then** sell. Until a row
 > below flips ✅ with a real proof cell, it is presented everywhere as *in build* — never shipped.
+>
+> **2026-07-12 late: EG-2 (runtime, kriya#5) + EG-3 (console, PR #19) LANDED** — the signed
+> `kriya.io.<direction>.<kind>.<decision>` ledger (closed 24-id set), the egress policy tier,
+> allowlist-enforced redaction, computed evidence rows (3.1.3/3.4.2/3.14.6-7/AC-4/SI-4/CC6.x/Art.12/
+> DORA — SC-7/3.13.x deliberately absent), and the Policy/Coverage UI. Rows below flip individually
+> only as each capability is verified.
 > Honest ceiling ships with each feature: before containment (B14), controls cover **governed
 > lanes** (hook · gateway · broker); a raw-socket bypass is stated first, unprompted. Compliance
 > claims stay stricter than marketing verbs: SC-7 / 3.13.6 appear in an export only after a Q-B
@@ -108,10 +114,10 @@ runtime repo.
 | # | Feature | Phase | Status | Proof today → proof when it ships |
 |---|---|---|---|---|
 | B0′ | Self-verifying egress-receipt demo — one HTML file, embedded verifier, tamper-a-byte demo over `kriya.io.*` receipts | EG-1 | 🔨 next | spec `ideas/24 §4.4` → the artifact itself + a TS chain-check suite (trust-spine) |
-| B1 | Egress allowlist / deny-by-default by destination host + kind | EG-2 | 🔨 | doc 24 §7.3 policy model → policy-tier tests + signed `kriya.io.egress` receipts verifying in `verify.test.ts` |
+| B1 | Egress allowlist / deny-by-default by destination host + kind | EG-2/3 | ✅ **shipped 2026-07-12** | `artifact:` runtime fixture `kriya-verify/fixtures/runtime-egress-ledger.jsonl` (verified by the kriya-verify suite) · `shot:policy-egress.png` (host tiers + deny-by-default posture round-tripping into the enforced YAML) |
 | B2 | Per-destination byte budgets + rate limits (anti slow-drip) | EG-2 | 🔨 | → budget-tier tests over observed payload bytes (L2 honesty label) |
 | B3 | **Fail-closed receipt-precondition — "no receipt, no egress"** ⭐ the kriya-native differentiator: the proof is the gate | EG-2 | 🔨 | → the flagship test: receipt write fails ⇒ egress denied; demo in EG-1 artifact |
-| B4 | Ask / defer approvals on egress (park unlisted destinations for a human) | EG-2 | 🔨 | → ApprovalGate egress tests (existing approval UX caveats carry over) |
+| B4 | Ask / defer approvals on egress (park unlisted destinations for a human) | EG-2/3 | ✅ **shipped 2026-07-12** | `require-approval` tier per destination + `kriya.io.*.approve` ids in the closed set (`code:control_plane/redact.rs`) · `shot:policy-egress.png` (existing approval UX caveats carry over) |
 | B5 | DNS-exfil + anomalous-destination + subdomain-entropy detection | EG-P | 🔨 | → detection suite, alert-or-deny per policy |
 | B6 | SSRF / private-IP / cloud-metadata / DNS-rebinding blocking (resolve-then-pin) | EG-P | 🔨 | → adversarial network tests on governed lanes |
 | B7 | Credential + secret + PII scanning & redaction on outbound bodies (hash + match-type stored, never the secret) | EG-P | 🔨 | → redaction suite + privacy-pack review (EG-3 pack) |

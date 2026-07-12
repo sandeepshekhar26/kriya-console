@@ -53,6 +53,38 @@ try {
     console.log("shot:", file);
   }
 
+  // Egress (EG-2/EG-3): the Policy egress-destinations card and the evidence rows computed from the
+  // seeded kriya.io.* receipts — scrolled into frame; skipped (not failed) if the anchor is absent.
+  try {
+    await page.locator(".nav-item", { hasText: "Policy" }).first().click();
+    await sleep(600);
+    // Turn the egress tier ON and author real destination rules so the shot shows the editor working
+    // (round-trips through the same YAML the runtime's EgressPolicy enforces) — not the Off state.
+    const govEgress = page.locator("label", { hasText: "Govern egress" }).locator("input[type=checkbox]");
+    if (!(await govEgress.isChecked())) await govEgress.click();
+    await sleep(300);
+    const egressSection = page.locator("section", { has: page.locator("h2", { hasText: "Egress destinations" }) });
+    for (const [host, tier] of [["*.github.com", "allow"], ["api.anthropic.com", "allow"], ["exports.partner-crm.com", "approval"]]) {
+      await egressSection.locator("button", { hasText: "+ Add destination" }).click();
+      const row = egressSection.locator(".rules .rule").last();
+      await row.locator("input").fill(host);
+      await row.locator("select").selectOption(tier);
+    }
+    await egressSection.locator(".budget select").first().selectOption("deny"); // unlisted → deny-by-default
+    await page.locator("h2", { hasText: "Egress destinations" }).scrollIntoViewIfNeeded();
+    await sleep(400);
+    await page.screenshot({ path: `${SHOTS}/policy-egress.png` });
+    console.log("shot: policy-egress");
+  } catch (e) { console.log("skip: policy-egress —", e.message.split("\n")[0]); }
+  try {
+    await page.locator(".nav-item", { hasText: "Evidence" }).first().click();
+    await sleep(700);
+    await page.getByText("governed connector lanes", { exact: false }).first().scrollIntoViewIfNeeded();
+    await sleep(400);
+    await page.screenshot({ path: `${SHOTS}/evidence-egress.png` });
+    console.log("shot: evidence-egress");
+  } catch (e) { console.log("skip: evidence-egress —", e.message.split("\n")[0]); }
+
   // Control plane: re-prove offline → capture the all-green verdict (not the empty/initial state).
   await page.locator(".nav-item", { hasText: "On-prem aggregator" }).first().click();
   await sleep(500);

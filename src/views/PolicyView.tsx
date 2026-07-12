@@ -387,13 +387,13 @@ export function PolicyView({
               matches any host. A destination matching no rule falls to the posture below.
             </p>
             <div className="rules">
-              <div className="rule-head">
+              <div className="rule-head rule-head--egress">
                 <span>Host pattern</span>
                 <span>Decision</span>
                 <span />
               </div>
               {policy.egress.rules.map((r, i) => (
-                <div className="rule" key={i}>
+                <div className="rule rule--egress" key={i}>
                   <input
                     className="rule-action mono"
                     value={r.host}

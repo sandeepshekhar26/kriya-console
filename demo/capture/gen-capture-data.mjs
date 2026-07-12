@@ -85,6 +85,20 @@ const ROWS = [
 const TAMPER_INDEX = 14;
 const BASE = 1781700000000;
 
+// --- governed-lane egress/ingress ledger rows (EG-2/EG-3, doc 24 §4.2) — action ids from the closed
+//     kriya.io.<direction>.<kind>.<decision> set; params byte-shaped like the real runtime fixture
+//     (kriya-verify/fixtures/runtime-egress-ledger.jsonl): decision is in the id AND params, hashes are
+//     wire-byte sha256, `corr` ties the flow to the app action that caused it. PII-free (hosts only). ---
+const IO_SHA = (n) => String(n).repeat(64).slice(0, 64);
+const IO_ROWS = [
+  ["devops-app", "kriya.io.egress.http.allow", { bytes_in: 2048, bytes_out: 14210, content_sha256: IO_SHA(2), corr: "devops-app-026", decision: "allow", dest_host: "api.github.com", dest_kind: "http", hash_scheme: "wire-bytes", method: "POST", policy_rule: "*.github.com", server: "github" }],
+  ["crm-app", "kriya.io.egress.mcp.allow", { bytes_in: 3110, bytes_out: 6120, content_sha256: IO_SHA(3), corr: "crm-app-025", decision: "allow", dest_host: "mcp.linear.app", dest_kind: "mcp", hash_scheme: "wire-bytes", method: "tools/call", policy_rule: "mcp.linear.app", server: "linear" }],
+  ["budget-app", "kriya.io.egress.model.allow", { bytes_in: 8412, bytes_out: 20480, content_sha256: IO_SHA(4), corr: "budget-app-027", decision: "allow", dest_host: "api.anthropic.com", dest_kind: "model", hash_scheme: "wire-bytes", method: "messages.create", policy_rule: "api.anthropic.com", server: "anthropic" }],
+  ["devops-app", "kriya.io.egress.http.deny", { bytes_in: 0, bytes_out: 0, content_sha256: IO_SHA(5), corr: "devops-app-023", decision: "deny", dest_host: "metrics.unknown-vendor.io", dest_kind: "http", hash_scheme: "wire-bytes", method: "POST", policy_rule: "(deny-by-default)", server: "github" }],
+  ["crm-app", "kriya.io.egress.http.approve", { bytes_in: 512, bytes_out: 51200, content_sha256: IO_SHA(6), corr: "crm-app-028", decision: "approve", dest_host: "exports.partner-crm.com", dest_kind: "http", hash_scheme: "wire-bytes", method: "PUT", policy_rule: "ask:exports.partner-crm.com", server: "crm-export" }],
+  ["devops-app", "kriya.io.ingress.http.allow", { bytes_in: 88420, bytes_out: 0, content_sha256: IO_SHA(7), corr: "devops-app-026", decision: "allow", dest_host: "registry.npmjs.org", dest_kind: "http", hash_scheme: "wire-bytes", method: "GET", policy_rule: "registry.npmjs.org", server: "github" }],
+];
+
 // --- pending approvals (high-risk actions a policy holds for a human); same role handles, no emails ---
 const APPROVALS = [
   ["budget-app", "delete_transaction", { id: "txn-5012" }, "Looks like a duplicate charge"],
@@ -112,6 +126,17 @@ async function main() {
     const pub = await ed.getPublicKeyAsync(priv);
     let signature = hex(await ed.signAsync(canonicalReceiptBytes(receipt), priv));
     if (i === TAMPER_INDEX) signature = (signature[0] === "f" ? "0" : "f") + signature.slice(1); // forge → fails verify
+    auditLines.push(JSON.stringify({ ...receipt, source: app, public_key: hex(pub), signature }));
+  }
+
+  // io-ledger rows: runtime-style step ids, timestamped after the app actions so Monitor tails them
+  for (let i = 0; i < IO_ROWS.length; i++) {
+    const [app, action_id, params] = IO_ROWS[i];
+    const ts_ms = BASE + ROWS.length * 145000 + i * 97000;
+    const receipt = { step_id: `${action_id}-${ts_ms}`, action_id, params, success: true, ts_ms, actor: ACTOR[app] };
+    const priv = PRIV[app];
+    const pub = await ed.getPublicKeyAsync(priv);
+    const signature = hex(await ed.signAsync(canonicalReceiptBytes(receipt), priv));
     auditLines.push(JSON.stringify({ ...receipt, source: app, public_key: hex(pub), signature }));
   }
 
