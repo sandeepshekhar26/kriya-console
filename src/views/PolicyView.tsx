@@ -10,6 +10,7 @@ import {
   defaultSecretPiiPolicy,
   defaultConnectorRegistryPolicy,
   defaultMcpResponsePolicy,
+  emptySecretsPolicy,
   lintPolicy,
   parsePolicyYaml,
   policyToYaml,
@@ -27,6 +28,7 @@ import {
   type TrustClass,
   type OperationRail,
   type ApprovedConnectorTool,
+  type SecretAlias,
 } from "../lib/policy";
 
 const TIERS: Tier[] = ["allow", "approval", "deny"];
@@ -183,6 +185,27 @@ export function PolicyView({
     let n = 1;
     while (key in mcpResponse.perServer) key = `server${++n}`;
     setDetection({ mcpResponse: { ...mcpResponse, perServer: { ...mcpResponse.perServer, [key]: "scan" } } });
+  }
+
+  // Credential brokering (doc 24 §11 B13 / EG-B). NEVER a value field anywhere below — only a
+  // Keychain reference (service + account) per alias; the runtime resolves the real secret at
+  // substitution time, from OS Keychain, never from this policy.
+  function setAlias(i: number, patch: Partial<SecretAlias>) {
+    if (!policy.secrets) return;
+    const aliases = policy.secrets.aliases.map((a, idx) => (idx === i ? { ...a, ...patch } : a));
+    onChange({ ...policy, secrets: { ...policy.secrets, aliases } });
+  }
+  function removeAlias(i: number) {
+    if (!policy.secrets) return;
+    onChange({ ...policy, secrets: { ...policy.secrets, aliases: policy.secrets.aliases.filter((_, idx) => idx !== i) } });
+  }
+  function addAlias() {
+    const secrets = policy.secrets ?? emptySecretsPolicy();
+    const aliases = [...secrets.aliases, { alias: "", keychainService: "kriya", keychainAccount: "", allowedHosts: [] as string[] }];
+    onChange({ ...policy, secrets: { ...secrets, aliases } });
+  }
+  function setAliasHosts(i: number, hostsText: string) {
+    setAlias(i, { allowedHosts: hostsText.split(",").map((h) => h.trim()).filter(Boolean) });
   }
 
   function doImport() {
@@ -938,6 +961,84 @@ export function PolicyView({
                 </>
               )}
             </div>
+          </>
+        )}
+      </section>
+
+      <section className="panel" style={{ marginTop: 16 }}>
+        <div className="panel-head">
+          <h2>Credential brokering</h2>
+          <label className="budget-row" style={{ margin: 0 }}>
+            <input
+              type="checkbox"
+              checked={policy.secrets !== null}
+              onChange={(e) => onChange({ ...policy, secrets: e.target.checked ? emptySecretsPolicy() : null })}
+            />
+            Enable
+          </label>
+        </div>
+        {policy.secrets === null ? (
+          <p className="muted small">
+            Off — no <code>secrets:</code> section is written to <code>agent-policy.yaml</code>. The
+            agent never holds a real credential, only a placeholder like{" "}
+            <code>{"{{kriya:github_pat}}"}</code>; the runtime substitutes the real value from OS
+            Keychain at the moment a call actually leaves the machine, scoped to that one alias's own
+            destination allowlist. See <code>docs/THREAT-MODEL-brokering.md</code>.
+          </p>
+        ) : (
+          <>
+            <p className="field-hint" style={{ marginBottom: 12 }}>
+              Each row below is a <b>reference</b> — a macOS Keychain service + account — never a
+              value. Only the runtime, at substitution time, ever reads the real secret from Keychain;
+              this policy (and this Console) never sees it. <b>Allowed destinations</b> is this
+              alias's own scope, independent of the general egress rules above: a placeholder bound
+              for a host not listed here is denied, never substituted.
+            </p>
+            {policy.secrets.aliases.length > 0 && (
+              <div className="rules">
+                <div className="rule-head rule-head--secret">
+                  <span>Alias (used as {"{{kriya:<alias>}}"})</span>
+                  <span>Keychain service</span>
+                  <span>Keychain account</span>
+                  <span>Allowed destinations</span>
+                  <span />
+                </div>
+                {policy.secrets.aliases.map((a, i) => (
+                  <div className="rule rule--secret" key={i}>
+                    <input
+                      className="rule-action mono"
+                      value={a.alias}
+                      onChange={(e) => setAlias(i, { alias: e.target.value })}
+                      placeholder="github_pat"
+                    />
+                    <input
+                      className="rule-action mono"
+                      value={a.keychainService}
+                      onChange={(e) => setAlias(i, { keychainService: e.target.value })}
+                      placeholder="kriya"
+                    />
+                    <input
+                      className="rule-action mono"
+                      value={a.keychainAccount}
+                      onChange={(e) => setAlias(i, { keychainAccount: e.target.value })}
+                      placeholder="github_pat"
+                    />
+                    <input
+                      className="rule-action mono"
+                      value={a.allowedHosts.join(", ")}
+                      onChange={(e) => setAliasHosts(i, e.target.value)}
+                      placeholder="*.github.com"
+                    />
+                    <button className="icon-btn danger" onClick={() => removeAlias(i)} title="Remove alias" aria-label="Remove brokered alias">
+                      <Icon name="x" size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button className="btn ghost add-rule" onClick={addAlias}>
+              + Add brokered alias
+            </button>
           </>
         )}
       </section>
