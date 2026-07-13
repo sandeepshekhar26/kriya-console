@@ -30,6 +30,11 @@ export interface Policy {
    *  runtime's egress governance is OFF, byte-identical to pre-EG-2 (BC-3: no `egress:` key is ever
    *  written to the YAML for this state, so an unmodified policy round-trips unchanged). */
   egress: EgressPolicy | null;
+  /** The detection pack (doc 24 §11 B5–B12 / EG-P). `null` = no `detection:` section authored — same
+   *  BC-3 round-trip discipline as `egress`. Each sub-detector inside is ALSO independently nullable
+   *  (mirrors `permissions::DetectionPolicy`'s `Option` fields), so authoring the pack at all never
+   *  silently turns on a specific detector. */
+  detection: DetectionPolicy | null;
 }
 
 /** What happens to an egress destination no rule matches. Mirrors `permissions::UnlistedPosture`. */
@@ -65,6 +70,132 @@ export const UNLISTED_LABEL: Record<UnlistedPosture, string> = {
   defer: "Defer to approval",
 };
 
+// ── Detection pack (doc 24 §11 B5–B12 / EG-P) — mirrors `permissions::DetectionPolicy` ────────
+// "observe → flag → deny per policy, never auto-block silently by default": every sub-detector
+// below is independently `| null`, matching the Rust `Option<T>` fields — authoring `detection:`
+// at all (e.g. to turn on just the SSRF guard) never silently activates any OTHER detector.
+
+/** What a heuristic detector (DNS-exfil) does on a match: flag it but let the call proceed
+ *  (default), or block outright. Mirrors `permissions::AlertOrDeny`. */
+export type AlertOrDeny = "alert" | "deny";
+/** What a content-match detector (secret/PII) does on a match: flag it — type name only, the
+ *  matched value is never recorded anywhere — or block outright. Mirrors `RedactOrDeny`. */
+export type RedactOrDeny = "redact" | "deny";
+/** Per-server trust class for governed MCP ingress (B12). Mirrors `TrustClass`. */
+export type TrustClass = "trusted" | "scan" | "block";
+
+export const ALERT_OR_DENY_LABEL: Record<AlertOrDeny, string> = { alert: "Alert only", deny: "Deny" };
+export const REDACT_OR_DENY_LABEL: Record<RedactOrDeny, string> = { redact: "Redact (flag only)", deny: "Deny" };
+export const TRUST_CLASS_LABEL: Record<TrustClass, string> = { trusted: "Trusted", scan: "Scan", block: "Block" };
+
+/** B5: DNS-exfil / subdomain-entropy heuristic. */
+export interface DnsExfilPolicy {
+  enabled: boolean;
+  /** Shannon-entropy threshold in bits/char above which a subdomain label is flagged. Default 4.0 —
+   *  ordinary hostnames score ~2.5–3.5; encoded exfil payloads commonly score 3.8+. */
+  entropyThreshold: number;
+  action: AlertOrDeny;
+}
+
+/** B6: SSRF / private-IP / cloud-metadata / DNS-rebinding guard. The only dial is whether it's on —
+ *  gated (not unconditional): a local dev/test upstream on `127.0.0.1`/`localhost` is legitimate. */
+export interface SsrfGuardPolicy {
+  enabled: boolean;
+}
+
+/** B7: secret + PII scan/redact on outbound governed bodies (AWS keys, GitHub PATs, JWTs,
+ *  private-key headers, emails, Luhn-valid card numbers, SSNs). */
+export interface SecretPiiPolicy {
+  enabled: boolean;
+  action: RedactOrDeny;
+}
+
+/** B8: one operation rail — an allowlist fence narrower than the host-level egress rule. `host` uses
+ *  the same pattern syntax as an egress rule (`*` / `*.domain` / exact); `method` is an HTTP verb or
+ *  `*`; `path` is an optional glob; `graphqlMutation` optionally matches a mutation NAME instead of
+ *  verb+path. An operation this rail can't parse (or that matches no configured rail) is denied —
+ *  fail-closed for the rail. Reuses `Tier` — same allow/approval/deny space as an egress rule. */
+export interface OperationRail {
+  host: string;
+  method: string;
+  path: string | null;
+  graphqlMutation: string | null;
+  tier: Tier;
+}
+
+/** B10: one approved connector tool — `upstream` is the broker namespace, `tool` the inner
+ *  (un-namespaced) name, `descriptionHash` the SHA-256 hex of its canonical description at approval
+ *  time. A live hash mismatch is drift (the tool-poisoning signal) and disables the tool again. */
+export interface ApprovedConnectorTool {
+  upstream: string;
+  tool: string;
+  descriptionHash: string;
+}
+
+/** B10: the connector registry. A discovered MCP tool is disabled-until-approved unless it appears
+ *  in `approved` with a matching live hash. */
+export interface ConnectorRegistryPolicy {
+  enabled: boolean;
+  approved: ApprovedConnectorTool[];
+}
+
+/** B12: per-server trust class for governed MCP ingress (responses). `trusted` passes through
+ *  unchanged; `scan` (default) runs the B7 secret/PII pass over the response and flags a match
+ *  without blocking; `block` denies the response outright regardless of content. */
+export interface McpResponsePolicy {
+  enabled: boolean;
+  /** The class an unlisted server gets. Default `scan` (never `block`, the house rule against
+   *  silently auto-blocking a server the operator hasn't explicitly classified). */
+  defaultClass: TrustClass;
+  perServer: Record<string, TrustClass>;
+}
+
+export interface DetectionPolicy {
+  dnsExfil: DnsExfilPolicy | null;
+  ssrfGuard: SsrfGuardPolicy | null;
+  secretPii: SecretPiiPolicy | null;
+  operationRails: OperationRail[];
+  /** B9: canary tokens — operator-planted honeytoken strings. ANY match is always-deny, no
+   *  `AlertOrDeny`/`RedactOrDeny` dial — there is no legitimate reason a canary should ever appear
+   *  in real traffic, so there's nothing an "alert" mode would be hedging against. */
+  canaryTokens: string[];
+  connectorRegistry: ConnectorRegistryPolicy | null;
+  /** B11: per-connector/per-tool read-only presets — connector NAMESPACE patterns (a bare
+   *  `"widgets"` is equivalent to `"widgets__*"`) whose known-mutating tools are denied. A hard
+   *  override the explicit action `rules` can never widen back open. */
+  readOnly: string[];
+  mcpResponse: McpResponsePolicy | null;
+}
+
+export function emptyDetectionPolicy(): DetectionPolicy {
+  return {
+    dnsExfil: null,
+    ssrfGuard: null,
+    secretPii: null,
+    operationRails: [],
+    canaryTokens: [],
+    connectorRegistry: null,
+    readOnly: [],
+    mcpResponse: null,
+  };
+}
+
+export function defaultDnsExfilPolicy(): DnsExfilPolicy {
+  return { enabled: true, entropyThreshold: 4.0, action: "alert" };
+}
+export function defaultSsrfGuardPolicy(): SsrfGuardPolicy {
+  return { enabled: true };
+}
+export function defaultSecretPiiPolicy(): SecretPiiPolicy {
+  return { enabled: true, action: "redact" };
+}
+export function defaultConnectorRegistryPolicy(): ConnectorRegistryPolicy {
+  return { enabled: true, approved: [] };
+}
+export function defaultMcpResponsePolicy(): McpResponsePolicy {
+  return { enabled: true, defaultClass: "scan", perServer: {} };
+}
+
 /** An egress policy with no rules and the permissive default posture — the "just turned it on" state. */
 export function emptyEgressPolicy(): EgressPolicy {
   return { rules: [], unlisted: "allow", failClosed: false, recordIngress: false };
@@ -87,10 +218,54 @@ interface YamlEgressPolicy {
   fail_closed?: boolean;
   record_ingress?: boolean;
 }
+interface YamlDnsExfilPolicy {
+  enabled?: boolean;
+  entropy_threshold?: number;
+  action?: AlertOrDeny;
+}
+interface YamlSsrfGuardPolicy {
+  enabled?: boolean;
+}
+interface YamlSecretPiiPolicy {
+  enabled?: boolean;
+  action?: RedactOrDeny;
+}
+interface YamlOperationRail {
+  host?: string;
+  method?: string;
+  path?: string | null;
+  graphql_mutation?: string | null;
+  tier: Tier;
+}
+interface YamlApprovedConnectorTool {
+  upstream: string;
+  tool: string;
+  description_hash: string;
+}
+interface YamlConnectorRegistryPolicy {
+  enabled?: boolean;
+  approved?: YamlApprovedConnectorTool[];
+}
+interface YamlMcpResponsePolicy {
+  enabled?: boolean;
+  default_class?: TrustClass;
+  per_server?: Record<string, TrustClass>;
+}
+interface YamlDetectionPolicy {
+  dns_exfil?: YamlDnsExfilPolicy | null;
+  ssrf_guard?: YamlSsrfGuardPolicy | null;
+  secret_pii?: YamlSecretPiiPolicy | null;
+  operation_rails?: YamlOperationRail[];
+  canary_tokens?: string[];
+  connector_registry?: YamlConnectorRegistryPolicy | null;
+  read_only?: string[];
+  mcp_response?: YamlMcpResponsePolicy | null;
+}
 interface YamlPolicy {
   rules?: YamlRule[];
   budget?: { max_actions_per_minute?: number | null; max_api_calls_per_hour?: number | null };
   egress?: YamlEgressPolicy;
+  detection?: YamlDetectionPolicy;
 }
 
 export function tierFrom(allow: boolean, requireApproval: boolean): Tier {
@@ -116,6 +291,71 @@ export function defaultPolicy(): Policy {
     maxActionsPerMinute: 60,
     maxApiCallsPerHour: null,
     egress: null,
+    detection: null,
+  };
+}
+
+function parseDetection(doc: YamlDetectionPolicy | undefined): DetectionPolicy | null {
+  if (!doc) return null;
+  return {
+    dnsExfil: doc.dns_exfil
+      ? {
+          enabled: doc.dns_exfil.enabled !== false,
+          entropyThreshold:
+            typeof doc.dns_exfil.entropy_threshold === "number" ? doc.dns_exfil.entropy_threshold : 4.0,
+          action: doc.dns_exfil.action === "deny" ? "deny" : "alert",
+        }
+      : null,
+    ssrfGuard: doc.ssrf_guard ? { enabled: doc.ssrf_guard.enabled !== false } : null,
+    secretPii: doc.secret_pii
+      ? {
+          enabled: doc.secret_pii.enabled !== false,
+          action: doc.secret_pii.action === "deny" ? "deny" : "redact",
+        }
+      : null,
+    operationRails: (Array.isArray(doc.operation_rails) ? doc.operation_rails : [])
+      .filter((r): r is YamlOperationRail => !!r && typeof r.tier === "string")
+      .map((r) => ({
+        host: typeof r.host === "string" ? r.host : "*",
+        method: typeof r.method === "string" ? r.method : "*",
+        path: typeof r.path === "string" ? r.path : null,
+        graphqlMutation: typeof r.graphql_mutation === "string" ? r.graphql_mutation : null,
+        tier: r.tier === "approval" || r.tier === "deny" ? r.tier : "allow",
+      })),
+    canaryTokens: (Array.isArray(doc.canary_tokens) ? doc.canary_tokens : []).filter(
+      (t): t is string => typeof t === "string",
+    ),
+    connectorRegistry: doc.connector_registry
+      ? {
+          enabled: doc.connector_registry.enabled !== false,
+          approved: (Array.isArray(doc.connector_registry.approved) ? doc.connector_registry.approved : [])
+            .filter(
+              (a): a is YamlApprovedConnectorTool =>
+                !!a && typeof a.upstream === "string" && typeof a.tool === "string",
+            )
+            .map((a) => ({
+              upstream: a.upstream,
+              tool: a.tool,
+              descriptionHash: typeof a.description_hash === "string" ? a.description_hash : "",
+            })),
+        }
+      : null,
+    readOnly: (Array.isArray(doc.read_only) ? doc.read_only : []).filter(
+      (r): r is string => typeof r === "string",
+    ),
+    mcpResponse: doc.mcp_response
+      ? {
+          enabled: doc.mcp_response.enabled !== false,
+          defaultClass:
+            doc.mcp_response.default_class === "trusted" || doc.mcp_response.default_class === "block"
+              ? doc.mcp_response.default_class
+              : "scan",
+          perServer:
+            doc.mcp_response.per_server && typeof doc.mcp_response.per_server === "object"
+              ? { ...doc.mcp_response.per_server }
+              : {},
+        }
+      : null,
   };
 }
 
@@ -153,6 +393,7 @@ export function parsePolicyYaml(text: string): Policy {
         ? doc.budget.max_api_calls_per_hour
         : null,
     egress: parseEgress(doc.egress),
+    detection: parseDetection(doc.detection),
   };
 }
 
@@ -188,6 +429,50 @@ export function policyToYaml(p: Policy): string {
       fail_closed: p.egress.failClosed,
       record_ingress: p.egress.recordIngress,
     };
+  }
+  // BC-3, same discipline as `egress` above: no `detection` key at all when never authored, and
+  // within it, no sub-detector key when that ONE detector was never configured — authoring the
+  // pack never silently activates a detector the operator didn't touch.
+  if (p.detection !== null) {
+    const d = p.detection;
+    const yd: YamlDetectionPolicy = {};
+    if (d.dnsExfil) {
+      yd.dns_exfil = {
+        enabled: d.dnsExfil.enabled,
+        entropy_threshold: d.dnsExfil.entropyThreshold,
+        action: d.dnsExfil.action,
+      };
+    }
+    if (d.ssrfGuard) yd.ssrf_guard = { enabled: d.ssrfGuard.enabled };
+    if (d.secretPii) yd.secret_pii = { enabled: d.secretPii.enabled, action: d.secretPii.action };
+    if (d.operationRails.length > 0) {
+      yd.operation_rails = d.operationRails.map((r) => {
+        const yr: YamlOperationRail = { host: r.host, method: r.method, tier: r.tier };
+        if (r.path !== null) yr.path = r.path;
+        if (r.graphqlMutation !== null) yr.graphql_mutation = r.graphqlMutation;
+        return yr;
+      });
+    }
+    if (d.canaryTokens.length > 0) yd.canary_tokens = d.canaryTokens;
+    if (d.connectorRegistry) {
+      yd.connector_registry = {
+        enabled: d.connectorRegistry.enabled,
+        approved: d.connectorRegistry.approved.map((a) => ({
+          upstream: a.upstream,
+          tool: a.tool,
+          description_hash: a.descriptionHash,
+        })),
+      };
+    }
+    if (d.readOnly.length > 0) yd.read_only = d.readOnly;
+    if (d.mcpResponse) {
+      yd.mcp_response = {
+        enabled: d.mcpResponse.enabled,
+        default_class: d.mcpResponse.defaultClass,
+        per_server: d.mcpResponse.perServer,
+      };
+    }
+    doc.detection = yd;
   }
   const body = dump(doc, { lineWidth: -1, quotingType: '"', forceQuotes: true });
   return YAML_HEADER + body;

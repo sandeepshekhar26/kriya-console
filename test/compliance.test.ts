@@ -105,6 +105,7 @@ describe("buildEvidence — inventory + oversight", () => {
       maxActionsPerMinute: 30,
       maxApiCallsPerHour: null,
       egress: null,
+      detection: null,
     };
     const b = await bundle(policy);
     const ids = b.actionInventory.map((a) => a.action).sort();

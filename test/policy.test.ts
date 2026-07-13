@@ -5,6 +5,14 @@ import {
   lintPolicy,
   parsePolicyYaml,
   policyToYaml,
+  emptyDetectionPolicy,
+  defaultDnsExfilPolicy,
+  defaultSsrfGuardPolicy,
+  defaultSecretPiiPolicy,
+  defaultConnectorRegistryPolicy,
+  defaultMcpResponsePolicy,
+  type DetectionPolicy,
+  type Policy,
 } from "../src/lib/policy";
 
 // These mirror the Rust unit tests in crates/kriya/src/permissions.rs so the console's
@@ -129,5 +137,122 @@ budget:
     expect(p.maxApiCallsPerHour).toBe(500);
     // emits both caps and reads them back identically
     expect(parsePolicyYaml(policyToYaml(p))).toEqual(p);
+  });
+});
+
+// Detection pack (doc 24 §11 B5–B12 / EG-P) — mirrors the Rust round-trip discipline: no
+// `detection:` key at all when never authored (BC-3), and within it, each sub-detector is its own
+// independently-omittable key so authoring the pack never silently activates one the operator never
+// touched. These are the console-side companion to `permissions::tests::detection_*` in Rust.
+describe("detection pack — YAML round-trip (doc 24 §11 / EG-P)", () => {
+  it("defaultPolicy() carries detection: null and round-trips with no `detection:` key at all", () => {
+    const p = defaultPolicy();
+    expect(p.detection).toBeNull();
+    const yaml = policyToYaml(p);
+    expect(yaml).not.toContain("detection");
+    expect(parsePolicyYaml(yaml)).toEqual(p);
+  });
+
+  it("round-trips a FULLY populated detection pack byte-for-byte through parse(serialize(x))", () => {
+    const detection: DetectionPolicy = {
+      dnsExfil: defaultDnsExfilPolicy(),
+      ssrfGuard: defaultSsrfGuardPolicy(),
+      secretPii: defaultSecretPiiPolicy(),
+      operationRails: [
+        { host: "*.vendor.com", method: "GET", path: "/v1/*", graphqlMutation: null, tier: "allow" },
+        { host: "api.example.com", method: "*", path: null, graphqlMutation: "deleteUser", tier: "deny" },
+      ],
+      canaryTokens: ["canary-token-xyz123", "bait-key-abc789"],
+      connectorRegistry: {
+        enabled: true,
+        approved: [{ upstream: "widgets", tool: "list_widgets", descriptionHash: "a".repeat(64) }],
+      },
+      readOnly: ["widgets", "reports__*"],
+      mcpResponse: {
+        enabled: true,
+        defaultClass: "scan",
+        perServer: { widgets: "trusted", scratch: "block" },
+      },
+    };
+    const p: Policy = { ...defaultPolicy(), detection };
+    const round = parsePolicyYaml(policyToYaml(p));
+    expect(round).toEqual(p);
+  });
+
+  it("a partially populated pack (only SOME detectors configured) round-trips with the rest null/empty", () => {
+    const detection: DetectionPolicy = {
+      ...emptyDetectionPolicy(),
+      ssrfGuard: { enabled: true },
+      canaryTokens: ["only-this-one"],
+    };
+    const p: Policy = { ...defaultPolicy(), detection };
+    const yaml = policyToYaml(p);
+    // Untouched sub-detectors never appear in the emitted YAML at all.
+    expect(yaml).not.toContain("dns_exfil");
+    expect(yaml).not.toContain("secret_pii");
+    expect(yaml).not.toContain("operation_rails");
+    expect(yaml).not.toContain("connector_registry");
+    expect(yaml).not.toContain("read_only");
+    expect(yaml).not.toContain("mcp_response");
+    const round = parsePolicyYaml(yaml);
+    expect(round.detection).toEqual(detection);
+    expect(round).toEqual(p);
+  });
+
+  it("parses a hand-authored realistic detection: block (the shape an operator would actually write)", () => {
+    const p = parsePolicyYaml(`
+rules:
+  - action: "*"
+    allow: false
+budget:
+  max_actions_per_minute: 60
+detection:
+  dns_exfil:
+    action: "deny"
+  ssrf_guard:
+    enabled: true
+  secret_pii:
+    action: "deny"
+  canary_tokens:
+    - "planted-bait-001"
+  read_only:
+    - "reporting"
+  mcp_response:
+    default_class: "scan"
+    per_server:
+      analytics: "trusted"
+`);
+    expect(p.detection).not.toBeNull();
+    const d = p.detection!;
+    expect(d.dnsExfil).toEqual({ enabled: true, entropyThreshold: 4.0, action: "deny" });
+    expect(d.ssrfGuard).toEqual({ enabled: true });
+    expect(d.secretPii).toEqual({ enabled: true, action: "deny" });
+    expect(d.canaryTokens).toEqual(["planted-bait-001"]);
+    expect(d.readOnly).toEqual(["reporting"]);
+    expect(d.mcpResponse).toEqual({ enabled: true, defaultClass: "scan", perServer: { analytics: "trusted" } });
+    // Untouched sub-detectors stay null/empty — authoring the block never activates them.
+    expect(d.operationRails).toEqual([]);
+    expect(d.connectorRegistry).toBeNull();
+  });
+
+  it("connector registry approve-list round-trips (Console 'approve connector' row source of truth)", () => {
+    const registry = defaultConnectorRegistryPolicy();
+    registry.approved.push(
+      { upstream: "crm", tool: "delete_contact", descriptionHash: "b".repeat(64) },
+      { upstream: "crm", tool: "list_contacts", descriptionHash: "c".repeat(64) },
+    );
+    const p: Policy = { ...defaultPolicy(), detection: { ...emptyDetectionPolicy(), connectorRegistry: registry } };
+    const round = parsePolicyYaml(policyToYaml(p));
+    expect(round.detection?.connectorRegistry?.approved).toHaveLength(2);
+    expect(round).toEqual(p);
+  });
+
+  it("MCP-response trust classes round-trip per-server, including 'block'", () => {
+    const mcpResponse = defaultMcpResponsePolicy();
+    mcpResponse.perServer = { "known-good": "trusted", scratch: "scan", untrusted: "block" };
+    const p: Policy = { ...defaultPolicy(), detection: { ...emptyDetectionPolicy(), mcpResponse } };
+    const round = parsePolicyYaml(policyToYaml(p));
+    expect(round.detection?.mcpResponse?.perServer.untrusted).toBe("block");
+    expect(round).toEqual(p);
   });
 });
