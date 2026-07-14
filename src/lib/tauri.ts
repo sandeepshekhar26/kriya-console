@@ -51,6 +51,11 @@ export interface LaneInfo {
    *  gap between this chip and the grey raw-egress lane IS the bypass disclosure). Present only on
    *  claude-code-tools / remote-mcp / local-stdio-mcp. */
   egressLedger?: boolean | null;
+  /** EG-C (doc 24 §11 B14): whether a `kriya-gateway run --` containment session's bookend was
+   *  observed in-window. Present only on raw-egress, and deliberately NEVER changes `state` — a
+   *  contained session enforces egress for the process it launched only, not host-wide E2 coverage;
+   *  the map must never present it as such. */
+  containedSession?: boolean | null;
 }
 /** One lane within an agent's coverage group (GA-2). Mirrors Rust `coverage::AgentLane`. */
 export interface AgentLane {

@@ -90,7 +90,7 @@ const PREVIEW_STATUS: CoverageStatus = {
     "local-stdio-mcp": { state: "green", source: "gateway", lastReceiptMs: Date.now() - 3 * 3600e3, files: 2, egressLedger: true },
     "desktop-apps": { state: "amber", source: "reach-in/computer-use", lastReceiptMs: Date.now() - 30 * 3600e3, files: 1 },
     "raw-file-exec": { state: "grey", files: 0 },
-    "raw-egress": { state: "grey", files: 0 },
+    "raw-egress": { state: "grey", files: 0, containedSession: true },
   },
   lastSnapshotMs: Date.now() - 2 * 3600e3,
   snapshotChainOk: true,
@@ -198,6 +198,13 @@ export function CoverageView({ onNavigate }: { onNavigate: (v: View) => void }) 
                 <p className="muted small" style={{ margin: "6px 0 0" }} title="Signed kriya.io.* receipts for governed-lane egress on this seam (doc 24 EG-2) — a bypass via a spawned subprocess or a stdio server's own outbound traffic is not covered; see Trust.">
                   <span className={`badge ${info.egressLedger ? "ok" : ""}`}>
                     Egress ledger {info.egressLedger ? "ON" : "OFF"}
+                  </span>
+                </p>
+              )}
+              {info?.containedSession != null && (
+                <p className="muted small" style={{ margin: "6px 0 0" }} title="A kriya-gateway run -- session ran with its egress forced through the governed lane via a macOS Seatbelt profile (doc 24 EG-C). Scoped to the process it launched only — never a claim of host-wide coverage; this lane's own state above still reflects the E2 host watcher alone.">
+                  <span className={`badge ${info.containedSession ? "ok" : ""}`}>
+                    Contained session {info.containedSession ? "seen" : "none in window"}
                   </span>
                 </p>
               )}
