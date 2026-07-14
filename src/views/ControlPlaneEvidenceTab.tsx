@@ -1,6 +1,12 @@
 import { useState } from "react";
 import { Icon } from "../components/Icon";
-import { fleetOrgEvidence, type OrgControlStatus, type OrgEvidence } from "../lib/tauri";
+import {
+  consoleDrilldown,
+  fleetDeviceUnlistedEgressCount,
+  fleetOrgEvidence,
+  type OrgControlStatus,
+  type OrgEvidence,
+} from "../lib/tauri";
 
 const STATUS_CLASS: Record<OrgControlStatus, string> = { satisfied: "ok", partial: "warn", gap: "bad" };
 const STATUS_ICON: Record<OrgControlStatus, string> = { satisfied: "✓", partial: "◐", gap: "✗" };
@@ -29,6 +35,20 @@ export function ControlPlaneEvidenceTab() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [evidence, setEvidence] = useState<OrgEvidence | null>(null);
+  const [revealed, setRevealed] = useState<Record<string, [number, number] | "loading" | "error">>({});
+
+  async function reveal(devicePub: string) {
+    setRevealed((r) => ({ ...r, [devicePub]: "loading" }));
+    try {
+      // The receipted act of looking happens FIRST — "the surveillance is itself audited" (doc 24
+      // §7.5/§6-P9) — then the actual number is fetched.
+      await consoleDrilldown(devicePub, "egress-unlisted-count");
+      const [count, denied] = await fleetDeviceUnlistedEgressCount(devicePub);
+      setRevealed((r) => ({ ...r, [devicePub]: [count, denied] }));
+    } catch {
+      setRevealed((r) => ({ ...r, [devicePub]: "error" }));
+    }
+  }
 
   async function generate() {
     setBusy(true);
@@ -122,6 +142,76 @@ export function ControlPlaneEvidenceTab() {
               ))}
             </tbody>
           </table>
+
+          {evidence.egressPatterns.some((d) => d.patternEchoActive) && (
+            <>
+              <h3 style={{ marginTop: 20, marginBottom: 4 }}>Fleet destination patterns (pattern-echo)</h3>
+              {evidence.purposeStatement && (
+                <p className="muted small">
+                  <strong>Purpose:</strong> {evidence.purposeStatement}
+                </p>
+              )}
+              <p className="muted small">
+                Pattern-echo (doc 24 §4.5/§7.5): each pattern is an operator-AUTHORED string from the
+                signed policy bundle — never a raw observed host. A pattern flagged ⚠ matched fewer
+                than a handful of devices fleet-wide (a possible surveillance-shaped signal). Small
+                unlisted counts are withheld by default; revealing one signs a
+                `kriya.console.drilldown` receipt.
+              </p>
+              <table className="tbl" style={{ marginTop: 8 }}>
+                <thead>
+                  <tr>
+                    <th>Device</th>
+                    <th>Patterns (count / denied)</th>
+                    <th>Unlisted attempts</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {evidence.egressPatterns
+                    .filter((d) => d.patternEchoActive)
+                    .map((d) => {
+                      const rev = revealed[d.devicePub];
+                      return (
+                        <tr key={d.devicePub}>
+                          <td>{d.deviceLabel || d.devicePub.slice(0, 12) + "…"}</td>
+                          <td>
+                            {d.patterns.length === 0
+                              ? "none"
+                              : d.patterns.map((p, i) => (
+                                  <span key={p.pattern}>
+                                    {i > 0 && ", "}
+                                    <span className={p.fewDevicePattern ? "warn" : undefined}>
+                                      {p.pattern}
+                                      {p.fewDevicePattern ? " ⚠" : ""} ({p.count}/{p.denied})
+                                    </span>
+                                  </span>
+                                ))}
+                          </td>
+                          <td>
+                            {d.unlistedCount != null ? (
+                              d.unlistedCount
+                            ) : rev === "loading" ? (
+                              "revealing…"
+                            ) : rev === "error" ? (
+                              <span className="warn-text">reveal failed</span>
+                            ) : Array.isArray(rev) ? (
+                              `${rev[0]} (${rev[1]} denied) — revealed`
+                            ) : (
+                              <>
+                                <span className="muted small">withheld</span>{" "}
+                                <button className="btn small" onClick={() => void reveal(d.devicePub)}>
+                                  Reveal
+                                </button>
+                              </>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </>
+          )}
 
           <table className="tbl" style={{ marginTop: 20 }}>
             <thead>

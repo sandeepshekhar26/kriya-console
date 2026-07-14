@@ -16,6 +16,7 @@
 
 pub mod compiler;
 pub mod device_info;
+pub mod drilldown;
 pub mod enrollment;
 pub mod envelope;
 pub mod fleet;

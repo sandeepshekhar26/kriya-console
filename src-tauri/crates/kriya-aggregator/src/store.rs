@@ -977,6 +977,8 @@ mod tests {
                 govern: vec![],
                 envelope_verbosity: "standard".into(),
                 kill_switch: false,
+                io_verbosity: "off".into(),
+                purpose_statement: None,
             },
         )
     }

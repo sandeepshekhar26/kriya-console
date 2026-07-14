@@ -468,6 +468,11 @@ export interface PolicyBundleDraft {
    *  literal `false` would diverge from the Rust `skip_serializing_if` shape), this type is only ever
    *  read from a Tauri command's already-deserialized response — `false | undefined` is fine here. */
   kill_switch?: boolean;
+  /** The fleet-destination-visibility dial (doc 24 §4.5/§7.5, EG-4) — `"off"` | `"pattern-echo"`. */
+  io_verbosity?: string;
+  /** Echoed into every export once `io_verbosity` is `"pattern-echo"` — "the surveillance is itself
+   *  audited." */
+  purpose_statement?: string | null;
 }
 
 /** Mirrors Rust `control_plane::fleet::PublishResult`. */
@@ -489,7 +494,16 @@ export const fleetPublishPolicy = (args: {
   govern: { target: string; action: string }[];
   envelopeVerbosity: string;
   killSwitch: boolean;
+  ioVerbosity: string;
+  purposeStatement?: string | null;
 }) => invoke<PublishResult>("fleet_publish_policy", args);
+
+/** Signs + appends one `kriya.console.drilldown` receipt (doc 24 §7.5/§6-P9, EG-4) — call this
+ *  BEFORE (or as part of) revealing a below-threshold pattern-echo count in the UI, so "who looked,
+ *  when" always has a signed, chained answer. `operatorPseudonym` is computed device-side from the
+ *  local OS user, never caller-supplied. */
+export const consoleDrilldown = (devicePub: string, scope: string) =>
+  invoke<void>("console_drilldown", { devicePub, scope });
 
 // ── Org-wide evidence export (paid, P5, doc 22 §9) ───────────────────────────
 // The per-device engine (`exportCompliance`/`ComplianceBundle` above) is untouched by this — kriyad
@@ -550,6 +564,34 @@ export interface FleetEgressTotals {
   approve: number;
 }
 
+/** One operator-authored destination pattern's fleet roll-up (doc 24 §4.5/§7.5, EG-4) — mirrors
+ *  Rust `control_plane::fleet_evidence::PatternCount`. `pattern` is either a verbatim string from
+ *  the signed policy bundle or the fixed `"unlisted"` sentinel — never a raw host. */
+export interface PatternCount {
+  pattern: string;
+  count: number;
+  denied: number;
+  /** Fewer than a handful of devices fleet-wide carry this pattern — a possible surveillance-shaped
+   *  signal (e.g. a single person's own domain). Flagged, never suppressed. */
+  fewDevicePattern: boolean;
+}
+
+/** One device's destination-pattern roll-up — mirrors Rust
+ *  `control_plane::fleet_evidence::DeviceEgressPatterns`. */
+export interface DeviceEgressPatterns {
+  devicePub: string;
+  deviceLabel?: string | null;
+  /** `false` means `io_verbosity` was never `"pattern-echo"` here — distinct from `unlistedCount: 0`
+   *  (pattern-echo running, genuinely zero unlisted activity). */
+  patternEchoActive: boolean;
+  patterns: PatternCount[];
+  /** `null`/absent when withheld (below the reveal threshold) OR pattern-echo was never active — a
+   *  genuine zero while active always renders as `0`. Revealing a withheld count is itself a signed
+   *  `kriya.console.drilldown` event (`consoleDrilldown`). */
+  unlistedCount?: number | null;
+  unlistedDenied?: number | null;
+}
+
 /** The full org-wide evidence bundle — mirrors Rust `control_plane::fleet_evidence::OrgEvidence`.
  *  `markdown`/`json` are the ready-to-save report text, generated in Rust (same pattern as
  *  `ComplianceBundle` above: the Console never re-derives report text client-side). */
@@ -573,6 +615,12 @@ export interface OrgEvidence {
    *  `deviceCompleteness`. */
   egressReceipts: DeviceEgressReceipts[];
   egressTotals: FleetEgressTotals;
+  /** The fleet destination-pattern roll-up (doc 24 §4.5/§7.5, EG-4) — one row per device, same order
+   *  as `deviceCompleteness`. Every row has `patternEchoActive: false` when nothing ever ran it. */
+  egressPatterns: DeviceEgressPatterns[];
+  /** Echoed from the latest published bundle's `purpose_statement` — "the surveillance is itself
+   *  audited." `null`/absent when unset. */
+  purposeStatement?: string | null;
   controls: OrgControl[];
   markdown: string;
   json: string;
@@ -582,3 +630,9 @@ export interface OrgEvidence {
  *  `windowMs` defaults to 90 days (Rust `fleet_evidence::DEFAULT_WINDOW_MS`) when omitted. */
 export const fleetOrgEvidence = (organization: string, windowMs?: number | null) =>
   invoke<OrgEvidence>("fleet_org_evidence", { organization, windowMs: windowMs ?? null });
+
+/** The receipted reveal path for one device's below-threshold unlisted-egress count (doc 24
+ *  §7.5/§6-P9, EG-4) — returns `[count, denied]`. Call `consoleDrilldown` FIRST (or alongside) so the
+ *  act of revealing is itself signed before/with the number is fetched. */
+export const fleetDeviceUnlistedEgressCount = (devicePub: string, windowMs?: number | null) =>
+  invoke<[number, number]>("fleet_device_unlisted_egress_count", { devicePub, windowMs: windowMs ?? null });

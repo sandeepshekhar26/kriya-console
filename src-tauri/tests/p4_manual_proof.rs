@@ -87,6 +87,8 @@ fn author_sign_publish(
         govern: vec![kriya_verify::GovernDirective { target: "claude-code".into(), action: "wire".into() }],
         envelope_verbosity: "standard".into(),
         kill_switch: false,
+        io_verbosity: "off".into(),
+        purpose_statement: None,
     };
     let hash = policy::bundle_hash(&bundle);
     let signed = kriya_verify::sign_policy_bundle(org_key, bundle);

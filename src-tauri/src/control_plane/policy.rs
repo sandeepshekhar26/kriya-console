@@ -63,6 +63,21 @@ pub struct PolicyState {
     /// ([`verify_and_apply`] always overwrites the policy file, so this can never go stale itself).
     #[serde(default)]
     pub kill_switch_active: bool,
+    /// The applied `io_verbosity` dial (doc 24 §4.5/§7.5, EG-4) — `None` (pre-EG-4 / nothing applied
+    /// yet) means `"off"`. See [`current_io_verbosity`].
+    #[serde(default)]
+    pub io_verbosity: Option<String>,
+    /// The applied bundle's `policy.egress.rules[].host` patterns, verbatim — the ONLY strings
+    /// [`kriya_verify::minimize_io`] is ever allowed to echo for a matched destination. Extracted once
+    /// at apply time (not re-parsed from the runtime policy YAML on every envelope) so the pattern set
+    /// a device echoes always matches EXACTLY what the operator most recently authored. Empty when
+    /// the bundle carries no `egress.rules` — every destination then falls to the unlisted bucket.
+    #[serde(default)]
+    pub egress_patterns: Vec<String>,
+    /// The applied bundle's `purpose_statement` (doc 24 §7.5/§6-P9), echoed into every fleet export
+    /// once `io_verbosity` is `"pattern-echo"`.
+    #[serde(default)]
+    pub purpose_statement: Option<String>,
 }
 
 fn state_path() -> PathBuf {
@@ -89,6 +104,50 @@ fn save_state(state: &PolicyState) -> Result<(), String> {
 /// `WindowInput::envelope_verbosity`). `"standard"` until a bundle setting it has actually been applied.
 pub fn current_envelope_verbosity() -> String {
     load_state().envelope_verbosity.unwrap_or_else(|| "standard".into())
+}
+
+/// The Evidence Compiler's fleet-destination-visibility dial (doc 24 §4.5/§7.5, EG-4) —
+/// `WindowInput::io_verbosity` reads this. `"off"` until a bundle setting `"pattern-echo"` has
+/// actually been applied.
+pub fn current_io_verbosity() -> String {
+    load_state().io_verbosity.unwrap_or_else(|| "off".into())
+}
+
+/// The applied bundle's operator-authored egress destination patterns — `WindowInput::egress_patterns`
+/// reads this. The ONLY strings a device is ever allowed to echo for a matched destination.
+pub fn current_egress_patterns() -> Vec<String> {
+    load_state().egress_patterns
+}
+
+/// The applied bundle's purpose statement, echoed into every fleet export (doc 24 §7.5/§6-P9).
+pub fn current_purpose_statement() -> Option<String> {
+    load_state().purpose_statement
+}
+
+/// Extract `policy.egress.rules[].host` verbatim from a bundle's opaque `policy` payload — this crate
+/// doesn't otherwise interpret the runtime policy format (see `kriya_verify::policy`'s module doc),
+/// but the io-pattern minimizer needs exactly this ONE slice of it: the operator's own authored
+/// destination patterns, nothing else. Tolerant of any shape mismatch (absent `egress`/`rules`, a
+/// rule missing `host`, a non-string `host`) — malformed input yields fewer patterns, never a panic
+/// or a spurious echo.
+fn egress_patterns_from_bundle(bundle: &PolicyBundle) -> Vec<String> {
+    bundle
+        .policy
+        .get("egress")
+        .and_then(|e| e.get("rules"))
+        .and_then(Value::as_array)
+        .map(|rules| {
+            rules
+                .iter()
+                .filter_map(|r| r.get("host").and_then(Value::as_str))
+                // An empty host string is malformed input, never a real pattern — without this, a
+                // receipt legitimately lacking `dest_host` (defaults to `""`) would misleadingly
+                // match this "pattern" instead of falling to the honest `UNLISTED_PATTERN` bucket.
+                .filter(|h| !h.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// `sha256` of the bundle's canonical signed bytes — the `bundle_hash` carried in the
@@ -281,6 +340,9 @@ pub fn verify_and_apply(raw: &str, org_policy_pub_hex: &str) -> Result<Option<Ap
         envelope_verbosity: Some(bundle.envelope_verbosity.clone()),
         stale_reported: false, // freshly applied ⇒ fresh by definition
         kill_switch_active: bundle.kill_switch,
+        io_verbosity: Some(bundle.io_verbosity.clone()),
+        egress_patterns: egress_patterns_from_bundle(&bundle),
+        purpose_statement: bundle.purpose_statement.clone(),
     })?;
 
     emit_policy_receipt(
@@ -450,6 +512,8 @@ mod tests {
                 govern: vec![],
                 envelope_verbosity: "extended".into(),
                 kill_switch: false,
+                io_verbosity: "off".into(),
+                purpose_statement: None,
             },
         );
         serde_json::to_string(&signed).unwrap()
@@ -471,9 +535,103 @@ mod tests {
                 govern: vec![],
                 envelope_verbosity: "extended".into(),
                 kill_switch,
+                io_verbosity: "off".into(),
+                purpose_statement: None,
             },
         );
         serde_json::to_string(&signed).unwrap()
+    }
+
+    /// A bundle carrying a real `policy.egress.rules[]` section plus `io_verbosity: "pattern-echo"`
+    /// and a `purpose_statement` — for the EG-4 apply tests below.
+    fn signed_bundle_json_pattern_echo(key: &SigningKey, version: u64) -> String {
+        let signed = kriya_verify::sign_policy_bundle(
+            key,
+            kriya_verify::PolicyBundle {
+                org_id: "acme".into(),
+                version,
+                issued_ms: 1000 + version,
+                expires_ms: None,
+                scope: kriya_verify::PolicyScope::all(),
+                policy: serde_json::json!({
+                    "rules": [{ "action": "*", "allow": true }],
+                    "egress": {
+                        "unlisted": "deny",
+                        "rules": [
+                            { "host": "*.vendor.com", "tier": "allow" },
+                            { "host": "api.partner.com", "tier": "approval" },
+                        ],
+                    },
+                }),
+                budgets: serde_json::json!({}),
+                govern: vec![],
+                envelope_verbosity: "standard".into(),
+                kill_switch: false,
+                io_verbosity: "pattern-echo".into(),
+                purpose_statement: Some("compliance/security evidence; never performance evaluation".into()),
+            },
+        );
+        serde_json::to_string(&signed).unwrap()
+    }
+
+    #[test]
+    fn verify_and_apply_persists_io_verbosity_egress_patterns_and_purpose_statement() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        with_sandboxed_home(|| {
+            let key = org_key();
+            let pub_hex = hex::encode(key.verifying_key().to_bytes());
+            verify_and_apply(&signed_bundle_json_pattern_echo(&key, 1), &pub_hex).unwrap();
+
+            assert_eq!(current_io_verbosity(), "pattern-echo");
+            assert_eq!(
+                current_egress_patterns(),
+                vec!["*.vendor.com".to_string(), "api.partner.com".to_string()]
+            );
+            assert_eq!(
+                current_purpose_statement().as_deref(),
+                Some("compliance/security evidence; never performance evaluation")
+            );
+        });
+    }
+
+    #[test]
+    fn defaults_are_off_empty_and_none_before_any_bundle_applies() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        with_sandboxed_home(|| {
+            assert_eq!(current_io_verbosity(), "off");
+            assert!(current_egress_patterns().is_empty());
+            assert!(current_purpose_statement().is_none());
+        });
+    }
+
+    #[test]
+    fn egress_patterns_from_bundle_tolerates_missing_or_malformed_shapes() {
+        let no_egress = kriya_verify::PolicyBundle {
+            org_id: "acme".into(),
+            version: 1,
+            issued_ms: 0,
+            expires_ms: None,
+            scope: kriya_verify::PolicyScope::all(),
+            policy: serde_json::json!({ "rules": [] }),
+            budgets: serde_json::json!({}),
+            govern: vec![],
+            envelope_verbosity: "standard".into(),
+            kill_switch: false,
+            io_verbosity: "off".into(),
+            purpose_statement: None,
+        };
+        assert!(egress_patterns_from_bundle(&no_egress).is_empty(), "no egress section at all");
+
+        let malformed = kriya_verify::PolicyBundle {
+            policy: serde_json::json!({ "egress": { "rules": [
+                { "host": 42 }, { "no_host": "x" }, "not even an object", { "host": "" },
+            ] } }),
+            ..no_egress
+        };
+        assert!(
+            egress_patterns_from_bundle(&malformed).is_empty(),
+            "a non-string/missing host must be skipped, never panic"
+        );
     }
 
     #[test]

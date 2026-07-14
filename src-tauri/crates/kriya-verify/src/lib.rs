@@ -53,5 +53,5 @@ pub use policy::{
 pub use receipts::{
     chain_break, chain_continues_from, load_rows, sign_receipt, verify_value, Actor, AuditRow,
 };
-pub use redact::{minimize_window, Allowlist, MinimizedAction};
+pub use redact::{minimize_io, minimize_window, Allowlist, IoDestinationPattern, MinimizedAction, UNLISTED_PATTERN};
 pub use sig::verify_detached;

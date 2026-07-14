@@ -71,6 +71,43 @@ describe("envelope v1.1 policy_state — BC-5 cross-version parity", () => {
   });
 });
 
+// BC-5 cross-version parity (doc 24 §7.5, EG-4): `sample-envelope-v1.1.json` (above) predates
+// `io_destinations`. `sample-envelope-v1.2.json` carries it (envelope v1.2, EG-4 pattern-echo).
+// Companion to Rust's `kriya_verify::envelope::tests::cross_version_fixtures_v1_1_and_v1_2_both_verify`.
+const v1_2Fixture = JSON.parse(
+  readFileSync(join(here, "../src/sample/sample-envelope-v1.2.json"), "utf8"),
+) as SignedEnvelope;
+
+describe("envelope v1.2 io_destinations — BC-5 cross-version parity", () => {
+  it("verifies the v1.1 fixture (no io_destinations) unchanged", async () => {
+    expect(v1_1Fixture.envelope.io_destinations).toBeUndefined();
+    const outcome = await verifyEnvelope(v1_1Fixture);
+    expect(outcome.ok, outcome.reason).toBe(true);
+  });
+
+  it("verifies the v1.2 fixture (with io_destinations present)", async () => {
+    expect(v1_2Fixture.envelope.io_destinations).toBeDefined();
+    const outcome = await verifyEnvelope(v1_2Fixture);
+    expect(outcome.ok, outcome.reason).toBe(true);
+  });
+
+  it("only ever carries bundle-authored pattern strings or the unlisted sentinel — never a raw host", () => {
+    const patterns = (v1_2Fixture.envelope.io_destinations as Array<{ pattern: string }>).map((p) => p.pattern);
+    expect(patterns).toEqual(["*.vendor.com", "unlisted"]);
+    expect(JSON.stringify(v1_2Fixture)).not.toContain("unknown-tenant.example");
+  });
+
+  it("rejects a tampered io_destinations field", async () => {
+    const destinations = v1_2Fixture.envelope.io_destinations as Array<Record<string, unknown>>;
+    const tampered = structuredClone(v1_2Fixture) as SignedEnvelope;
+    (tampered.envelope.io_destinations as Array<Record<string, unknown>>)[0] = {
+      ...destinations[0],
+      count: 999,
+    };
+    expect((await verifyEnvelope(tampered)).ok).toBe(false);
+  });
+});
+
 // EG-3 (doc 24 §4.2/§8.5): the `kriya.io.*` governed-lane egress/ingress vocabulary needs ZERO
 // envelope schema change — `actions[].action` is just a string, so new ids are new values inside the
 // existing shape. This fixture pins that the TS verifier re-proves a real Rust-signed envelope

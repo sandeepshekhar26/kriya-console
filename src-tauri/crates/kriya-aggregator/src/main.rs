@@ -982,6 +982,8 @@ mod tests {
                     govern: vec![],
                     envelope_verbosity: "standard".into(),
                     kill_switch: false,
+                    io_verbosity: "off".into(),
+                    purpose_statement: None,
                 },
             );
             let (status, _) =
@@ -1056,6 +1058,8 @@ mod tests {
                 }],
                 envelope_verbosity: "standard".into(),
                 kill_switch: false,
+                io_verbosity: "off".into(),
+                purpose_statement: None,
             },
         );
         serde_json::to_string(&signed).unwrap()
@@ -1352,6 +1356,7 @@ mod tests {
                 produced_ms: 2000,
             },
             policy_state: None,
+            io_destinations: None,
         };
         let signature = hex::encode(key.sign(&envelope_canonical_bytes(&env)).to_bytes());
         SignedEnvelope {

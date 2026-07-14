@@ -36,18 +36,33 @@
 //! [`fleet_evidence`] itself is a pure function over whatever bounded, already-windowed set the caller
 //! assembled — kept separate from the network layer so it is fixture-testable with zero network I/O.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 use serde_json::Value;
 
 use super::fleet::VerifiedEnvelope;
+
+/// `pattern -> (count, denied)` — one device's [`io_destination_counts`] roll-up.
+type PatternRollup = BTreeMap<String, (u32, u32)>;
 use super::fleet_client::DeviceCoverage;
 
 /// doc 21 Part D / doc 22 §9 item 4, verbatim — the SAME footer the per-device engine uses. Never
 /// paraphrase this; it is the credibility line the whole export rests on.
 pub const FOOTER: &str =
     "_Status: ✓ satisfied · ◐ partial · ✗ gap. This report is evidence, not a certification._";
+
+/// A device's unlisted-egress count below this is SUPPRESSED from the report by default (doc 24
+/// §7.5: "no per-device unlisted count below a k-threshold without an explicit dial") — a small
+/// number is itself a re-identifying signal about one person's specific activity. Chosen default;
+/// revealed only via the receipted drill-down ([`device_unlisted_egress_count`]).
+pub const UNLISTED_REVEAL_THRESHOLD: u32 = 5;
+
+/// A destination pattern observed on fewer than this many DISTINCT devices fleet-wide is flagged
+/// [`PatternCount::few_device_pattern`] — a surveillance-shaped signal (doc 24 §7.5: "a cockpit
+/// warning when a pattern matches fewer than N devices ... like a single person's domain"). Chosen
+/// default; flagged, not suppressed — an authored pattern is already org-visible policy language.
+pub const MIN_DEVICES_FOR_PATTERN: usize = 3;
 
 /// Default report window — 90 days (doc 22 §9's "Scale" paragraph). Overridable per call.
 pub const DEFAULT_WINDOW_MS: u64 = 90 * 24 * 60 * 60 * 1000;
@@ -166,6 +181,44 @@ pub struct FleetEgressTotals {
     pub approve: u32,
 }
 
+/// One operator-authored destination pattern's fleet roll-up (doc 24 §4.5/§7.5, EG-4) — summed from
+/// each device's already-pattern-echoed `io_destinations` (never a raw host; see
+/// `kriya_verify::minimize_io`'s seal).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatternCount {
+    pub pattern: String,
+    pub count: u32,
+    pub denied: u32,
+    /// Fewer than [`MIN_DEVICES_FOR_PATTERN`] distinct devices fleet-wide carry this pattern — flag,
+    /// never suppress (an authored pattern is already org-visible policy language).
+    pub few_device_pattern: bool,
+}
+
+/// One device's destination-pattern roll-up. The "unlisted" bucket is reported SEPARATELY from
+/// [`patterns`](Self::patterns) (which excludes it) because it carries a different privacy weight:
+/// a matched pattern is operator-authored, already-visible language, but "this device made N calls
+/// to something outside policy" is closer to a per-device anomaly signal — hence the k-threshold
+/// suppression ([`UNLISTED_REVEAL_THRESHOLD`]) applies ONLY here.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceEgressPatterns {
+    pub device_pub: String,
+    pub device_label: Option<String>,
+    /// Whether this device carried `io_destinations` on at least one in-window envelope — `false`
+    /// means `io_verbosity` was never `"pattern-echo"` here, DISTINCT from `unlisted_count: Some(0)`
+    /// (pattern-echo running, genuinely zero unlisted activity). Mirrors `compliance.ts`'s
+    /// not-monitored-vs-zero-observed distinction for the local per-device engine.
+    pub pattern_echo_active: bool,
+    pub patterns: Vec<PatternCount>,
+    /// `None` when `pattern_echo_active` is `false` (nothing to report), OR when the raw count is
+    /// below [`UNLISTED_REVEAL_THRESHOLD`] and therefore suppressed — NOT present as a bare small
+    /// number. A genuine zero while active always renders as `Some(0)`; only an active 1..K-1 is
+    /// withheld. See [`device_unlisted_egress_count`] for the receipted reveal path.
+    pub unlisted_count: Option<u32>,
+    pub unlisted_denied: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrgEvidence {
@@ -187,6 +240,13 @@ pub struct OrgEvidence {
     /// as `device_completeness`.
     pub egress_receipts: Vec<DeviceEgressReceipts>,
     pub egress_totals: FleetEgressTotals,
+    /// The fleet destination-pattern roll-up (doc 24 §4.5/§7.5, EG-4) — empty for every device when
+    /// `io_verbosity` was never `"pattern-echo"` fleet-wide (never a schema difference, just an
+    /// honestly empty rollup, same "absent ≠ leaked" idiom as `egress_receipts`).
+    pub egress_patterns: Vec<DeviceEgressPatterns>,
+    /// Echoed from the latest published bundle's `purpose_statement` (doc 24 §7.5/§6-P9) — "the
+    /// surveillance is itself audited." `None` when unset.
+    pub purpose_statement: Option<String>,
     pub controls: Vec<OrgControl>,
     #[serde(skip)]
     pub markdown: String,
@@ -237,6 +297,59 @@ fn kriya_io_counts(envs: &[(u64, Value)]) -> (u32, u32, u32) {
         }
     }
     (allow, deny, approve)
+}
+
+/// Sum a device's in-window `io_destinations` (doc 24 §4.5/§7.5, EG-4) by pattern — reads ONLY each
+/// envelope's already-pattern-echoed `io_destinations[]` (`{pattern, count, denied}`; never
+/// `params`/`dest_host` — that field structurally cannot exist on this data, see
+/// `kriya_verify::minimize_io`'s seal), absent entirely on envelopes built with `io_verbosity: "off"`.
+/// Returns `(pattern -> (count, denied), pattern_echo_active)`. `pattern_echo_active` is `true` when
+/// AT LEAST ONE in-window envelope carries the `io_destinations` FIELD at all (even an empty array —
+/// "pattern-echo ran, saw nothing" is a genuine, meaningful zero) — `false` means `io_verbosity` was
+/// never `"pattern-echo"` for this device this window, distinct from a real zero.
+fn io_destination_counts(envs: &[(u64, Value)]) -> (PatternRollup, bool) {
+    let mut by_pattern: PatternRollup = Default::default();
+    let mut active = false;
+    for (_, v) in envs {
+        let Some(field) = v.get("envelope").and_then(|e| e.get("io_destinations")) else { continue };
+        active = true;
+        let Some(dests) = field.as_array() else { continue };
+        for d in dests {
+            let Some(pattern) = d.get("pattern").and_then(Value::as_str) else { continue };
+            let count = d.get("count").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let denied = d.get("denied").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let entry = by_pattern.entry(pattern.to_string()).or_insert((0, 0));
+            entry.0 += count;
+            entry.1 += denied;
+        }
+    }
+    (by_pattern, active)
+}
+
+/// The ONE exact unlisted-egress count (+ denied) for ONE device — bypasses
+/// [`UNLISTED_REVEAL_THRESHOLD`] suppression. Call this ONLY after the operator's drill-down has
+/// already been receipted (`control_plane::drilldown::console_drilldown`) — this function itself has
+/// no side effect and signs nothing; it is deliberately narrow (one device, one number) so revealing
+/// it can never accidentally expose any OTHER device's or pattern's data in the same call.
+pub fn device_unlisted_egress_count(envelopes: &[VerifiedEnvelope], device_pub: &str, window: (u64, u64)) -> (u32, u32) {
+    let (window_from_ms, window_to_ms) = window;
+    let envs: Vec<(u64, Value)> = envelopes
+        .iter()
+        .filter_map(verified_value)
+        .filter_map(|v| {
+            let env = v.get("envelope")?;
+            if env.get("device_pub").and_then(Value::as_str) != Some(device_pub) {
+                return None;
+            }
+            let to_ms = env.get("window").and_then(|w| w.get("to_ms")).and_then(Value::as_u64).unwrap_or(0);
+            if to_ms < window_from_ms || to_ms > window_to_ms {
+                return None;
+            }
+            let seq = env.get("seq").and_then(Value::as_u64).unwrap_or(0);
+            Some((seq, v))
+        })
+        .collect();
+    io_destination_counts(&envs).0.get(kriya_verify::UNLISTED_PATTERN).copied().unwrap_or((0, 0))
 }
 
 fn device_citation(device_pub: &str, label: Option<&str>) -> String {
@@ -326,6 +439,7 @@ pub fn fleet_evidence(
     let mut devices_current_on_latest = 0usize;
     let mut egress_receipts = Vec::with_capacity(coverage.len());
     let mut egress_totals = FleetEgressTotals::default();
+    let mut per_device_pattern_counts: BTreeMap<String, (PatternRollup, bool)> = Default::default();
 
     for d in coverage {
         let empty = Vec::new();
@@ -410,8 +524,69 @@ pub fn fleet_evidence(
             deny,
             approve,
         });
+
+        per_device_pattern_counts.insert(d.device_pub.clone(), io_destination_counts(envs));
     }
     let _ = coverage_by_pub; // reserved for future cross-checks; silences an unused-binding lint for now
+
+    // Fleet-wide: how many DISTINCT devices carry each non-unlisted pattern (few-device warning,
+    // doc 24 §7.5) — a pass over ALL devices' pattern maps, separate from the per-device assembly
+    // below since this needs everyone's data before any one device's row can be finalized.
+    let mut devices_per_pattern: std::collections::BTreeMap<String, BTreeSet<String>> = Default::default();
+    for (device_pub, (patterns, _active)) in &per_device_pattern_counts {
+        for (pattern, (count, _)) in patterns {
+            if pattern != kriya_verify::UNLISTED_PATTERN && *count > 0 {
+                devices_per_pattern.entry(pattern.clone()).or_default().insert(device_pub.clone());
+            }
+        }
+    }
+
+    let empty_patterns = std::collections::BTreeMap::new();
+    let egress_patterns: Vec<DeviceEgressPatterns> = coverage
+        .iter()
+        .map(|d| {
+            let (patterns_map, pattern_echo_active) = per_device_pattern_counts
+                .get(&d.device_pub)
+                .map(|(m, a)| (m, *a))
+                .unwrap_or((&empty_patterns, false));
+            let patterns: Vec<PatternCount> = patterns_map
+                .iter()
+                .filter(|(p, _)| p.as_str() != kriya_verify::UNLISTED_PATTERN)
+                .map(|(pattern, (count, denied))| PatternCount {
+                    pattern: pattern.clone(),
+                    count: *count,
+                    denied: *denied,
+                    few_device_pattern: devices_per_pattern.get(pattern).map(BTreeSet::len).unwrap_or(0)
+                        < MIN_DEVICES_FOR_PATTERN,
+                })
+                .collect();
+            let (unlisted_raw, unlisted_raw_denied) = patterns_map
+                .get(kriya_verify::UNLISTED_PATTERN)
+                .copied()
+                .unwrap_or((0, 0));
+            let suppressed = unlisted_raw > 0 && unlisted_raw < UNLISTED_REVEAL_THRESHOLD;
+            let (unlisted_count, unlisted_denied) = if !pattern_echo_active || suppressed {
+                (None, None)
+            } else {
+                (Some(unlisted_raw), Some(unlisted_raw_denied))
+            };
+            DeviceEgressPatterns {
+                device_pub: d.device_pub.clone(),
+                device_label: d.device_label.clone(),
+                pattern_echo_active,
+                patterns,
+                unlisted_count,
+                unlisted_denied,
+            }
+        })
+        .collect();
+
+    // Purpose statement (doc 24 §7.5/§6-P9): echoed from the LATEST published bundle this cockpit
+    // can see — "the surveillance is itself audited" belongs on every export once pattern-echo is on.
+    let purpose_statement = bundles
+        .iter()
+        .max_by_key(|b| b.version)
+        .and_then(|b| b.purpose_statement.clone());
 
     let devices_total = coverage.len();
     let devices_current = coverage.iter().filter(|d| d.status == "current").count();
@@ -585,6 +760,8 @@ pub fn fleet_evidence(
         drift,
         egress_receipts,
         egress_totals,
+        egress_patterns,
+        purpose_statement,
         controls,
         markdown: String::new(),
         json: String::new(),
@@ -703,6 +880,55 @@ fn render_markdown(e: &OrgEvidence) -> String {
     }
     l.push(String::new());
 
+    // Only rendered when at least one device ever ran pattern-echo — an all-off fleet renders
+    // NOTHING here rather than an empty, confusing section.
+    let any_pattern_echo = e.egress_patterns.iter().any(|d| d.pattern_echo_active);
+    if any_pattern_echo {
+        l.push("## Fleet destination patterns (pattern-echo)".to_string());
+        l.push(String::new());
+        if let Some(purpose) = &e.purpose_statement {
+            l.push(format!("**Purpose:** {purpose}"));
+            l.push(String::new());
+        }
+        l.push(
+            "_Pattern-echo (doc 24 §4.5/§7.5): each pattern is an operator-AUTHORED string from the \
+            signed policy bundle — never a raw observed host. A pattern flagged ⚠ matched fewer than \
+            a handful of devices fleet-wide (a possible surveillance-shaped signal, e.g. a single \
+            person's own domain). Unlisted counts below a small threshold are withheld by default — \
+            revealing one is itself a signed, chained `kriya.console.drilldown` event._"
+                .to_string(),
+        );
+        l.push(String::new());
+        l.push("| Device | Patterns (count / denied) | Unlisted |".to_string());
+        l.push("| --- | --- | --- |".to_string());
+        for d in &e.egress_patterns {
+            if !d.pattern_echo_active {
+                continue;
+            }
+            let patterns = if d.patterns.is_empty() {
+                "none".to_string()
+            } else {
+                d.patterns
+                    .iter()
+                    .map(|p| {
+                        let flag = if p.few_device_pattern { " ⚠" } else { "" };
+                        format!("{}{flag} ({}/{})", p.pattern, p.count, p.denied)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let unlisted = match d.unlisted_count {
+                Some(n) => n.to_string(),
+                None => format!("< {UNLISTED_REVEAL_THRESHOLD} (withheld)"),
+            };
+            l.push(format!(
+                "| {} | {patterns} | {unlisted} |",
+                device_citation(&d.device_pub, d.device_label.as_deref())
+            ));
+        }
+        l.push(String::new());
+    }
+
     l.push("## Control mapping".to_string());
     l.push(String::new());
     l.push("| Framework | Control | Status | Evidence |".to_string());
@@ -791,6 +1017,7 @@ pub fn stream_fleet_envelopes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kriya_verify::UNLISTED_PATTERN;
     use ed25519_dalek::{Signer, SigningKey};
     use serde_json::json;
 
@@ -874,6 +1101,45 @@ mod tests {
         VerifiedEnvelope { raw, verified: true, error: None }
     }
 
+    /// Like [`envelope_with_actions`], but with a real `io_destinations[]` (pattern-echo, EG-4) —
+    /// for exercising the fleet destination-pattern roll-up.
+    fn envelope_with_io_destinations(
+        key: &SigningKey,
+        seq: u64,
+        from_ms: u64,
+        to_ms: u64,
+        destinations: &[(&str, u32, u32)],
+    ) -> VerifiedEnvelope {
+        let device_pub = hex::encode(key.verifying_key().to_bytes());
+        let total: u32 = destinations.iter().map(|(_, c, _)| c).sum();
+        let env = json!({
+            "schema": "kriya.envelope.v1",
+            "device_pub": device_pub,
+            "org_id": "acme",
+            "operators": [{"ref": format!("op-{}", &device_pub[..4]), "actions": 1}],
+            "seq": seq,
+            "window": {"from_ms": from_ms, "to_ms": to_ms},
+            "signers": [{"fingerprint": "fp1", "receipts": total.max(1), "verified": total.max(1)}],
+            "actions": [],
+            "io_destinations": destinations.iter().map(|(pattern, count, denied)| json!({
+                "pattern": pattern, "count": count, "denied": denied,
+            })).collect::<Vec<_>>(),
+            "counts": {"receipts": total.max(1), "verified": total.max(1), "failed": 0, "destructive": 0, "attestations": 0},
+            "integrity": {"merkle_root": "0".repeat(64), "chain_intact": true, "broken_sources": []},
+            "non_egress": {"attested": false, "attestation_count": 0},
+            "compiler": {"version": "0.1.0", "produced_ms": to_ms},
+        });
+        let bytes = kriya_verify::canonical_json_bytes(&env);
+        let sig = hex::encode(key.sign(&bytes).to_bytes());
+        let raw = serde_json::to_string(&json!({
+            "envelope": env,
+            "public_key": device_pub,
+            "signature": sig,
+        }))
+        .unwrap();
+        VerifiedEnvelope { raw, verified: true, error: None }
+    }
+
     fn coverage_row(device_pub: &str, label: &str, status: &str, last_seq: i64) -> DeviceCoverage {
         DeviceCoverage {
             device_pub: device_pub.to_string(),
@@ -914,6 +1180,8 @@ mod tests {
             govern: vec![],
             envelope_verbosity: "standard".into(),
             kill_switch: false,
+            io_verbosity: "off".into(),
+            purpose_statement: None,
         }
     }
 
@@ -1146,6 +1414,147 @@ mod tests {
         assert_eq!(out.egress_totals.verified_receipts, 0);
         let ac4 = out.controls.iter().find(|c| c.control.starts_with("AC-4")).unwrap();
         assert_eq!(ac4.status, ControlStatus::Gap);
+    }
+
+    // ─── Fleet destination patterns (doc 24 §4.5/§7.5, EG-4) ───────────────────────────────────────
+
+    #[test]
+    fn patterns_aggregate_per_device_and_few_device_patterns_are_flagged() {
+        let a = key(31);
+        let b = key(32);
+        let c = key(33);
+        let a_pub = hex::encode(a.verifying_key().to_bytes());
+        let b_pub = hex::encode(b.verifying_key().to_bytes());
+        let c_pub = hex::encode(c.verifying_key().to_bytes());
+
+        // *.vendor.com: seen on THREE devices (a, b, c) — NOT flagged (meets MIN_DEVICES_FOR_PATTERN).
+        // a-single-employee.example: seen on ONLY device a — flagged as few-device.
+        let a1 = envelope_with_io_destinations(
+            &a,
+            1,
+            0,
+            1000,
+            &[("*.vendor.com", 5, 0), ("a-single-employee.example", 2, 1)],
+        );
+        let b1 = envelope_with_io_destinations(&b, 1, 0, 1000, &[("*.vendor.com", 3, 0)]);
+        let c1 = envelope_with_io_destinations(&c, 1, 0, 1000, &[("*.vendor.com", 1, 1)]);
+
+        let envelopes = vec![a1, b1, c1];
+        let coverage = vec![
+            coverage_row(&a_pub, "device-a", "current", 1),
+            coverage_row(&b_pub, "device-b", "current", 1),
+            coverage_row(&c_pub, "device-c", "current", 1),
+        ];
+        let device_infos = device_inventories_from_coverage(&coverage);
+        let out = fleet_evidence(&envelopes, &coverage, &[], &device_infos, (0, 1000), "Org", 5000);
+
+        let a_row = out.egress_patterns.iter().find(|d| d.device_pub == a_pub).unwrap();
+        let vendor = a_row.patterns.iter().find(|p| p.pattern == "*.vendor.com").unwrap();
+        assert_eq!(vendor.count, 5);
+        assert!(!vendor.few_device_pattern, "seen on 3 devices, meets the threshold");
+        let solo = a_row.patterns.iter().find(|p| p.pattern == "a-single-employee.example").unwrap();
+        assert_eq!(solo.count, 2);
+        assert_eq!(solo.denied, 1);
+        assert!(solo.few_device_pattern, "seen on only 1 device — surveillance-shaped");
+
+        let b_row = out.egress_patterns.iter().find(|d| d.device_pub == b_pub).unwrap();
+        assert!(!b_row.patterns.iter().find(|p| p.pattern == "*.vendor.com").unwrap().few_device_pattern);
+    }
+
+    #[test]
+    fn unlisted_count_is_suppressed_below_threshold_and_shown_at_or_above_it() {
+        let low = key(34);
+        let high = key(35);
+        let low_pub = hex::encode(low.verifying_key().to_bytes());
+        let high_pub = hex::encode(high.verifying_key().to_bytes());
+
+        let e_low = envelope_with_io_destinations(&low, 1, 0, 1000, &[(UNLISTED_PATTERN, 3, 1)]);
+        let e_high =
+            envelope_with_io_destinations(&high, 1, 0, 1000, &[(UNLISTED_PATTERN, UNLISTED_REVEAL_THRESHOLD, 2)]);
+
+        let coverage = vec![
+            coverage_row(&low_pub, "low-device", "current", 1),
+            coverage_row(&high_pub, "high-device", "current", 1),
+        ];
+        let device_infos = device_inventories_from_coverage(&coverage);
+        let out = fleet_evidence(&[e_low, e_high], &coverage, &[], &device_infos, (0, 1000), "Org", 5000);
+
+        let low_row = out.egress_patterns.iter().find(|d| d.device_pub == low_pub).unwrap();
+        assert!(low_row.unlisted_count.is_none(), "below threshold must be withheld, not shown as a small number");
+        assert!(low_row.unlisted_denied.is_none());
+
+        let high_row = out.egress_patterns.iter().find(|d| d.device_pub == high_pub).unwrap();
+        assert_eq!(high_row.unlisted_count, Some(UNLISTED_REVEAL_THRESHOLD));
+        assert_eq!(high_row.unlisted_denied, Some(2));
+
+        // A device with genuinely ZERO unlisted activity gets Some(0), never confused with suppression.
+        let zero = key(36);
+        let zero_pub = hex::encode(zero.verifying_key().to_bytes());
+        let e_zero = envelope_with_io_destinations(&zero, 1, 0, 1000, &[("*.vendor.com", 1, 0)]);
+        let cov2 = vec![coverage_row(&zero_pub, "zero-device", "current", 1)];
+        let infos2 = device_inventories_from_coverage(&cov2);
+        let out2 = fleet_evidence(&[e_zero], &cov2, &[], &infos2, (0, 1000), "Org", 5000);
+        assert_eq!(out2.egress_patterns[0].unlisted_count, Some(0), "a genuine zero is never withheld");
+    }
+
+    #[test]
+    fn device_unlisted_egress_count_reveals_the_exact_suppressed_number() {
+        let low = key(37);
+        let low_pub = hex::encode(low.verifying_key().to_bytes());
+        let e_low = envelope_with_io_destinations(&low, 1, 0, 1000, &[(UNLISTED_PATTERN, 2, 1)]);
+        let coverage = vec![coverage_row(&low_pub, "low-device", "current", 1)];
+        let device_infos = device_inventories_from_coverage(&coverage);
+        let envelopes = vec![e_low];
+        let out = fleet_evidence(&envelopes, &coverage, &[], &device_infos, (0, 1000), "Org", 5000);
+        assert!(out.egress_patterns[0].unlisted_count.is_none(), "report itself withholds it");
+
+        let (count, denied) = device_unlisted_egress_count(&envelopes, &low_pub, (0, 1000));
+        assert_eq!((count, denied), (2, 1), "the narrow reveal path returns the exact number");
+
+        // And it is genuinely scoped to ONE device — a different device_pub sees nothing.
+        assert_eq!(device_unlisted_egress_count(&envelopes, "not-a-real-device", (0, 1000)), (0, 0));
+    }
+
+    #[test]
+    fn purpose_statement_echoes_from_the_latest_bundle() {
+        let mut b1 = bundle(1);
+        b1.purpose_statement = Some("stale statement".into());
+        let mut b2 = bundle(2);
+        b2.purpose_statement = Some("compliance/security evidence; never performance evaluation".into());
+        let out = fleet_evidence(&[], &[], &[b1, b2], &[], (0, 1000), "Org", 1000);
+        assert_eq!(
+            out.purpose_statement.as_deref(),
+            Some("compliance/security evidence; never performance evaluation"),
+            "echoes the LATEST bundle's statement, not an earlier one"
+        );
+    }
+
+    #[test]
+    fn pattern_echo_section_is_omitted_from_markdown_when_nothing_ran_pattern_echo() {
+        let a = key(38);
+        let a_pub = hex::encode(a.verifying_key().to_bytes());
+        let e = envelope_with_actions(&a, 1, 0, 1000, &[("create_note", 1)]);
+        let coverage = vec![coverage_row(&a_pub, "device-a", "current", 1)];
+        let device_infos = device_inventories_from_coverage(&coverage);
+        let out = fleet_evidence(&[e], &coverage, &[], &device_infos, (0, 1000), "Org", 1000);
+        assert!(out.egress_patterns.iter().all(|d| !d.pattern_echo_active && d.patterns.is_empty()));
+        assert!(!out.markdown.contains("Fleet destination patterns"));
+    }
+
+    #[test]
+    fn pattern_echo_section_renders_with_purpose_statement_and_withheld_marker() {
+        let a = key(39);
+        let a_pub = hex::encode(a.verifying_key().to_bytes());
+        let e = envelope_with_io_destinations(&a, 1, 0, 1000, &[(UNLISTED_PATTERN, 1, 0)]);
+        let coverage = vec![coverage_row(&a_pub, "device-a", "current", 1)];
+        let device_infos = device_inventories_from_coverage(&coverage);
+        let mut b = bundle(1);
+        b.purpose_statement = Some("compliance/security evidence; never performance evaluation".into());
+        let out = fleet_evidence(&[e], &coverage, &[b], &device_infos, (0, 1000), "Org", 1000);
+
+        assert!(out.markdown.contains("## Fleet destination patterns (pattern-echo)"));
+        assert!(out.markdown.contains("**Purpose:** compliance/security evidence"));
+        assert!(out.markdown.contains(&format!("< {UNLISTED_REVEAL_THRESHOLD} (withheld)")));
     }
 
     #[test]

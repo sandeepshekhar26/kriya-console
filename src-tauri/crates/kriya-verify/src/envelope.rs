@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::canonical::{canonical_json_bytes, sha256_hex};
-use crate::redact::MinimizedAction;
+use crate::redact::{IoDestinationPattern, MinimizedAction};
+#[cfg(test)]
+use crate::redact::{minimize_io, UNLISTED_PATTERN};
 use crate::sig::verify_detached;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +46,15 @@ pub struct AttestationEnvelope {
     /// `null`. See [`verify_envelope`]'s doc comment for how this stays BC-5 safe both ways.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_state: Option<PolicyStateEcho>,
+    /// v1.2 (EG-4, doc 24 §4.5/§7.5) — the pattern-echo fleet-destination-visibility field, emitted by
+    /// the Compiler only when the applied `PolicyBundle`'s `io_verbosity` dial is `"pattern-echo"`.
+    /// Optional and additive (`#[serde(default)]` + `skip_serializing_if`): off by default (and for
+    /// every pre-EG-4 device), a pre-EG-4 verifier, or a device that has never applied a bundle —
+    /// byte-for-byte identical to v1.1 in every one of those cases, never `null`. Each entry is a
+    /// [`crate::IoDestinationPattern`] — an operator-AUTHORED pattern string, or the fixed "unlisted"
+    /// sentinel, never a raw observed host (see [`crate::minimize_io`]'s module doc for the seal).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_destinations: Option<Vec<IoDestinationPattern>>,
 }
 
 /// The v1.1 envelope's policy freshness echo — `{version, bundle_hash, applied_ms}` verbatim per doc
@@ -263,6 +274,7 @@ mod tests {
                 produced_ms: 2000,
             },
             policy_state: None,
+            io_destinations: None,
         }
     }
 
@@ -379,6 +391,78 @@ mod tests {
     }
 
     #[test]
+    fn envelope_with_io_destinations_verifies_and_tamper_fails() {
+        let key = SigningKey::from_bytes(&[18u8; 32]);
+        let pk = hex::encode(key.verifying_key().to_bytes());
+        let mut env = sample_envelope(&pk, 1, None);
+        env.io_destinations = Some(minimize_io(
+            &[
+                json!({ "action_id": "kriya.io.egress.http.allow", "params": { "dest_host": "eu.vendor.com" } }),
+                json!({ "action_id": "kriya.io.egress.http.deny", "params": { "dest_host": "SENSITIVE-TENANT.internal.example" } }),
+            ],
+            &["*.vendor.com".to_string()],
+        ));
+        let signed = sign_envelope(env, &key);
+        assert!(
+            verify_envelope(&signed).is_ok(),
+            "a v1.2 envelope carrying io_destinations verifies"
+        );
+        let bytes = serde_json::to_string(&signed).unwrap();
+        assert!(!bytes.contains("SENSITIVE"), "a non-matching host must never appear, even signed");
+        assert!(bytes.contains(UNLISTED_PATTERN));
+        assert!(bytes.contains("*.vendor.com"));
+
+        let mut tampered = signed.clone();
+        tampered["envelope"]["io_destinations"][0]["count"] = json!(999);
+        assert!(
+            verify_envelope(&tampered).is_err(),
+            "tampering io_destinations after signing must fail"
+        );
+    }
+
+    #[test]
+    fn io_destinations_is_omitted_not_null_when_absent() {
+        // BC-4: absence, not `null`, is the "io_verbosity off / pre-EG-4" signal — same convention
+        // policy_state and every other v1.x-additive field in this schema uses.
+        let key = SigningKey::from_bytes(&[19u8; 32]);
+        let pk = hex::encode(key.verifying_key().to_bytes());
+        let signed = sign_envelope(sample_envelope(&pk, 1, None), &key);
+        let s = serde_json::to_string(&signed).unwrap();
+        assert!(!s.contains("\"io_destinations\":null"));
+        assert!(!s.contains("io_destinations"));
+    }
+
+    /// BC-5 cross-version fixture pair (EG-4, doc 24 §7.5): the CURRENT verifier accepts BOTH the
+    /// pre-existing v1.1 fixture (no `io_destinations` — committed since P3, unchanged) and the new
+    /// v1.2 fixture (`io_destinations` present, this change). Mirrors
+    /// `cross_version_fixtures_both_verify`'s policy_state pair exactly. TS-side proof lives in
+    /// `test/envelope.test.ts`.
+    #[test]
+    fn cross_version_fixtures_v1_1_and_v1_2_both_verify() {
+        let v1_1: Value = serde_json::from_str(include_str!(
+            "../../../../src/sample/sample-envelope-v1.1.json"
+        ))
+        .unwrap();
+        assert!(
+            v1_1["envelope"].get("io_destinations").is_none(),
+            "the v1.1 fixture must genuinely predate io_destinations"
+        );
+        assert!(verify_envelope(&v1_1).is_ok(), "the v1.1 (no io_destinations) fixture verifies");
+
+        let v1_2: Value = serde_json::from_str(include_str!(
+            "../../../../src/sample/sample-envelope-v1.2.json"
+        ))
+        .unwrap();
+        assert!(
+            v1_2["envelope"]["io_destinations"]
+                .as_array()
+                .is_some_and(|a| !a.is_empty()),
+            "the v1.2 fixture must genuinely carry io_destinations"
+        );
+        assert!(verify_envelope(&v1_2).is_ok(), "the v1.2 (with io_destinations) fixture verifies");
+    }
+
+    #[test]
     fn count_sanity_rejects_incoherent_envelope() {
         let key = SigningKey::from_bytes(&[6u8; 32]);
         let pk = hex::encode(key.verifying_key().to_bytes());
@@ -482,6 +566,7 @@ mod tests {
                 produced_ms: 2000,
             },
             policy_state: None,
+            io_destinations: None,
         }
     }
 
@@ -567,6 +652,34 @@ mod tests {
         let key = SigningKey::from_bytes(&[21u8; 32]);
         let pk = hex::encode(key.verifying_key().to_bytes());
         let signed = sign_envelope(sample_envelope_with_kriya_io(&pk, 1, None), &key);
+        println!("{}", serde_json::to_string_pretty(&signed).unwrap());
+    }
+
+    /// Emits the BC-5 cross-version parity fixture (`src/sample/sample-envelope-v1.2.json`) — a v1.2
+    /// envelope carrying `io_destinations` (doc 24 §7.5, EG-4). The pre-existing
+    /// `sample-envelope-v1.1.json` (no `io_destinations` at all) IS the "v1.1" fixture side of this
+    /// same parity pair. Deterministic (fixed key seed). Regenerate with:
+    ///   cargo test -p kriya-verify print_sample_envelope_v1_2 -- --ignored --nocapture
+    #[test]
+    #[ignore = "fixture generator; run with --ignored --nocapture to (re)generate the parity fixture"]
+    fn print_sample_envelope_v1_2() {
+        let key = SigningKey::from_bytes(&[5u8; 32]);
+        let pk = hex::encode(key.verifying_key().to_bytes());
+        let mut env = sample_envelope(&pk, 1, None);
+        env.policy_state = Some(PolicyStateEcho {
+            version: 13,
+            bundle_hash: "deadbeefcafef00d".into(),
+            applied_ms: 1_783_500_000_000,
+        });
+        env.io_destinations = Some(minimize_io(
+            &[
+                json!({ "action_id": "kriya.io.egress.http.allow", "params": { "dest_host": "eu.vendor.com" } }),
+                json!({ "action_id": "kriya.io.egress.http.allow", "params": { "dest_host": "us.vendor.com" } }),
+                json!({ "action_id": "kriya.io.egress.mcp.deny", "params": { "dest_host": "unknown-tenant.example" } }),
+            ],
+            &["*.vendor.com".to_string()],
+        ));
+        let signed = sign_envelope(env, &key);
         println!("{}", serde_json::to_string_pretty(&signed).unwrap());
     }
 }

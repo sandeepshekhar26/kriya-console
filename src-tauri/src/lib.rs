@@ -104,10 +104,17 @@ pub fn run() {
             // (paid::export_compliance) is untouched; this is a wholly separate fleet-wide module.
             #[cfg(feature = "control-plane")]
             control_plane::fleet::fleet_org_evidence,
+            // The receipted reveal path for a below-threshold unlisted-egress count (EG-4).
+            #[cfg(feature = "control-plane")]
+            control_plane::fleet::fleet_device_unlisted_egress_count,
             // Device policy downlink (P3) — air-gap apply. Gated on enrollment + a pinned org key, NOT
             // on `fleet-console` (a device-side act any enrolled device can do, not an operator-only one).
             #[cfg(feature = "control-plane")]
             control_plane::policy::policy_apply_file,
+            // Operator drill-down receipting (EG-4, doc 24 §7.5/§6-P9) — signs the ACT of revealing a
+            // below-k-threshold pattern-echo count, so "who looked, when" has an answer.
+            #[cfg(feature = "control-plane")]
+            control_plane::drilldown::console_drilldown,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Kriya Console");

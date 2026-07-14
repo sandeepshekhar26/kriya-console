@@ -93,6 +93,8 @@ fn author_sign_publish(
         govern,
         envelope_verbosity: envelope_verbosity.to_string(),
         kill_switch: false,
+        io_verbosity: "off".into(),
+        purpose_statement: None,
     };
     let signed = kriya_verify::sign_policy_bundle(org_key, bundle);
     let body = serde_json::to_string(&signed).unwrap();
