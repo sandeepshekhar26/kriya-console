@@ -80,6 +80,16 @@ pub struct LaneInfo {
     /// prove the latter for a window with zero calls — see docs/TRUST.md's egress section).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub egress_ledger: Option<bool>,
+    /// EG-C (doc 24 §11 B14): whether a `kriya-gateway run --` containment session's bookend
+    /// receipt (`kriya.io.run.start`/`run.exit`) was observed in-window. `None` on every lane but
+    /// `raw-egress`, where it is the SOLE field EG-C is allowed to touch — deliberately never
+    /// `state`, `source`, or `egress_ledger`, all of which stay governed entirely by the E2 host
+    /// watcher's own evidence (the invariant `egress_ledger_chip_reflects_…` locks in). A contained
+    /// session enforces egress for the process `run --` launched and nothing else; it is not host
+    /// coverage, and this map must never present it as such. `Some(true)`/`Some(false)`: at least
+    /// one `run.jsonl`-shaped file exists, fresh or stale; `None`: no contained session ever ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contained_session: Option<bool>,
 }
 
 /// What the Coverage view renders (pure read — no side effects, no snapshot writes).
@@ -120,6 +130,11 @@ struct Scan {
     last_watch_heartbeat: Option<u64>,
     /// `kriya.io.egress.*` (EG-2/EG-3, doc 24 §7.3) — governed-lane egress evidence.
     last_kriya_io_egress: Option<u64>,
+    /// `kriya.io.run.start` / `kriya.io.run.exit` (EG-C, doc 24 §11 B14) — a `kriya-gateway run --`
+    /// containment session bookend. Tracked separately from `last_kriya_io_egress`: a contained
+    /// session is enforcement for the LAUNCHED subtree only, never a claim about lane-wide E2 host
+    /// coverage — see [`LaneInfo::contained_session`].
+    last_kriya_io_run: Option<u64>,
 }
 
 fn max_opt(slot: &mut Option<u64>, v: u64) {
@@ -163,6 +178,9 @@ fn scan_file(path: &Path) -> Scan {
         }
         if aid.starts_with("kriya.io.egress.") {
             max_opt(&mut scan.last_kriya_io_egress, ts);
+        }
+        if aid == "kriya.io.run.start" || aid == "kriya.io.run.exit" {
+            max_opt(&mut scan.last_kriya_io_run, ts);
         }
     }
     scan
@@ -226,6 +244,7 @@ pub fn classify(
     let mut broker: Option<Scan> = None; // the W2 aggregator: one endpoint, N upstreams
     let mut desktop: Vec<Scan> = Vec::new();
     let mut watch: Vec<Scan> = Vec::new();
+    let mut contained: Vec<Scan> = Vec::new(); // EG-C `kriya-gateway run --` sessions
     if let Ok(entries) = std::fs::read_dir(audit_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -243,6 +262,14 @@ pub fn classify(
                 "computer_use.jsonl" | "router.jsonl" => desktop.push(scan_file(&path)),
                 n if n.starts_with("reach-in-") => desktop.push(scan_file(&path)),
                 n if n.starts_with("watch-") => watch.push(scan_file(&path)),
+                // EG-C (doc 24 §11 B14): `kriya-gateway run --`'s default audit-log name is
+                // `run.jsonl` (resolve_audit_log's slugified label "run"); an explicit
+                // `--audit-log` naming convention could vary, so also catch a `run-` prefix. NOT
+                // bucketed as `gateway` — a contained session is not an MCP proxy lane, and its
+                // kriya.io.egress.* receipts must not spuriously light local-stdio-mcp's chip.
+                n if n == "run.jsonl" || n.starts_with("run-") => {
+                    contained.push(scan_file(&path))
+                }
                 _ => gateway.push(scan_file(&path)),
             }
         }
@@ -264,6 +291,7 @@ pub fn classify(
                 last_receipt_ms: last,
                 files: usize::from(present),
                 egress_ledger: present.then(|| fresh(io_last)),
+                contained_session: None,
             },
         );
     }
@@ -295,6 +323,7 @@ pub fn classify(
                 last_receipt_ms: last,
                 files: usize::from(hook_last.is_some()) + usize::from(broker.is_some()),
                 egress_ledger: configured.then(|| fresh(io_last)),
+                contained_session: None,
             },
         );
     }
@@ -311,6 +340,7 @@ pub fn classify(
                 last_receipt_ms: last,
                 files: gateway.len(),
                 egress_ledger: (!gateway.is_empty()).then(|| fresh(io_last)),
+                contained_session: None,
             },
         );
     }
@@ -327,6 +357,7 @@ pub fn classify(
                 last_receipt_ms: last,
                 files: desktop.len(),
                 egress_ledger: None,
+                contained_session: None,
             },
         );
     }
@@ -351,6 +382,12 @@ pub fn classify(
         let last_hb = covering.iter().filter_map(|s| s.last_watch_heartbeat).max();
         let green = fresh(last_event) || fresh(last_hb);
         let configured = !covering.is_empty() || last_event.is_some();
+        // EG-C (doc 24 §11 B14): a SEPARATE, additive signal on raw-egress ONLY — never folded
+        // into `state`/`configured`/`green` above, which stay governed entirely by E2 host-watcher
+        // evidence. A contained `run --` session enforces egress for the launched subtree only; it
+        // must never make this lane read as host-wide E2 coverage.
+        let contained_session = (lane == "raw-egress" && !contained.is_empty())
+            .then(|| fresh(contained.iter().filter_map(|s| s.last_kriya_io_run).max()));
         lanes.insert(
             lane.into(),
             LaneInfo {
@@ -362,6 +399,7 @@ pub fn classify(
                 // and coloring it from the governed-lane ledger would blur the exact bypass disclosure
                 // this map exists to make honest (doc 24 §7.1 — "never colors the raw-egress lane").
                 egress_ledger: None,
+                contained_session,
             },
         );
     }
@@ -977,6 +1015,78 @@ mod tests {
         assert_eq!(lanes["local-stdio-mcp"].egress_ledger, None);
         let _ = std::fs::remove_dir_all(&dir2);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn contained_session_chip_reflects_kriya_io_run_receipts_only_on_raw_egress() {
+        let dir = tmp("contained");
+        // A gateway chain (local-stdio-mcp) with its own egress receipt, unrelated to EG-C.
+        write_log(&dir, "gateway.jsonl", &[line("kriya.io.egress.http.allow", NOW - HOUR)]);
+        // An EG-C `kriya-gateway run --` session: default filename `run.jsonl` (doc 24 EG-C).
+        write_log(
+            &dir,
+            "run.jsonl",
+            &[
+                line("kriya.io.run.start", NOW - HOUR),
+                line("kriya.io.egress.http.deny", NOW - HOUR),
+                line("kriya.io.run.exit", NOW - HOUR),
+            ],
+        );
+        let lanes = classify(&dir, None, NOW, WINDOW);
+
+        assert_eq!(
+            lanes["raw-egress"].contained_session,
+            Some(true),
+            "a fresh run.start/exit lights the chip ON, on raw-egress only"
+        );
+        assert_eq!(
+            lanes["raw-egress"].state,
+            LaneState::Grey,
+            "contained_session must NEVER change raw-egress's own state — that stays governed \
+             entirely by E2 host-watcher evidence (none present here)"
+        );
+        assert_eq!(
+            lanes["raw-egress"].egress_ledger, None,
+            "contained_session is additive; it must not also set the (deliberately absent) \
+             egress_ledger chip on raw-egress"
+        );
+        // Every other lane stays untouched by EG-C's receipts.
+        assert_eq!(lanes["claude-code-tools"].contained_session, None);
+        assert_eq!(lanes["remote-mcp"].contained_session, None);
+        assert_eq!(lanes["local-stdio-mcp"].contained_session, None);
+        assert_eq!(lanes["desktop-apps"].contained_session, None);
+        assert_eq!(lanes["raw-file-exec"].contained_session, None);
+        // run.jsonl must NOT be miscounted as a local-stdio-mcp gateway chain — its own
+        // kriya.io.egress.* receipt must not spuriously light that lane's ledger chip.
+        assert_eq!(
+            lanes["local-stdio-mcp"].egress_ledger,
+            Some(true),
+            "gateway.jsonl's own receipt still lights the chip"
+        );
+        assert_eq!(
+            lanes["local-stdio-mcp"].files, 1,
+            "run.jsonl must be bucketed separately from gateway.jsonl, not counted as a second \
+             local-stdio-mcp chain file"
+        );
+
+        // A stale (out-of-window) run session reads as a present-but-OFF chip, not absent.
+        write_log(
+            &dir,
+            "run.jsonl",
+            &[
+                line("kriya.io.run.start", NOW - 30 * HOUR),
+                line("kriya.io.run.exit", NOW - 30 * HOUR),
+            ],
+        );
+        let lanes = classify(&dir, None, NOW, WINDOW);
+        assert_eq!(lanes["raw-egress"].contained_session, Some(false));
+
+        // No run.jsonl at all -> None (never ran), not Some(false).
+        let _ = std::fs::remove_dir_all(&dir);
+        let dir2 = tmp("contained-none");
+        let lanes = classify(&dir2, None, NOW, WINDOW);
+        assert_eq!(lanes["raw-egress"].contained_session, None);
+        let _ = std::fs::remove_dir_all(&dir2);
     }
 
     #[test]
