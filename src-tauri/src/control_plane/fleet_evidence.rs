@@ -137,6 +137,35 @@ pub struct DeviceCompleteness {
     pub runtime_version: Option<String>,
 }
 
+/// One device's `kriya.io.*` receipt roll-up (doc 24 §11 B16/EG-F) — mirrors `compliance.ts`'s
+/// per-device `EgressEvidence` field-for-field (same suffix-based counting: `.allow`/`.deny`/
+/// `.approve`, combining egress AND ingress directions, exactly like the local engine does) so the
+/// fleet-wide and per-device shapes read the same way to an assessor. Computed ENTIRELY from each
+/// envelope's own already-minimized `actions[]` — never a per-device raw-receipt scan (kriyad never
+/// stores those) — so this stays envelope-native and counts-only by construction: a `MinimizedAction`
+/// carries `{action, count, failures, destructive}` and NOTHING else (see `kriya_verify::redact`),
+/// so `dest_host` structurally cannot appear here (doc 24 §4.5's counts-only floor).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceEgressReceipts {
+    pub device_pub: String,
+    pub device_label: Option<String>,
+    pub verified_receipts: u32,
+    pub allow: u32,
+    pub deny: u32,
+    pub approve: u32,
+}
+
+/// Fleet-wide sum of every device's [`DeviceEgressReceipts`].
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetEgressTotals {
+    pub verified_receipts: u32,
+    pub allow: u32,
+    pub deny: u32,
+    pub approve: u32,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrgEvidence {
@@ -154,6 +183,10 @@ pub struct OrgEvidence {
     pub latest_bundle_version: Option<u64>,
     /// Named exceptions: devices whose LOCALLY-verified applied version is behind `latest_bundle_version`.
     pub drift: Vec<String>,
+    /// The fleet egress-receipt roll-up (doc 24 §11 B16/EG-F) — one row per device, in the SAME order
+    /// as `device_completeness`.
+    pub egress_receipts: Vec<DeviceEgressReceipts>,
+    pub egress_totals: FleetEgressTotals,
     pub controls: Vec<OrgControl>,
     #[serde(skip)]
     pub markdown: String,
@@ -173,6 +206,37 @@ fn verified_value(e: &VerifiedEnvelope) -> Option<Value> {
 
 fn short_pub(device_pub: &str) -> String {
     device_pub.chars().take(12).collect::<String>() + "…"
+}
+
+/// Sum `kriya.io.*` counts across one device's in-window, already-verified envelopes — reads ONLY
+/// each envelope's `actions[]` (a `MinimizedAction` list: `{action, count, failures, destructive}`,
+/// never `params`/`dest_host`), suffix-matching `.allow`/`.deny`/`.approve` exactly like
+/// `compliance.ts`'s per-device `EgressEvidence` does (combining egress AND ingress directions).
+fn kriya_io_counts(envs: &[(u64, Value)]) -> (u32, u32, u32) {
+    let mut allow = 0u32;
+    let mut deny = 0u32;
+    let mut approve = 0u32;
+    for (_, v) in envs {
+        let Some(actions) = v.get("envelope").and_then(|e| e.get("actions")).and_then(Value::as_array)
+        else {
+            continue;
+        };
+        for a in actions {
+            let Some(id) = a.get("action").and_then(Value::as_str) else { continue };
+            if !id.starts_with("kriya.io.") {
+                continue;
+            }
+            let count = a.get("count").and_then(Value::as_u64).unwrap_or(0) as u32;
+            if id.ends_with(".allow") {
+                allow += count;
+            } else if id.ends_with(".deny") {
+                deny += count;
+            } else if id.ends_with(".approve") {
+                approve += count;
+            }
+        }
+    }
+    (allow, deny, approve)
 }
 
 fn device_citation(device_pub: &str, label: Option<&str>) -> String {
@@ -260,6 +324,8 @@ pub fn fleet_evidence(
     let mut devices_chain_broken = 0usize;
     let mut devices_never_applied = 0usize;
     let mut devices_current_on_latest = 0usize;
+    let mut egress_receipts = Vec::with_capacity(coverage.len());
+    let mut egress_totals = FleetEgressTotals::default();
 
     for d in coverage {
         let empty = Vec::new();
@@ -328,6 +394,21 @@ pub fn fleet_evidence(
             applied_bundle_hash,
             console_version: inv.and_then(|i| i.console_version.clone()),
             runtime_version: inv.and_then(|i| i.runtime_version.clone()),
+        });
+
+        let (allow, deny, approve) = kriya_io_counts(envs);
+        let verified_receipts = allow + deny + approve;
+        egress_totals.verified_receipts += verified_receipts;
+        egress_totals.allow += allow;
+        egress_totals.deny += deny;
+        egress_totals.approve += approve;
+        egress_receipts.push(DeviceEgressReceipts {
+            device_pub: d.device_pub.clone(),
+            device_label: d.device_label.clone(),
+            verified_receipts,
+            allow,
+            deny,
+            approve,
         });
     }
     let _ = coverage_by_pub; // reserved for future cross-checks; silences an unused-binding lint for now
@@ -475,6 +556,19 @@ pub fn fleet_evidence(
                 Some(_) => ControlStatus::Partial,
             },
         },
+        // 5. Fleet egress-receipt roll-up (doc 24 §11 B16/EG-F) — mirrors the per-device engine's own
+        // AC-4 row (`compliance.ts`), same governed-lane ceiling, same partial-only cap: a spawned
+        // subprocess or a stdio server's own outbound traffic is not observed at ANY device.
+        OrgControl {
+            framework: "NIST 800-53".into(),
+            control: "AC-4 — Information flow enforcement".into(),
+            requirement: "Enforce approved authorizations for controlling the flow of information.".into(),
+            evidence: format!(
+                "A signed, per-decision enforcement point on governed connector lanes, fleet-wide: {} kriya.io.* receipt(s) verified across {devices_total} device(s) ({} allow, {} deny, {} approve). Nothing at this layer stands in the way of a flow that avoids it entirely — a spawned subprocess bypasses it on every device (see TRUST.md).",
+                egress_totals.verified_receipts, egress_totals.allow, egress_totals.deny, egress_totals.approve
+            ),
+            status: if devices_total == 0 { ControlStatus::Gap } else { ControlStatus::Partial },
+        },
     ];
 
     let mut out = OrgEvidence {
@@ -489,6 +583,8 @@ pub fn fleet_evidence(
         device_completeness,
         latest_bundle_version,
         drift,
+        egress_receipts,
+        egress_totals,
         controls,
         markdown: String::new(),
         json: String::new(),
@@ -574,6 +670,36 @@ fn render_markdown(e: &OrgEvidence) -> String {
         l.push("- Drift exceptions: **none**".to_string());
     } else {
         l.push(format!("- Drift exceptions ({}): {}", e.drift.len(), e.drift.join("; ")));
+    }
+    l.push(String::new());
+
+    l.push("## Fleet egress receipts (kriya.io.*)".to_string());
+    l.push(String::new());
+    l.push(
+        "_Counts-only, envelope-native (doc 24 §4.5): each row sums a device's already-minimized \
+        `kriya.io.*` receipt counts — `dest_host` never leaves the originating device. Zero rows can \
+        mean either \"no governed-lane traffic\" or \"egress governance not configured\" on that \
+        device; this report does not distinguish the two (see the per-device export for that \
+        posture)._"
+            .to_string(),
+    );
+    l.push(String::new());
+    l.push(format!(
+        "- Fleet totals: **{}** verified · **{}** allow · **{}** deny · **{}** approve",
+        e.egress_totals.verified_receipts, e.egress_totals.allow, e.egress_totals.deny, e.egress_totals.approve
+    ));
+    l.push(String::new());
+    l.push("| Device | Verified | Allow | Deny | Approve |".to_string());
+    l.push("| --- | ---: | ---: | ---: | ---: |".to_string());
+    for r in &e.egress_receipts {
+        l.push(format!(
+            "| {} | {} | {} | {} | {} |",
+            device_citation(&r.device_pub, r.device_label.as_deref()),
+            r.verified_receipts,
+            r.allow,
+            r.deny,
+            r.approve
+        ));
     }
     l.push(String::new());
 
@@ -715,6 +841,39 @@ mod tests {
         VerifiedEnvelope { raw, verified: true, error: None }
     }
 
+    /// Like [`envelope`], but with a real `actions[]` (`{action, count}` `MinimizedAction` entries) —
+    /// for exercising [`kriya_io_counts`]/`egress_receipts` without touching every other `envelope()`
+    /// call site above.
+    fn envelope_with_actions(key: &SigningKey, seq: u64, from_ms: u64, to_ms: u64, actions: &[(&str, u32)]) -> VerifiedEnvelope {
+        let device_pub = hex::encode(key.verifying_key().to_bytes());
+        let action_total: u32 = actions.iter().map(|(_, c)| c).sum();
+        let env = json!({
+            "schema": "kriya.envelope.v1",
+            "device_pub": device_pub,
+            "org_id": "acme",
+            "operators": [{"ref": format!("op-{}", &device_pub[..4]), "actions": 1}],
+            "seq": seq,
+            "window": {"from_ms": from_ms, "to_ms": to_ms},
+            "signers": [{"fingerprint": "fp1", "receipts": action_total.max(1), "verified": action_total.max(1)}],
+            "actions": actions.iter().map(|(id, count)| json!({
+                "action": id, "count": count, "failures": 0, "destructive": false,
+            })).collect::<Vec<_>>(),
+            "counts": {"receipts": action_total.max(1), "verified": action_total.max(1), "failed": 0, "destructive": 0, "attestations": 0},
+            "integrity": {"merkle_root": "0".repeat(64), "chain_intact": true, "broken_sources": []},
+            "non_egress": {"attested": false, "attestation_count": 0},
+            "compiler": {"version": "0.1.0", "produced_ms": to_ms},
+        });
+        let bytes = kriya_verify::canonical_json_bytes(&env);
+        let sig = hex::encode(key.sign(&bytes).to_bytes());
+        let raw = serde_json::to_string(&json!({
+            "envelope": env,
+            "public_key": device_pub,
+            "signature": sig,
+        }))
+        .unwrap();
+        VerifiedEnvelope { raw, verified: true, error: None }
+    }
+
     fn coverage_row(device_pub: &str, label: &str, status: &str, last_seq: i64) -> DeviceCoverage {
         DeviceCoverage {
             device_pub: device_pub.to_string(),
@@ -754,6 +913,7 @@ mod tests {
             budgets: json!({}),
             govern: vec![],
             envelope_verbosity: "standard".into(),
+            kill_switch: false,
         }
     }
 
@@ -917,6 +1077,75 @@ mod tests {
             "exactly ONE envelope (the tampered one) failed re-verification, not the receipt-level 3: {}",
             c338.evidence
         );
+    }
+
+    // ─── Fleet egress receipts (doc 24 §11 B16/EG-F) ───────────────────────────────────────────────
+
+    #[test]
+    fn kriya_io_counts_are_summed_per_device_and_fleet_wide_never_touching_dest_host() {
+        let a = key(21);
+        let b = key(22);
+        let a_pub = hex::encode(a.verifying_key().to_bytes());
+        let b_pub = hex::encode(b.verifying_key().to_bytes());
+
+        // Device A: two envelopes, allow/deny/approve spread across egress AND ingress — all must
+        // roll up together (matches `compliance.ts`'s per-device `EgressEvidence`).
+        let a1 = envelope_with_actions(
+            &a,
+            1,
+            0,
+            1000,
+            &[("kriya.io.egress.mcp.allow", 3), ("kriya.io.egress.http.deny", 1)],
+        );
+        let a2 = envelope_with_actions(&a, 2, 1000, 2000, &[("kriya.io.ingress.mcp.approve", 2)]);
+        // A non-`kriya.io.*` action must be ignored entirely.
+        let a3 = envelope_with_actions(&a, 3, 2000, 3000, &[("create_note", 10)]);
+        // Device B: silent on egress (no kriya.io.* actions at all) — a legitimate zero, not a crash.
+        let b1 = envelope_with_actions(&b, 1, 0, 1000, &[]);
+
+        let envelopes = vec![a1, a2, a3, b1];
+        let coverage = vec![
+            coverage_row(&a_pub, "device-a", "current", 3),
+            coverage_row(&b_pub, "device-b", "current", 1),
+        ];
+        let device_infos = device_inventories_from_coverage(&coverage);
+        let out = fleet_evidence(&envelopes, &coverage, &[], &device_infos, (0, 3000), "Org", 5000);
+
+        assert_eq!(out.egress_receipts.len(), 2);
+        let a_row = out.egress_receipts.iter().find(|r| r.device_pub == a_pub).unwrap();
+        assert_eq!(a_row.allow, 3);
+        assert_eq!(a_row.deny, 1);
+        assert_eq!(a_row.approve, 2);
+        assert_eq!(a_row.verified_receipts, 6, "the create_note action must NOT be counted");
+
+        let b_row = out.egress_receipts.iter().find(|r| r.device_pub == b_pub).unwrap();
+        assert_eq!((b_row.allow, b_row.deny, b_row.approve, b_row.verified_receipts), (0, 0, 0, 0));
+
+        assert_eq!(out.egress_totals.allow, 3);
+        assert_eq!(out.egress_totals.deny, 1);
+        assert_eq!(out.egress_totals.approve, 2);
+        assert_eq!(out.egress_totals.verified_receipts, 6);
+
+        // Envelope-native, counts-only by construction: the DATA export can't possibly carry a
+        // `dest_host` value — `MinimizedAction` never had one to begin with (the Markdown caption
+        // legitimately NAMES the field to explain its absence, so only the pure-data JSON is checked
+        // here).
+        assert!(!out.json.contains("dest_host"));
+
+        assert!(out.markdown.contains("## Fleet egress receipts (kriya.io.*)"));
+        assert!(out.markdown.contains("3** allow"));
+        let ac4 = out.controls.iter().find(|c| c.control.starts_with("AC-4")).unwrap();
+        assert!(ac4.evidence.contains("6 kriya.io.* receipt(s) verified"));
+        assert_eq!(ac4.status, ControlStatus::Partial);
+    }
+
+    #[test]
+    fn no_devices_produces_empty_egress_receipts_not_a_crash() {
+        let out = fleet_evidence(&[], &[], &[], &[], (0, 1000), "Empty Org", 1000);
+        assert!(out.egress_receipts.is_empty());
+        assert_eq!(out.egress_totals.verified_receipts, 0);
+        let ac4 = out.controls.iter().find(|c| c.control.starts_with("AC-4")).unwrap();
+        assert_eq!(ac4.status, ControlStatus::Gap);
     }
 
     #[test]

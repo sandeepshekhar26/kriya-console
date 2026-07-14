@@ -85,6 +85,7 @@ fn author_sign_publish(
         budgets: budgets_json,
         govern: vec![kriya_verify::GovernDirective { target: "claude-code".into(), action: "wire".into() }],
         envelope_verbosity: "standard".into(),
+        kill_switch: false,
     };
     let signed = kriya_verify::sign_policy_bundle(org_key, bundle);
     let body = serde_json::to_string(&signed).unwrap();

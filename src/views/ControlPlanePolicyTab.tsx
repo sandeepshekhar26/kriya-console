@@ -28,6 +28,7 @@ function assembleDraftBundle(form: {
   envelopeVerbosity: string;
   governClaudeCode: GovernChoice;
   governHermes: GovernChoice;
+  killSwitch: boolean;
 }): { ok: true; text: string } | { ok: false; error: string } {
   let policy: unknown;
   let budgets: unknown;
@@ -64,6 +65,10 @@ function assembleDraftBundle(form: {
     budgets,
     govern,
     envelope_verbosity: form.envelopeVerbosity,
+    // Omitted (never a literal `false`) when off — matches the Rust `skip_serializing_if` shape so
+    // an off bundle's diff/hash never spuriously differs just because this field exists (see
+    // `src/lib/policyBundle.ts`'s `PolicyBundle.kill_switch` doc comment).
+    ...(form.killSwitch ? { kill_switch: true } : {}),
   };
   return { ok: true, text: JSON.stringify(shape, null, 2) };
 }
@@ -82,6 +87,7 @@ function assembleLatestText(bundle: PolicyBundleDraft): string {
       budgets: bundle.budgets,
       govern: bundle.govern ?? [],
       envelope_verbosity: bundle.envelope_verbosity ?? "standard",
+      ...(bundle.kill_switch ? { kill_switch: true } : {}),
     },
     null,
     2,
@@ -109,6 +115,7 @@ export function ControlPlanePolicyTab() {
   const [envelopeVerbosity, setEnvelopeVerbosity] = useState("standard");
   const [governClaudeCode, setGovernClaudeCode] = useState<GovernChoice>("no-change");
   const [governHermes, setGovernHermes] = useState<GovernChoice>("no-change");
+  const [killSwitch, setKillSwitch] = useState(false);
 
   const [orgKey, setOrgKey] = useState<OrgKeyInfo | null>(null);
   const [keygenBusy, setKeygenBusy] = useState(false);
@@ -132,6 +139,7 @@ export function ControlPlanePolicyTab() {
           setPolicyJson(JSON.stringify(r.bundle.policy, null, 2));
           setBudgetsJson(JSON.stringify(r.bundle.budgets, null, 2));
           setEnvelopeVerbosity(r.bundle.envelope_verbosity || "standard");
+          setKillSwitch(r.bundle.kill_switch ?? false);
         }
       })
       .catch((e) => {
@@ -156,8 +164,20 @@ export function ControlPlanePolicyTab() {
         envelopeVerbosity,
         governClaudeCode,
         governHermes,
+        killSwitch,
       }),
-    [orgId, businessUnit, devicePubsText, expiresMsText, policyJson, budgetsJson, envelopeVerbosity, governClaudeCode, governHermes],
+    [
+      orgId,
+      businessUnit,
+      devicePubsText,
+      expiresMsText,
+      policyJson,
+      budgetsJson,
+      envelopeVerbosity,
+      governClaudeCode,
+      governHermes,
+      killSwitch,
+    ],
   );
 
   const diff = useMemo(() => {
@@ -200,6 +220,7 @@ export function ControlPlanePolicyTab() {
           ...(governHermes !== "no-change" ? [{ target: "hermes", action: governHermes }] : []),
         ],
         envelopeVerbosity,
+        killSwitch,
       });
       setPublishResult(result);
       // Refresh "latest" so a second publish diffs against what just landed.
@@ -317,6 +338,30 @@ export function ControlPlanePolicyTab() {
               </select>
             </label>
           </div>
+        </div>
+
+        <div
+          className="field"
+          style={{
+            marginBottom: 12,
+            padding: 10,
+            borderRadius: 6,
+            border: "1px solid var(--line-strong)",
+            background: killSwitch ? "var(--bad-bg)" : undefined,
+          }}
+        >
+          <label className="field-inline" style={{ gap: 8 }}>
+            <input
+              id="pol-kill-switch"
+              type="checkbox"
+              checked={killSwitch}
+              onChange={(e) => setKillSwitch(e.target.checked)}
+            />
+            <span className={killSwitch ? "warn-text" : undefined}>
+              Kill switch — every device applying this bundle falls back to deny-all, ignoring the
+              policy/budgets below
+            </span>
+          </label>
         </div>
 
         <div style={{ display: "flex", gap: 12, marginBottom: 4 }}>

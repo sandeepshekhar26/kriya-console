@@ -57,6 +57,12 @@ export interface PolicyBundle {
   budgets: Record<string, Json>;
   govern?: GovernDirective[];
   envelope_verbosity?: string;
+  /** The org-wide kill switch (doc 24 §11 B16/EG-F). MUST be omitted (never `false`) when off — the
+   *  Rust side's `skip_serializing_if` drops it from the canonical bytes entirely in that case, so a
+   *  literal `kill_switch: false` here would hash DIFFERENTLY from the Rust-signed artifact. Any
+   *  caller assembling a bundle shape for hashing/verification must spread this in conditionally,
+   *  e.g. `...(bundle.kill_switch ? { kill_switch: true } : {})`. */
+  kill_switch?: true;
 }
 
 export interface SignedPolicyBundle {

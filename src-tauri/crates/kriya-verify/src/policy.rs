@@ -69,6 +69,10 @@ fn default_verbosity() -> String {
     "standard".to_string()
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 /// The signed policy/connector/budget bundle (doc 22 §5), verbatim schema. `policy` and `budgets` are
 /// carried as opaque `Value` — this crate does not interpret the runtime policy/budget format, only
 /// signs and verifies the bytes; the device-side apply step (control_plane, app crate) owns turning
@@ -93,6 +97,17 @@ pub struct PolicyBundle {
     /// older device (BC-4) rather than hard-failing the whole bundle.
     #[serde(default = "default_verbosity")]
     pub envelope_verbosity: String,
+    /// The org-wide kill switch (doc 24 §11 B16/EG-F). When `true`, a device applies a fixed,
+    /// maximally-restrictive fallback policy INSTEAD of `policy`/`budgets` — an emergency halt, not
+    /// a policy dial. `#[serde(default, skip_serializing_if = "is_false")]`: an absent/`false` value
+    /// (the overwhelming common case) is omitted entirely from the canonical bytes, so an old bundle
+    /// that never sets this hashes byte-for-byte identical to before this field existed (BC-4/BC-5).
+    /// Also engages automatically when a device's applied bundle goes stale (see
+    /// `control_plane::policy::check_staleness`) — "kriyad authors nothing" (doc 22 §3): kriyad never
+    /// originates a kill switch either; it's operator-authored (this field) or device-detected
+    /// (staleness), never server-decided.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub kill_switch: bool,
 }
 
 /// `{ bundle, signature }` — signature is Ed25519 over [`policy_bundle_canonical_bytes`], by the
@@ -167,6 +182,7 @@ mod tests {
                 GovernDirective { target: "hermes".into(), action: "wire".into() },
             ],
             envelope_verbosity: "standard".into(),
+            kill_switch: false,
         }
     }
 
@@ -272,6 +288,51 @@ mod tests {
         let bundle: PolicyBundle = serde_json::from_value(old_shape).unwrap();
         assert_eq!(bundle.envelope_verbosity, "standard");
         assert!(bundle.govern.is_empty());
+    }
+
+    #[test]
+    fn kill_switch_defaults_to_false_and_omits_from_canonical_bytes() {
+        // An older-shaped bundle (pre-kill-switch) still parses, defaulting to false.
+        let old_shape = json!({
+            "org_id": "acme",
+            "version": 1,
+            "issued_ms": 1000,
+            "scope": {},
+            "policy": {},
+            "budgets": {},
+        });
+        let bundle: PolicyBundle = serde_json::from_value(old_shape).unwrap();
+        assert!(!bundle.kill_switch);
+
+        // `false` is the common case, so it must be OMITTED from the canonical bytes entirely — an
+        // old and a new bundle that both leave the switch off hash IDENTICALLY (BC-5: the pinned
+        // fixture hash below must never move just because this field was added).
+        let bytes = policy_bundle_canonical_bytes(&sample_bundle(1));
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains("kill_switch"),
+            "kill_switch: false must not appear in the canonical bytes at all"
+        );
+    }
+
+    #[test]
+    fn kill_switch_true_is_present_in_canonical_bytes_and_tamper_fails() {
+        let key = SigningKey::from_bytes(&[71u8; 32]);
+        let pub_hex = hex::encode(key.verifying_key().to_bytes());
+        let mut bundle = sample_bundle(1);
+        bundle.kill_switch = true;
+        let bytes = policy_bundle_canonical_bytes(&bundle);
+        assert!(String::from_utf8_lossy(&bytes).contains("\"kill_switch\":true"));
+
+        let signed = sign_policy_bundle(&key, bundle);
+        let mut v = serde_json::to_value(&signed).unwrap();
+        assert!(verify_policy_bundle(&v, &pub_hex).is_ok());
+
+        // Flipping kill_switch off after signing must fail verification, same as any other field.
+        v["bundle"]["kill_switch"] = json!(false);
+        assert!(
+            verify_policy_bundle(&v, &pub_hex).is_err(),
+            "tampering kill_switch after signing must fail"
+        );
     }
 
     /// P4 (doc 22 §9-CM) TS↔Rust parity: the committed `sample-policy-bundle.json` fixture hashes to

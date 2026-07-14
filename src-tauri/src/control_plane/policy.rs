@@ -56,6 +56,13 @@ pub struct PolicyState {
     /// still stale.
     #[serde(default)]
     pub stale_reported: bool,
+    /// Whether the kill-switch fallback policy (doc 24 §11 B16/EG-F) is CURRENTLY the policy on disk
+    /// — either because the last-applied bundle explicitly set `kill_switch: true`, or because the
+    /// applied bundle went stale ([`check_staleness`] engages the same fallback automatically, "the
+    /// stale-policy kill-switch"). Cleared the moment a fresh, non-kill-switch bundle applies
+    /// ([`verify_and_apply`] always overwrites the policy file, so this can never go stale itself).
+    #[serde(default)]
+    pub kill_switch_active: bool,
 }
 
 fn state_path() -> PathBuf {
@@ -151,6 +158,25 @@ fn emit_policy_receipt(action_id: &str, fields: Value) -> Result<(), String> {
     append_line(&path, &serde_json::to_string(&line).map_err(|e| e.to_string())?)
 }
 
+// ── Kill switch (doc 24 §11 B16/EG-F) ───────────────────────────────────────────────────────────────
+
+/// The fixed, maximally-restrictive fallback policy a device applies when the kill switch engages —
+/// deny-by-default on every action, no budgets, no egress/detection/secrets sections. An emergency
+/// halt, not a policy dial: this is NOT derived from the bundle's own `policy`/`budgets` in any way
+/// (a compromised or malformed bundle can never talk its way out of the fallback by shaping those
+/// fields), and it is the SAME fallback whether the switch was set explicitly by the operator or
+/// engaged automatically by [`check_staleness`] ("the stale-policy kill-switch").
+const KILL_SWITCH_POLICY_YAML: &str = "rules:\n  - action: \"*\"\n    allow: false\n";
+
+/// Overwrite the on-device policy file with the kill-switch fallback and mark [`PolicyState`]
+/// accordingly. Shared by the explicit-bundle-field path ([`verify_and_apply`]) and the
+/// staleness-triggered path ([`check_staleness`]) so both engage IDENTICAL enforcement.
+fn engage_kill_switch() -> Result<String, String> {
+    let policy_path = crate::govern::agent_policy_path();
+    crate::govern::save_agent_policy(KILL_SWITCH_POLICY_YAML.to_string())?;
+    Ok(policy_path.to_string_lossy().into_owned())
+}
+
 // ── Apply: policy/budgets -> runtime YAML ───────────────────────────────────────────────────────────
 
 /// Merge `bundle.policy` (rules) + `bundle.budgets` into ONE runtime policy YAML. Doc 22 §5 carries
@@ -209,6 +235,9 @@ pub struct ApplyOutcome {
     pub new_policy_yaml: String,
     /// Non-fatal per-directive `govern[]` failures (e.g. a hook binary not bundled here).
     pub govern_errors: Vec<String>,
+    /// Whether this apply engaged the kill-switch fallback (doc 24 §11 B16/EG-F) — `new_policy_yaml`
+    /// is [`KILL_SWITCH_POLICY_YAML`], not a projection of `bundle.policy`/`bundle.budgets`.
+    pub kill_switch: bool,
 }
 
 /// Verify + apply a bundle already known to be in scope for THIS device — shared by the network pull
@@ -230,7 +259,15 @@ pub fn verify_and_apply(raw: &str, org_policy_pub_hex: &str) -> Result<Option<Ap
 
     let policy_path = crate::govern::agent_policy_path();
     let previous_policy_yaml = std::fs::read_to_string(&policy_path).ok();
-    let new_policy_yaml = policy_yaml_from_bundle(&bundle)?;
+    // The kill switch (doc 24 §11 B16/EG-F) overrides the bundle's own policy/budgets outright — an
+    // emergency halt, not a policy dial. `govern[]` directives still apply either way: un-wiring an
+    // agent is itself a safe, kill-switch-compatible action, and a wire directive is harmless (the
+    // fallback policy denies everything regardless of what's wired).
+    let new_policy_yaml = if bundle.kill_switch {
+        KILL_SWITCH_POLICY_YAML.to_string()
+    } else {
+        policy_yaml_from_bundle(&bundle)?
+    };
     crate::govern::save_agent_policy(new_policy_yaml.clone())?;
     let govern_errors = apply_govern_directives(&bundle.govern);
 
@@ -243,11 +280,12 @@ pub fn verify_and_apply(raw: &str, org_policy_pub_hex: &str) -> Result<Option<Ap
         last_applied_expires_ms: bundle.expires_ms,
         envelope_verbosity: Some(bundle.envelope_verbosity.clone()),
         stale_reported: false, // freshly applied ⇒ fresh by definition
+        kill_switch_active: bundle.kill_switch,
     })?;
 
     emit_policy_receipt(
         "kriya.policy.applied",
-        serde_json::json!({ "version": bundle.version, "bundle_hash": hash }),
+        serde_json::json!({ "version": bundle.version, "bundle_hash": hash, "kill_switch": bundle.kill_switch }),
     )?;
 
     Ok(Some(ApplyOutcome {
@@ -257,6 +295,7 @@ pub fn verify_and_apply(raw: &str, org_policy_pub_hex: &str) -> Result<Option<Ap
         previous_policy_yaml,
         new_policy_yaml,
         govern_errors,
+        kill_switch: bundle.kill_switch,
     }))
 }
 
@@ -266,21 +305,33 @@ pub fn verify_and_apply(raw: &str, org_policy_pub_hex: &str) -> Result<Option<Ap
 /// Compiler's own window/heartbeat timers) so this is testable without a real clock. Called on the same
 /// cadence as the downlink pull, so staleness is detected even when kriyad itself is unreachable — the
 /// device's own clock is authoritative here (kriyad decides nothing, doc 22 §3).
+///
+/// **The stale-policy kill switch (doc 24 §11 B16/EG-F):** the FIRST transition into staleness also
+/// engages [`KILL_SWITCH_POLICY_YAML`] — a device that has lost contact with the org long enough for
+/// its own bundle to expire stops trusting that (now-unverifiable-as-current) bundle's permissive
+/// rules and fails closed, exactly like an operator-set `kill_switch: true` would. This is automatic
+/// and local: kriyad is never consulted (it may be the very thing that's unreachable) and authors
+/// nothing (doc 22 §3) — the device's own clock decided. Recovery is a fresh, superseding
+/// [`verify_and_apply`], which always overwrites the policy file again.
 pub fn check_staleness(now_ms_val: u64) -> Result<(), String> {
     let mut state = load_state();
     let is_stale = state.last_applied_expires_ms.map(|exp| now_ms_val > exp).unwrap_or(false);
     if is_stale && !state.stale_reported {
+        engage_kill_switch()?;
         emit_policy_receipt(
             "kriya.policy.stale",
             serde_json::json!({
                 "version": state.last_applied_version,
                 "bundle_hash": state.last_applied_bundle_hash,
+                "kill_switch_engaged": true,
             }),
         )?;
         state.stale_reported = true;
+        state.kill_switch_active = true;
         save_state(&state)?;
     } else if !is_stale && state.stale_reported {
         state.stale_reported = false;
+        state.kill_switch_active = false;
         save_state(&state)?;
     }
     Ok(())
@@ -398,6 +449,28 @@ mod tests {
                 budgets: serde_json::json!({ "max_actions_per_minute": 42 }),
                 govern: vec![],
                 envelope_verbosity: "extended".into(),
+                kill_switch: false,
+            },
+        );
+        serde_json::to_string(&signed).unwrap()
+    }
+
+    /// Like [`signed_bundle_json`], but with an explicit `kill_switch` value — kept as a separate
+    /// helper so the many existing (non-kill-switch) call sites above stay untouched.
+    fn signed_bundle_json_ks(key: &SigningKey, version: u64, expires_ms: Option<u64>, kill_switch: bool) -> String {
+        let signed = kriya_verify::sign_policy_bundle(
+            key,
+            kriya_verify::PolicyBundle {
+                org_id: "acme".into(),
+                version,
+                issued_ms: 1000 + version,
+                expires_ms,
+                scope: kriya_verify::PolicyScope::all(),
+                policy: serde_json::json!({ "rules": [{ "action": "*", "allow": true }] }),
+                budgets: serde_json::json!({ "max_actions_per_minute": 42 }),
+                govern: vec![],
+                envelope_verbosity: "extended".into(),
+                kill_switch,
             },
         );
         serde_json::to_string(&signed).unwrap()
@@ -545,6 +618,94 @@ mod tests {
             let stale: Value = serde_json::from_str(lines[1]).unwrap();
             assert_eq!(stale["action_id"], "kriya.policy.stale");
             assert!(kriya_verify::verify_value(&stale).is_ok());
+        });
+    }
+
+    // ─── Kill switch (doc 24 §11 B16/EG-F) ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn an_explicit_kill_switch_bundle_writes_the_deny_all_fallback_not_the_bundles_own_policy() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        with_sandboxed_home(|| {
+            let key = org_key();
+            let pub_hex = hex::encode(key.verifying_key().to_bytes());
+            let raw = signed_bundle_json_ks(&key, 1, None, true);
+
+            let outcome = verify_and_apply(&raw, &pub_hex).unwrap().expect("v1 supersedes nothing");
+            assert!(outcome.kill_switch);
+            assert_eq!(outcome.new_policy_yaml, KILL_SWITCH_POLICY_YAML);
+            assert!(
+                !outcome.new_policy_yaml.contains("max_actions_per_minute"),
+                "the kill switch must NOT be a projection of the bundle's own policy/budgets"
+            );
+
+            let on_disk = std::fs::read_to_string(&outcome.policy_path).unwrap();
+            assert_eq!(on_disk, KILL_SWITCH_POLICY_YAML);
+
+            assert!(load_state().kill_switch_active);
+
+            let events = std::fs::read_to_string(policy_events_path()).unwrap();
+            let line: Value = serde_json::from_str(events.lines().next().unwrap()).unwrap();
+            assert_eq!(line["action_id"], "kriya.policy.applied");
+            assert_eq!(line["params"]["kill_switch"], true);
+        });
+    }
+
+    #[test]
+    fn a_fresh_non_kill_switch_bundle_lifts_the_kill_switch() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        with_sandboxed_home(|| {
+            let key = org_key();
+            let pub_hex = hex::encode(key.verifying_key().to_bytes());
+            verify_and_apply(&signed_bundle_json_ks(&key, 1, None, true), &pub_hex).unwrap();
+            assert!(load_state().kill_switch_active);
+
+            let outcome = verify_and_apply(&signed_bundle_json_ks(&key, 2, None, false), &pub_hex)
+                .unwrap()
+                .expect("v2 supersedes v1");
+            assert!(!outcome.kill_switch);
+            assert!(outcome.new_policy_yaml.contains("max_actions_per_minute"));
+            assert!(!load_state().kill_switch_active, "a fresh apply lifts the kill switch");
+        });
+    }
+
+    #[test]
+    fn staleness_engages_the_kill_switch_automatically_and_a_fresh_apply_lifts_it() {
+        // "The stale-policy kill switch": a device that hasn't heard from the org since its bundle's
+        // own expiry fails closed automatically, without any operator having set kill_switch: true.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        with_sandboxed_home(|| {
+            let key = org_key();
+            let pub_hex = hex::encode(key.verifying_key().to_bytes());
+            let outcome =
+                verify_and_apply(&signed_bundle_json(&key, 1, Some(1_000)), &pub_hex).unwrap().unwrap();
+            assert!(outcome.new_policy_yaml.contains("max_actions_per_minute"), "starts permissive");
+            assert!(!load_state().kill_switch_active);
+
+            check_staleness(500).unwrap(); // before expiry — untouched
+            assert!(!load_state().kill_switch_active);
+            let on_disk = std::fs::read_to_string(&outcome.policy_path).unwrap();
+            assert!(on_disk.contains("max_actions_per_minute"), "still the original policy pre-expiry");
+
+            check_staleness(2_000).unwrap(); // past expiry — kill switch engages
+            assert!(load_state().kill_switch_active);
+            let on_disk = std::fs::read_to_string(&outcome.policy_path).unwrap();
+            assert_eq!(on_disk, KILL_SWITCH_POLICY_YAML, "the stale bundle's own rules are no longer trusted");
+
+            let events = std::fs::read_to_string(policy_events_path()).unwrap();
+            let lines: Vec<&str> = events.lines().filter(|l| !l.trim().is_empty()).collect();
+            let stale: Value = serde_json::from_str(lines[1]).unwrap();
+            assert_eq!(stale["action_id"], "kriya.policy.stale");
+            assert_eq!(stale["params"]["kill_switch_engaged"], true);
+
+            // Recovery: a fresh, superseding, non-kill-switch bundle lifts it again.
+            let recovered = verify_and_apply(&signed_bundle_json(&key, 2, None), &pub_hex)
+                .unwrap()
+                .expect("v2 supersedes v1");
+            assert!(!recovered.kill_switch);
+            assert!(!load_state().kill_switch_active);
+            let on_disk = std::fs::read_to_string(&recovered.policy_path).unwrap();
+            assert!(on_disk.contains("max_actions_per_minute"), "the fresh bundle's own policy is restored");
         });
     }
 

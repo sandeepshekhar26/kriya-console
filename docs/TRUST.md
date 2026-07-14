@@ -229,6 +229,35 @@ never a bare "zero egress":
 A physical air gap or network isolation, if one exists, is the organization's own attested posture —
 kriya cannot verify it, and does not claim to.
 
+## Fleet kill switch and the A2A seam (EG-F) — honest limits
+
+The signed `PolicyBundle` (doc 22 §5) an org publishes can carry `kill_switch: true` — a device
+applying that bundle replaces its policy with a fixed, maximally-restrictive deny-all fallback
+instead of the bundle's own `policy`/`budgets`. A device also engages the SAME fallback on its own,
+without any bundle saying so, the moment its currently-applied bundle's `expires_ms` passes — "the
+stale-policy kill switch." Read this before treating either as a remote-shutdown button:
+
+- **Device-pulled, never device-pushed.** kriyad cannot force a kill switch onto a device — the
+  device fetches the bundle on its own heartbeat cadence (or an operator carries it across an
+  air gap). A kill switch takes effect only as fast as the next pull, not instantly, and a device
+  that cannot reach kriyad at all keeps running its LAST applied policy until that bundle itself
+  goes stale.
+- **"kriyad authors nothing" applies here too** (doc 22 §3). The explicit switch is
+  operator-authored and org-key-signed like every other bundle field; the staleness trigger is the
+  device's own clock, not a kriyad decision — kriyad may be the very thing that's unreachable when
+  it fires.
+- **The fallback is fixed, not derived.** It never reads the bundle's own `policy`/`budgets` — a
+  malformed or compromised bundle cannot shape its way out of the fallback by manipulating those
+  fields.
+- **Recovery is a fresh, superseding bundle.** There is no separate "un-kill" action; applying any
+  later bundle (with `kill_switch` absent or `false`) overwrites the fallback like any other apply.
+
+**The A2A (agent-to-agent) governance seam is unbuilt — code only, no live enforcement.** The
+runtime (`kriya` crate) has a `Policy.a2a` field and an `evaluate_a2a_target` decision function that
+reuse the exact egress-allowlist engine, but nothing in this codebase calls it: there is no
+agent-to-agent transport today, so this is a roadmap-depth scaffold for a future lane, not a
+shipped control. Do not cite it in any compliance export.
+
 ## Credential brokering (B13) — a new trust posture
 
 Every control above is kriya acting as a **witness**. Credential brokering is kriya acting as a
