@@ -265,6 +265,7 @@ pub fn fleet_publish_policy(
     budgets: Value,
     govern: Vec<kriya_verify::GovernDirective>,
     envelope_verbosity: String,
+    kill_switch: bool,
 ) -> Result<PublishResult, String> {
     require_fleet_console()?;
     let conn = load_connection()?;
@@ -299,6 +300,7 @@ pub fn fleet_publish_policy(
         budgets,
         govern,
         envelope_verbosity,
+        kill_switch,
     };
     let signed = crate::control_plane::org_key::sign_with_org_key(bundle)?;
     let body = serde_json::to_string(&signed).map_err(|e| e.to_string())?;
@@ -454,6 +456,7 @@ mod tests {
                 serde_json::json!({}),
                 vec![],
                 "standard".into(),
+                false,
             )
             .unwrap_err();
             assert!(

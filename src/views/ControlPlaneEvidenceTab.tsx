@@ -93,7 +93,37 @@ export function ControlPlaneEvidenceTab() {
             Drift exceptions: {evidence.drift.length === 0 ? "none" : evidence.drift.join("; ")}
           </p>
 
-          <table className="tbl" style={{ marginTop: 12 }}>
+          <h3 style={{ marginTop: 20, marginBottom: 4 }}>Fleet egress receipts (kriya.io.*)</h3>
+          <p className="muted small">
+            Counts-only, envelope-native (doc 24 §4.5) — {evidence.egressTotals.verifiedReceipts.toLocaleString()}{" "}
+            verified · {evidence.egressTotals.allow.toLocaleString()} allow ·{" "}
+            {evidence.egressTotals.deny.toLocaleString()} deny · {evidence.egressTotals.approve.toLocaleString()} approve
+            fleet-wide. A device's own destination host never leaves that device.
+          </p>
+          <table className="tbl" style={{ marginTop: 8 }}>
+            <thead>
+              <tr>
+                <th>Device</th>
+                <th>Verified</th>
+                <th>Allow</th>
+                <th>Deny</th>
+                <th>Approve</th>
+              </tr>
+            </thead>
+            <tbody>
+              {evidence.egressReceipts.map((r) => (
+                <tr key={r.devicePub}>
+                  <td>{r.deviceLabel || r.devicePub.slice(0, 12) + "…"}</td>
+                  <td>{r.verifiedReceipts.toLocaleString()}</td>
+                  <td>{r.allow.toLocaleString()}</td>
+                  <td className={r.deny > 0 ? "warn" : undefined}>{r.deny.toLocaleString()}</td>
+                  <td>{r.approve.toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <table className="tbl" style={{ marginTop: 20 }}>
             <thead>
               <tr>
                 <th>Framework</th>

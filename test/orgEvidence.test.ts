@@ -22,7 +22,7 @@ describe("OrgEvidence TS↔Rust parity (P5)", () => {
     expect(evidence.devicesSilent).toBe(1);
     expect(evidence.latestBundleVersion).toBe(2);
     expect(evidence.deviceCompleteness).toHaveLength(3);
-    expect(evidence.controls).toHaveLength(11);
+    expect(evidence.controls).toHaveLength(12);
   });
 
   it("device completeness rows carry the locally re-verified fields, camelCased", () => {
@@ -60,6 +60,17 @@ describe("OrgEvidence TS↔Rust parity (P5)", () => {
     expect(c341).toBeDefined();
     expect(c342).toBeDefined();
     expect(c342?.evidence).toContain("laptop-b");
+  });
+
+  it("includes the fleet egress-receipt roll-up (doc 24 §11 B16/EG-F)", () => {
+    expect(evidence.egressReceipts).toHaveLength(3);
+    expect(evidence.egressReceipts.map((r) => r.deviceLabel)).toEqual(["laptop-a", "laptop-b", "server-c"]);
+    expect(evidence.egressTotals).toEqual({ verifiedReceipts: 0, allow: 0, deny: 0, approve: 0 });
+
+    const ac4 = evidence.controls.find((c) => c.control.startsWith("AC-4"));
+    expect(ac4).toBeDefined();
+    expect(ac4?.status).toBe("partial");
+    expect(ac4?.evidence).toContain("0 kriya.io.* receipt(s) verified across 3 device(s)");
   });
 
   it("every status is one of the three documented values — no stray string slips through", () => {

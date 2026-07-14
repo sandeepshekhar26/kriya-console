@@ -981,6 +981,7 @@ mod tests {
                     budgets: json!({}),
                     govern: vec![],
                     envelope_verbosity: "standard".into(),
+                    kill_switch: false,
                 },
             );
             let (status, _) =
@@ -1054,6 +1055,7 @@ mod tests {
                     action: "wire".into(),
                 }],
                 envelope_verbosity: "standard".into(),
+                kill_switch: false,
             },
         );
         serde_json::to_string(&signed).unwrap()

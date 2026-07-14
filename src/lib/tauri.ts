@@ -463,6 +463,11 @@ export interface PolicyBundleDraft {
   budgets: Record<string, unknown>;
   govern: { target: string; action: string }[];
   envelope_verbosity: string;
+  /** The org-wide kill switch (doc 24 §11 B16/EG-F) — absent/`false` off, `true` on. Unlike
+   *  `src/lib/policyBundle.ts`'s `PolicyBundle` (used for client-side canonical-byte hashing, where a
+   *  literal `false` would diverge from the Rust `skip_serializing_if` shape), this type is only ever
+   *  read from a Tauri command's already-deserialized response — `false | undefined` is fine here. */
+  kill_switch?: boolean;
 }
 
 /** Mirrors Rust `control_plane::fleet::PublishResult`. */
@@ -483,6 +488,7 @@ export const fleetPublishPolicy = (args: {
   budgets: Record<string, unknown>;
   govern: { target: string; action: string }[];
   envelopeVerbosity: string;
+  killSwitch: boolean;
 }) => invoke<PublishResult>("fleet_publish_policy", args);
 
 // ── Org-wide evidence export (paid, P5, doc 22 §9) ───────────────────────────
@@ -523,6 +529,27 @@ export interface DeviceCompleteness {
   runtimeVersion?: string | null;
 }
 
+/** One device's `kriya.io.*` receipt roll-up (doc 24 §11 B16/EG-F) — mirrors Rust
+ *  `control_plane::fleet_evidence::DeviceEgressReceipts`. Counts-only, envelope-native: computed from
+ *  each envelope's own already-minimized `actions[]`, so `dest_host` never appears here (doc 24 §4.5). */
+export interface DeviceEgressReceipts {
+  devicePub: string;
+  deviceLabel?: string | null;
+  verifiedReceipts: number;
+  allow: number;
+  deny: number;
+  approve: number;
+}
+
+/** Fleet-wide sum of every device's [`DeviceEgressReceipts`] — mirrors Rust
+ *  `control_plane::fleet_evidence::FleetEgressTotals`. */
+export interface FleetEgressTotals {
+  verifiedReceipts: number;
+  allow: number;
+  deny: number;
+  approve: number;
+}
+
 /** The full org-wide evidence bundle — mirrors Rust `control_plane::fleet_evidence::OrgEvidence`.
  *  `markdown`/`json` are the ready-to-save report text, generated in Rust (same pattern as
  *  `ComplianceBundle` above: the Console never re-derives report text client-side). */
@@ -542,6 +569,10 @@ export interface OrgEvidence {
   /** Named exceptions: devices whose locally-verified applied version is behind `latestBundleVersion`,
    *  or that have never applied any bundle at all. */
   drift: string[];
+  /** The fleet egress-receipt roll-up (doc 24 §11 B16/EG-F) — one row per device, same order as
+   *  `deviceCompleteness`. */
+  egressReceipts: DeviceEgressReceipts[];
+  egressTotals: FleetEgressTotals;
   controls: OrgControl[];
   markdown: string;
   json: string;

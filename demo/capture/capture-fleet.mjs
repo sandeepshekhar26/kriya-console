@@ -183,6 +183,7 @@ function tauriStub() {
     { framework: "NIST 800-171", control: "3.3.9", requirement: "Limit audit management to a privileged subset", evidence: "Permanent gap: kriya cannot restrict OS-level administrative access to on-device logs. Stated, not hidden.", status: "gap" },
     { framework: "NIST 800-171", control: "3.4.1 (CM)", requirement: "Establish and maintain baseline configurations", evidence: "Signed policy chain: bundle v3 authored (org-key signature) → verified-applied on 2/4 devices, from each device's OWN locally re-verified envelopes — never kriyad's serving hint.", status: "satisfied" },
     { framework: "NIST 800-171", control: "3.4.2 (CM)", requirement: "Enforce security configuration settings", evidence: "2/4 devices at bundle v3; drift exceptions named: FIN-0027 (v2, mismatch vs served hint), RSK-0009 (v1, silent). Anti-rollback enforced on-device.", status: "partial" },
+    { framework: "NIST 800-53", control: "AC-4", requirement: "Enforce approved authorizations for controlling the flow of information", evidence: "42 kriya.io.* receipts verified fleet-wide (38 allow, 3 deny, 1 approve). Governed lanes only — a spawned subprocess bypasses this on every device.", status: "partial" },
   ];
 
   const orgEvidence = (organization, windowMs) => ({
@@ -200,6 +201,11 @@ function tauriStub() {
       "FIN-0027 — applied v2 < published v3 (device's own signed envelopes; kriyad's hint disagrees)",
       "RSK-0009 — silent AND applied v1 < published v3",
     ],
+    egressReceipts: DEVICES.map((d, i) => ({
+      devicePub: d.device_pub, deviceLabel: d.device_label,
+      verifiedReceipts: i === 0 ? 42 : 0, allow: i === 0 ? 38 : 0, deny: i === 0 ? 3 : 0, approve: i === 0 ? 1 : 0,
+    })),
+    egressTotals: { verifiedReceipts: 42, allow: 38, deny: 3, approve: 1 },
     controls,
     markdown: [
       `# Fleet evidence — ${organization}`, "",

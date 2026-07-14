@@ -92,6 +92,7 @@ fn author_sign_publish(
         budgets: budgets_json,
         govern,
         envelope_verbosity: envelope_verbosity.to_string(),
+        kill_switch: false,
     };
     let signed = kriya_verify::sign_policy_bundle(org_key, bundle);
     let body = serde_json::to_string(&signed).unwrap();

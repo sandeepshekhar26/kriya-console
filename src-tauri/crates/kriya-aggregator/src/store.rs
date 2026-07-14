@@ -976,6 +976,7 @@ mod tests {
                 budgets: serde_json::json!({}),
                 govern: vec![],
                 envelope_verbosity: "standard".into(),
+                kill_switch: false,
             },
         )
     }
