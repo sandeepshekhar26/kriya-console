@@ -35,6 +35,12 @@ export interface Policy {
    *  (mirrors `permissions::DetectionPolicy`'s `Option` fields), so authoring the pack at all never
    *  silently turns on a specific detector. */
   detection: DetectionPolicy | null;
+  /** Credential brokering (doc 24 §11 B13 / EG-B). `null` = no `secrets:` section authored — same
+   *  BC-3 round-trip discipline as `egress`/`detection`. NEVER carries a secret VALUE — only a
+   *  reference (Keychain service + account) per alias; the runtime resolves the real value at
+   *  substitution time, from OS Keychain, never from this policy. See
+   *  `docs/THREAT-MODEL-brokering.md`. */
+  secrets: SecretsPolicy | null;
 }
 
 /** What happens to an egress destination no rule matches. Mirrors `permissions::UnlistedPosture`. */
@@ -196,6 +202,33 @@ export function defaultMcpResponsePolicy(): McpResponsePolicy {
   return { enabled: true, defaultClass: "scan", perServer: {} };
 }
 
+// ── Credential brokering (doc 24 §11 B13 / EG-B) — mirrors `secrets::SecretsPolicy` ───────────
+// The agent never holds a real credential — only a `{{kriya:<alias>}}` placeholder; the runtime
+// substitutes the real value at the egress boundary, from OS Keychain, scoped to that ONE alias's
+// own destination allowlist. This model NEVER carries a secret value, only a reference — the schema
+// below has no field a value could go in. See `docs/THREAT-MODEL-brokering.md`.
+
+/** One brokered alias. `keychainService`/`keychainAccount` are a REFERENCE (macOS Keychain
+ *  generic-password item coordinates) — never the secret itself. */
+export interface SecretAlias {
+  /** The name inside `{{kriya:<name>}}` — matched exactly, case-sensitively. */
+  alias: string;
+  keychainService: string;
+  keychainAccount: string;
+  /** Host patterns (the same syntax as an egress rule) this alias may be substituted INTO — its
+   *  OWN scope, independent of (and typically narrower than) the general egress destination tier.
+   *  A placeholder bound for a host not listed here is denied, never substituted. */
+  allowedHosts: string[];
+}
+
+export interface SecretsPolicy {
+  aliases: SecretAlias[];
+}
+
+export function emptySecretsPolicy(): SecretsPolicy {
+  return { aliases: [] };
+}
+
 /** An egress policy with no rules and the permissive default posture — the "just turned it on" state. */
 export function emptyEgressPolicy(): EgressPolicy {
   return { rules: [], unlisted: "allow", failClosed: false, recordIngress: false };
@@ -261,11 +294,21 @@ interface YamlDetectionPolicy {
   read_only?: string[];
   mcp_response?: YamlMcpResponsePolicy | null;
 }
+interface YamlSecretAlias {
+  alias: string;
+  keychain_service: string;
+  keychain_account: string;
+  allowed_hosts?: string[];
+}
+interface YamlSecretsPolicy {
+  aliases?: YamlSecretAlias[];
+}
 interface YamlPolicy {
   rules?: YamlRule[];
   budget?: { max_actions_per_minute?: number | null; max_api_calls_per_hour?: number | null };
   egress?: YamlEgressPolicy;
   detection?: YamlDetectionPolicy;
+  secrets?: YamlSecretsPolicy;
 }
 
 export function tierFrom(allow: boolean, requireApproval: boolean): Tier {
@@ -292,6 +335,26 @@ export function defaultPolicy(): Policy {
     maxApiCallsPerHour: null,
     egress: null,
     detection: null,
+    secrets: null,
+  };
+}
+
+function parseSecrets(doc: YamlSecretsPolicy | undefined): SecretsPolicy | null {
+  if (!doc) return null;
+  return {
+    aliases: (Array.isArray(doc.aliases) ? doc.aliases : [])
+      .filter(
+        (a): a is YamlSecretAlias =>
+          !!a && typeof a.alias === "string" && typeof a.keychain_service === "string" && typeof a.keychain_account === "string",
+      )
+      .map((a) => ({
+        alias: a.alias,
+        keychainService: a.keychain_service,
+        keychainAccount: a.keychain_account,
+        allowedHosts: (Array.isArray(a.allowed_hosts) ? a.allowed_hosts : []).filter(
+          (h): h is string => typeof h === "string",
+        ),
+      })),
   };
 }
 
@@ -394,6 +457,7 @@ export function parsePolicyYaml(text: string): Policy {
         : null,
     egress: parseEgress(doc.egress),
     detection: parseDetection(doc.detection),
+    secrets: parseSecrets(doc.secrets),
   };
 }
 
@@ -473,6 +537,19 @@ export function policyToYaml(p: Policy): string {
       };
     }
     doc.detection = yd;
+  }
+  // BC-3, same discipline again: no `secrets` key at all when never authored. This model never
+  // carries a value in the first place — only a Keychain reference — so there is no additional
+  // redaction concern here beyond the standard round-trip rule.
+  if (p.secrets !== null) {
+    doc.secrets = {
+      aliases: p.secrets.aliases.map((a) => ({
+        alias: a.alias,
+        keychain_service: a.keychainService,
+        keychain_account: a.keychainAccount,
+        allowed_hosts: a.allowedHosts,
+      })),
+    };
   }
   const body = dump(doc, { lineWidth: -1, quotingType: '"', forceQuotes: true });
   return YAML_HEADER + body;

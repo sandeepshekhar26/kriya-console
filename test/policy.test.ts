@@ -11,8 +11,10 @@ import {
   defaultSecretPiiPolicy,
   defaultConnectorRegistryPolicy,
   defaultMcpResponsePolicy,
+  emptySecretsPolicy,
   type DetectionPolicy,
   type Policy,
+  type SecretsPolicy,
 } from "../src/lib/policy";
 
 // These mirror the Rust unit tests in crates/kriya/src/permissions.rs so the console's
@@ -254,5 +256,98 @@ detection:
     const round = parsePolicyYaml(policyToYaml(p));
     expect(round.detection?.mcpResponse?.perServer.untrusted).toBe("block");
     expect(round).toEqual(p);
+  });
+});
+
+// Credential brokering (doc 24 §11 B13 / EG-B) — mirrors the Rust round-trip discipline: no
+// `secrets:` key at all when never authored, and the model structurally never carries a value, only
+// a Keychain reference. Companion to the Rust `secrets::tests::*` in crates/kriya/src/secrets.rs.
+describe("credential brokering — YAML round-trip (doc 24 §11 / EG-B)", () => {
+  it("defaultPolicy() carries secrets: null and round-trips with no `secrets:` key at all", () => {
+    const p = defaultPolicy();
+    expect(p.secrets).toBeNull();
+    const yaml = policyToYaml(p);
+    expect(yaml).not.toContain("secrets");
+    expect(parsePolicyYaml(yaml)).toEqual(p);
+  });
+
+  it("round-trips a populated alias list byte-for-byte through parse(serialize(x))", () => {
+    const secrets: SecretsPolicy = {
+      aliases: [
+        {
+          alias: "github_pat",
+          keychainService: "kriya",
+          keychainAccount: "github_pat",
+          allowedHosts: ["*.github.com"],
+        },
+        {
+          alias: "slack_token",
+          keychainService: "kriya",
+          keychainAccount: "slack_bot_token",
+          allowedHosts: ["slack.com", "*.slack.com"],
+        },
+      ],
+    };
+    const p: Policy = { ...defaultPolicy(), secrets };
+    const round = parsePolicyYaml(policyToYaml(p));
+    expect(round).toEqual(p);
+  });
+
+  it("parses a hand-authored realistic secrets: block (the shape an operator would actually write)", () => {
+    const p = parsePolicyYaml(`
+rules:
+  - action: "*"
+    allow: false
+budget:
+  max_actions_per_minute: 60
+secrets:
+  aliases:
+    - alias: "github_pat"
+      keychain_service: "kriya"
+      keychain_account: "github_pat"
+      allowed_hosts:
+        - "*.github.com"
+`);
+    expect(p.secrets).not.toBeNull();
+    expect(p.secrets!.aliases).toEqual([
+      { alias: "github_pat", keychainService: "kriya", keychainAccount: "github_pat", allowedHosts: ["*.github.com"] },
+    ]);
+  });
+
+  it("an alias with no allowed_hosts parses to an empty array, never undefined", () => {
+    const p = parsePolicyYaml(`
+rules:
+  - action: "*"
+    allow: true
+secrets:
+  aliases:
+    - alias: "bare"
+      keychain_service: "kriya"
+      keychain_account: "bare"
+`);
+    expect(p.secrets!.aliases[0]!.allowedHosts).toEqual([]);
+  });
+
+  it("emptySecretsPolicy() + addAlias-shaped growth round-trips (the Console 'enable' toggle path)", () => {
+    const secrets = emptySecretsPolicy();
+    expect(secrets.aliases).toEqual([]);
+    secrets.aliases.push({ alias: "x", keychainService: "kriya", keychainAccount: "x", allowedHosts: [] });
+    const p: Policy = { ...defaultPolicy(), secrets };
+    const round = parsePolicyYaml(policyToYaml(p));
+    expect(round).toEqual(p);
+  });
+
+  it("never emits a value-shaped key anywhere in the YAML — only alias/service/account/hosts", () => {
+    // A structural honesty check: the serializer has no field to leak a value through even if one
+    // were accidentally attached to the in-memory object (TypeScript would reject it, but this
+    // proves the SERIALIZED shape too, which is what actually reaches disk/the runtime).
+    const secrets: SecretsPolicy = {
+      aliases: [{ alias: "x", keychainService: "kriya", keychainAccount: "x", allowedHosts: ["*.example.com"] }],
+    };
+    const p: Policy = { ...defaultPolicy(), secrets };
+    const yaml = policyToYaml(p);
+    for (const forbidden of ["value", "secret_value", "token_value", "plaintext"]) {
+      expect(yaml.toLowerCase()).not.toContain(forbidden);
+    }
   });
 });

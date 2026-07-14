@@ -229,6 +229,37 @@ never a bare "zero egress":
 A physical air gap or network isolation, if one exists, is the organization's own attested posture —
 kriya cannot verify it, and does not claim to.
 
+## Credential brokering (B13) — a new trust posture
+
+Every control above is kriya acting as a **witness**. Credential brokering is kriya acting as a
+**custodian** — it briefly holds a real secret in process memory so it can inject it into a governed
+outbound call the agent never sees the value of. That is a different kind of claim, with its own
+document: **read [`THREAT-MODEL-brokering.md`](THREAT-MODEL-brokering.md) before treating this as
+"kriya is now a secrets manager,"** because it isn't one (that document's explicit non-goal).
+
+The custody + receipt summary:
+
+- **Custody is OS Keychain, never a file.** `agent-policy.yaml` carries only a Keychain
+  service+account *reference* per alias — the schema cannot express a plaintext secret. The runtime
+  reads the real value at substitution time only, via the system `security` CLI with the
+  service/account passed as separate process arguments (not shell-interpolated).
+- **The agent composes a placeholder, `{{kriya:<alias>}}`, never the credential.** Substitution
+  happens in exactly two places — the governed HTTP transport and the Claude Code hook lane's
+  documented `updatedInput` mechanism — both as late as possible, after everything that gets hashed
+  or recorded has already committed to the placeholder form.
+- **No receipt ever carries the value.** A brokered call's `kriya.io.*` receipt is additively flagged
+  (`"b13-brokered:<alias>"`) — the alias name, never the secret. The hook lane additionally treats
+  Claude Code's own (undocumented) `PostToolUse` echo behavior as adversarial and actively redacts
+  each configured alias's real value back to its placeholder before recording anything, regardless of
+  which form was actually echoed.
+- **Scope is per-alias, independent of the general egress tier.** A credential is only ever
+  substituted into a call bound for that ONE alias's own destination allowlist — a misrouted call is
+  denied, not brokered, before any Keychain read happens.
+- **What it does not defend against:** a compromised kriya process itself (Keychain access control is
+  the remaining barrier, same as for any macOS app with a Keychain reference), or a genuinely
+  compromised alias-allowed destination. The full threat model, including what a compromised host can
+  and cannot do, lives in the linked document.
+
 ## Employee privacy — E1
 
 An identity-bound, timestamped record of which destinations an agent reached is employee-behavioral
