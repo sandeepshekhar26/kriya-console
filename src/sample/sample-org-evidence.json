@@ -87,6 +87,33 @@
     "deny": 0,
     "approve": 0
   },
+  "egressPatterns": [
+    {
+      "devicePub": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "deviceLabel": "laptop-a",
+      "patternEchoActive": false,
+      "patterns": [],
+      "unlistedCount": null,
+      "unlistedDenied": null
+    },
+    {
+      "devicePub": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+      "deviceLabel": "laptop-b",
+      "patternEchoActive": false,
+      "patterns": [],
+      "unlistedCount": null,
+      "unlistedDenied": null
+    },
+    {
+      "devicePub": "ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+      "deviceLabel": "server-c",
+      "patternEchoActive": false,
+      "patterns": [],
+      "unlistedCount": null,
+      "unlistedDenied": null
+    }
+  ],
+  "purposeStatement": null,
   "controls": [
     {
       "framework": "NIST 800-171",

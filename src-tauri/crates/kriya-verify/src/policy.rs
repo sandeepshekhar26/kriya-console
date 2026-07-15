@@ -73,6 +73,14 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+fn default_io_verbosity() -> String {
+    "off".to_string()
+}
+
+fn is_io_verbosity_off(v: &str) -> bool {
+    v == "off"
+}
+
 /// The signed policy/connector/budget bundle (doc 22 §5), verbatim schema. `policy` and `budgets` are
 /// carried as opaque `Value` — this crate does not interpret the runtime policy/budget format, only
 /// signs and verifies the bytes; the device-side apply step (control_plane, app crate) owns turning
@@ -108,6 +116,21 @@ pub struct PolicyBundle {
     /// (staleness), never server-decided.
     #[serde(default, skip_serializing_if = "is_false")]
     pub kill_switch: bool,
+    /// The fleet-destination-visibility dial (doc 24 §4.5/§7.5, EG-4): `"off"` | `"pattern-echo"`.
+    /// Kept as a raw string, like `envelope_verbosity`, so a future value round-trips on an older
+    /// device instead of hard-failing the bundle. `"off"` is the privacy-safe default — a device only
+    /// ever echoes destination PATTERNS (never raw hosts) into its envelopes when this is explicitly
+    /// `"pattern-echo"`. `#[serde(default, skip_serializing_if = "is_io_verbosity_off")]`: `"off"` (the
+    /// overwhelming common case) is omitted entirely from the canonical bytes, preserving the pinned
+    /// fixture hash for every bundle that doesn't opt in — same technique as `kill_switch`.
+    #[serde(default = "default_io_verbosity", skip_serializing_if = "is_io_verbosity_off")]
+    pub io_verbosity: String,
+    /// Echoed into every fleet export once `io_verbosity` is `"pattern-echo"` (doc 24 §7.5/§6-P9) —
+    /// "the surveillance is itself audited": an operator-authored statement of WHY destination
+    /// patterns are being centralized, e.g. `"compliance/security evidence; never performance
+    /// evaluation"`. `None` when unset (never a bare empty string).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose_statement: Option<String>,
 }
 
 /// `{ bundle, signature }` — signature is Ed25519 over [`policy_bundle_canonical_bytes`], by the
@@ -183,6 +206,8 @@ mod tests {
             ],
             envelope_verbosity: "standard".into(),
             kill_switch: false,
+            io_verbosity: "off".into(),
+            purpose_statement: None,
         }
     }
 
@@ -332,6 +357,47 @@ mod tests {
         assert!(
             verify_policy_bundle(&v, &pub_hex).is_err(),
             "tampering kill_switch after signing must fail"
+        );
+    }
+
+    #[test]
+    fn io_verbosity_defaults_to_off_and_omits_from_canonical_bytes() {
+        // An older-shaped bundle (pre-EG-4) still parses, defaulting to "off".
+        let old_shape = json!({
+            "org_id": "acme", "version": 1, "issued_ms": 1000, "scope": {}, "policy": {}, "budgets": {},
+        });
+        let bundle: PolicyBundle = serde_json::from_value(old_shape).unwrap();
+        assert_eq!(bundle.io_verbosity, "off");
+        assert!(bundle.purpose_statement.is_none());
+
+        // "off" is the common case, so it must be OMITTED from the canonical bytes entirely — the
+        // pinned fixture hash below must never move just because this field was added.
+        let bytes = policy_bundle_canonical_bytes(&sample_bundle(1));
+        let s = String::from_utf8_lossy(&bytes);
+        assert!(!s.contains("io_verbosity"), "io_verbosity: \"off\" must not appear at all: {s}");
+        assert!(!s.contains("purpose_statement"), "absent purpose_statement must not appear: {s}");
+    }
+
+    #[test]
+    fn pattern_echo_io_verbosity_and_purpose_statement_are_present_and_tamper_fails() {
+        let key = SigningKey::from_bytes(&[72u8; 32]);
+        let pub_hex = hex::encode(key.verifying_key().to_bytes());
+        let mut bundle = sample_bundle(1);
+        bundle.io_verbosity = "pattern-echo".into();
+        bundle.purpose_statement = Some("compliance/security evidence; never performance evaluation".into());
+        let bytes = policy_bundle_canonical_bytes(&bundle);
+        let s = String::from_utf8_lossy(&bytes);
+        assert!(s.contains("\"io_verbosity\":\"pattern-echo\""));
+        assert!(s.contains("purpose_statement"));
+
+        let signed = sign_policy_bundle(&key, bundle);
+        let mut v = serde_json::to_value(&signed).unwrap();
+        assert!(verify_policy_bundle(&v, &pub_hex).is_ok());
+
+        v["bundle"]["io_verbosity"] = json!("off");
+        assert!(
+            verify_policy_bundle(&v, &pub_hex).is_err(),
+            "tampering io_verbosity after signing must fail"
         );
     }
 

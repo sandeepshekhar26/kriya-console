@@ -125,6 +125,8 @@ mod tests {
             sources: vec![],
             envelope_verbosity: "standard".into(),
             policy_state: None,
+            io_verbosity: "off".into(),
+            egress_patterns: vec![],
         };
         build_signed_envelope(&input, &SigningKey::from_bytes(&[11u8; 32]), &[3u8; 32]).unwrap()
     }

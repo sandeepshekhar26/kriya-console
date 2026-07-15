@@ -258,6 +258,61 @@ reuse the exact egress-allowlist engine, but nothing in this codebase calls it: 
 agent-to-agent transport today, so this is a roadmap-depth scaffold for a future lane, not a
 shipped control. Do not cite it in any compliance export.
 
+## Fleet destination patterns (pattern-echo, EG-4) — honest limits
+
+A `PolicyBundle` can set `io_verbosity: "pattern-echo"` (default `"off"`) — once applied, a device
+starts including a NEW field, `io_destinations`, in its signed envelopes: which operator-authored
+egress destination *pattern* (never a raw host) each governed call matched, plus a count and a
+denied count. This is new per-device metadata that did not exist before EG-4, and it deserves the
+same scrutiny E1's employee-behavioral-data floor got (see "Employee privacy" below) — read this
+section, and get your works-council/GDPR review done, before turning it on for a real fleet.
+
+- **Pattern-echo, never raw-host.** A device NEVER puts the host it actually contacted into a
+  signed envelope. It matches the observed host against the org's OWN authored `policy.egress.
+  rules[].host` patterns and echoes back the PATTERN STRING that matched — a string that already
+  exists, verbatim, in the operator-signed bundle. A host matching no authored pattern collapses to
+  a fixed `"unlisted"` sentinel, never itself. This is enforced structurally by a sealed minimizer
+  (`kriya_verify::minimize_io`, `#[non_exhaustive]`, sole constructor) — the same technique
+  `minimize_window` uses for the drop-by-default redaction floor — not a policy choice a future
+  change could quietly widen.
+- **Raw-host mode does not exist in this product.** If a customer ever needs literal destination
+  hostnames centralized, that is doc 22 §2's own named, explicit, non-default product decision — it
+  is not a dial anywhere in the shipped code today, and turning pattern-echo on never approaches it.
+- **New metadata, even in pattern form.** Per-device destination-pattern activity, correlated over
+  time, is new information about what one person's agent did — that is exactly the concern the EG-3
+  privacy artifact pack (`docs/privacy/`) exists to walk through BEFORE deployment, and it is why
+  this feature is gated on that pack existing (doc 24 §7.5), not merely on demand.
+- **Privacy mitigations that ship WITH the feature, not after:**
+  - Envelope timestamps are DAY-BUCKETED (UTC) whenever pattern-echo is active, coarser than the
+    Compiler's normal window cadence — correlating a destination pattern against an hour-level
+    timestamp is a stronger re-identification signal than correlating it against a day.
+  - A pattern seen on fewer than a handful of devices fleet-wide is flagged (⚠) in the cockpit — a
+    single person's own domain showing up as "a pattern" is a surveillance-shaped signal worth
+    a human noticing, not hiding it and not auto-blocking it either.
+  - A device's unlisted-destination count below a small threshold is WITHHELD from the fleet-wide
+    org evidence REPORT by default — that specific export artifact does not carry the number, not
+    just a UI mask over it.
+- **The withholding is a property of the fleet-wide report artifact, not of the underlying signed
+  data.** `io_destinations` is an ordinary field on the envelope itself — a `fleet-console`-licensed
+  operator's own per-device drill-in (P4) already shows raw envelope internals (chain hashes, seq,
+  `policy_state`) for verification purposes, and now shows the exact `io_destinations` counts the
+  same way, without a threshold. This is consistent with the existing trust model (kriyad and the
+  cockpit are inside the operator's own trust boundary; the fleet report is the artifact that leaves
+  it, e.g. to an assessor) rather than a gap in it — but it means the k-threshold suppression is a
+  courtesy on the widely-shared export, not a hard boundary inside the cockpit itself. Don't describe
+  it as the latter in a customer conversation.
+- **The surveillance is itself audited.** Revealing a withheld count in the fleet-wide REPORT is a
+  deliberate cockpit action,
+  and that action signs its own receipt — `kriya.console.drilldown` (`{device_pub, operator_pseudonym,
+  scope, ts}`) — into the Console's own local hash-chain, tailed into evidence exactly like every
+  other control-plane-internal event. "Who looked at device X's low-count detail, and when" always
+  has an answer. The operator identity in that receipt is an HMAC pseudonym computed device-side
+  from the local OS user, never a caller-supplied string — an operator cannot claim to be someone
+  else in their own audit trail.
+- **A `purpose_statement` travels with the bundle** and is echoed into every export once
+  pattern-echo is on — an explicit, operator-authored answer to "why is this being collected,"
+  printed alongside the data itself rather than left to a separate policy document.
+
 ## Credential brokering (B13) — a new trust posture
 
 Every control above is kriya acting as a **witness**. Credential brokering is kriya acting as a

@@ -266,6 +266,8 @@ pub fn fleet_publish_policy(
     govern: Vec<kriya_verify::GovernDirective>,
     envelope_verbosity: String,
     kill_switch: bool,
+    io_verbosity: String,
+    purpose_statement: Option<String>,
 ) -> Result<PublishResult, String> {
     require_fleet_console()?;
     let conn = load_connection()?;
@@ -301,6 +303,8 @@ pub fn fleet_publish_policy(
         govern,
         envelope_verbosity,
         kill_switch,
+        io_verbosity,
+        purpose_statement,
     };
     let signed = crate::control_plane::org_key::sign_with_org_key(bundle)?;
     let body = serde_json::to_string(&signed).map_err(|e| e.to_string())?;
@@ -364,6 +368,34 @@ pub fn fleet_org_evidence(
         (now.saturating_sub(window_ms), now),
         &organization,
         now,
+    ))
+}
+
+/// The ONE exact unlisted-egress count (+ denied) for ONE device, bypassing
+/// [`super::fleet_evidence::UNLISTED_REVEAL_THRESHOLD`] suppression (doc 24 §7.5/§6-P9, EG-4). The
+/// caller (the cockpit UI) is expected to have ALREADY emitted the receipted drill-down
+/// (`drilldown::console_drilldown`) before calling this — "the surveillance is itself audited" means
+/// the signed record of WHO looked exists independently of this fetch, not that this fetch enforces
+/// it (the same operator controls both calls on this local desktop app).
+#[tauri::command]
+#[cfg(feature = "control-plane")]
+pub fn fleet_device_unlisted_egress_count(
+    device_pub: String,
+    window_ms: Option<u64>,
+) -> Result<(u32, u32), String> {
+    require_fleet_console()?;
+    let conn = load_connection()?;
+    let cfg = to_fleet_config(&conn)?;
+
+    let coverage = fleet_client::fetch_coverage(&cfg)?;
+    let now = now_ms();
+    let window_ms = window_ms.unwrap_or(super::fleet_evidence::DEFAULT_WINDOW_MS);
+    let envelopes = super::fleet_evidence::stream_fleet_envelopes(&cfg, &coverage, now, window_ms);
+
+    Ok(super::fleet_evidence::device_unlisted_egress_count(
+        &envelopes,
+        &device_pub,
+        (now.saturating_sub(window_ms), now),
     ))
 }
 
@@ -457,6 +489,8 @@ mod tests {
                 vec![],
                 "standard".into(),
                 false,
+                "off".into(),
+                None,
             )
             .unwrap_err();
             assert!(

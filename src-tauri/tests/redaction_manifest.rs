@@ -83,6 +83,8 @@ fn no_sentinel_survives_the_envelope_builder() {
         }],
         envelope_verbosity: "standard".into(),
         policy_state: None,
+        io_verbosity: "off".into(),
+        egress_patterns: vec![],
     };
     let key = SigningKey::from_bytes(&[11u8; 32]);
     let signed = build_signed_envelope(&input, &key, &[3u8; 32]).expect("build envelope");
@@ -130,4 +132,53 @@ fn no_sentinel_survives_the_envelope_builder() {
             || bytes.contains(r#""count":1,"action":"kriya.io.egress.mcp.allow""#),
         "kriya.io.egress.mcp.allow must pass through verbatim with count 1: {bytes}"
     );
+}
+
+/// The EG-4 pattern-echo tripwire (doc 24 §4.5/§7.5): with `io_verbosity: "pattern-echo"` ENGAGED —
+/// the one mode that reads `params.dest_host` at all — the same `SENSITIVE-TENANT.internal.example`
+/// sentinel must STILL never serialize. Deliberately gives NO authored `egress_patterns`, so the
+/// sentinel host matches nothing and must collapse to the fixed "unlisted" bucket.
+#[test]
+fn no_sentinel_survives_pattern_echo_even_when_engaged() {
+    let host = SigningKey::from_bytes(&[43u8; 32]);
+    let input = WindowInput {
+        org_id: "acme".into(),
+        business_unit: Some("enclave-7".into()),
+        window_from_ms: 0,
+        window_to_ms: 1,
+        seq: 1,
+        prev_envelope_hash: None,
+        produced_ms: 1,
+        sources: vec![SourceWindow {
+            source: "x.jsonl".into(),
+            lines: vec![io_sentinel_receipt(&host)],
+            prev_tail_hash: None,
+        }],
+        envelope_verbosity: "standard".into(),
+        policy_state: None,
+        io_verbosity: "pattern-echo".into(),
+        egress_patterns: vec!["*.totally-different-vendor.example".to_string()],
+    };
+    let key = SigningKey::from_bytes(&[12u8; 32]);
+    let signed = build_signed_envelope(&input, &key, &[3u8; 32]).expect("build envelope");
+
+    let bytes = serde_json::to_string(&signed).expect("serialize envelope");
+    for sentinel in [
+        "SENSITIVE-TENANT.internal.example",
+        "SENTINEL0000000000000000000000000000000000000000000000000000",
+        "424242",
+    ] {
+        assert!(
+            !bytes.contains(sentinel),
+            "REDACTION LEAK: '{sentinel}' serialized into a pattern-echo envelope:\n{bytes}"
+        );
+    }
+
+    // Positive control: io_destinations IS present (pattern-echo engaged) and the non-matching host
+    // collapsed to the fixed sentinel, proving the field genuinely populated rather than being
+    // silently empty/absent.
+    let io_destinations = signed.envelope.io_destinations.expect("pattern-echo must populate io_destinations");
+    assert_eq!(io_destinations.len(), 1);
+    assert_eq!(io_destinations[0].pattern, "unlisted");
+    assert_eq!(io_destinations[0].count, 1);
 }

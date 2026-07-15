@@ -78,4 +78,14 @@ describe("OrgEvidence TS↔Rust parity (P5)", () => {
       expect(["satisfied", "partial", "gap"]).toContain(c.status);
     }
   });
+
+  it("includes an empty-by-default fleet destination-pattern roll-up (doc 24 §4.5/§7.5, EG-4)", () => {
+    expect(evidence.egressPatterns).toHaveLength(3);
+    for (const d of evidence.egressPatterns) {
+      expect(d.patternEchoActive).toBe(false);
+      expect(d.patterns).toEqual([]);
+      expect(d.unlistedCount ?? null).toBeNull();
+    }
+    expect(evidence.purposeStatement ?? null).toBeNull();
+  });
 });

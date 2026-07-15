@@ -171,6 +171,8 @@ pub fn compile_window(
     pepper: &[u8],
     envelope_verbosity: &str,
     policy_state: Option<kriya_verify::PolicyStateEcho>,
+    io_verbosity: &str,
+    egress_patterns: Vec<String>,
 ) -> Result<(SignedEnvelope, CompilerState), String> {
     let (sources, next) = collect_new_windows(audit_dir, state);
     let input = WindowInput {
@@ -184,6 +186,8 @@ pub fn compile_window(
         sources,
         envelope_verbosity: envelope_verbosity.to_string(),
         policy_state,
+        io_verbosity: io_verbosity.to_string(),
+        egress_patterns,
     };
     let signed = build_signed_envelope(&input, key, pepper)?;
     Ok((signed, next))
@@ -276,6 +280,8 @@ pub fn compile_once(window: (u64, u64), produced_ms: u64) -> Result<(), String> 
         }
         _ => None,
     };
+    let io_verbosity = policy_downlink_state.io_verbosity.clone().unwrap_or_else(|| "off".into());
+    let egress_patterns = policy_downlink_state.egress_patterns.clone();
     let (signed, next) = compile_window(
         &audit_dir,
         &state,
@@ -289,6 +295,8 @@ pub fn compile_once(window: (u64, u64), produced_ms: u64) -> Result<(), String> 
         &pepper,
         &verbosity,
         policy_state,
+        &io_verbosity,
+        egress_patterns,
     )?;
     crate::control_plane::outbox::append(&signed)?;
     save_state(&next)?;
@@ -422,6 +430,8 @@ mod tests {
             &[3u8; 32],
             "standard",
             None,
+            "off",
+            vec![],
         )
         .unwrap();
         assert!(verify_envelope(&serde_json::to_value(&e1).unwrap()).is_ok());
@@ -445,6 +455,8 @@ mod tests {
             &[3u8; 32],
             "standard",
             None,
+            "off",
+            vec![],
         )
         .unwrap();
         assert!(verify_envelope(&serde_json::to_value(&e2).unwrap()).is_ok());

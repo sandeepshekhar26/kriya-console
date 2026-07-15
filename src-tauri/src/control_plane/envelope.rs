@@ -82,11 +82,33 @@ use serde_json::Value;
 use crate::control_plane::redact::{allowlist_for, operator_pseudonym};
 use kriya_verify::{
     canonical_json_bytes, chain_continues_from, envelope_canonical_bytes, is_destructive,
-    merkle_root, minimize_window, sha256_hex, verify_value, AttestationEnvelope, CompilerInfo,
-    Counts, Integrity, NonEgress, OperatorRollup, SignedEnvelope, SignerRollup, Window,
+    merkle_root, minimize_io, minimize_window, sha256_hex, verify_value, AttestationEnvelope,
+    CompilerInfo, Counts, Integrity, NonEgress, OperatorRollup, SignedEnvelope, SignerRollup,
+    Window,
 };
+#[cfg(test)]
+use kriya_verify::{IoDestinationPattern, UNLISTED_PATTERN};
 
 const ATTESTATION_ON_DEVICE: &str = "kriya.attestation.on_device";
+const DAY_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// Floor a Unix-epoch millisecond timestamp to the start of its UTC day. No calendar conversion
+/// needed — `1970-01-01T00:00:00Z` is already a day boundary, so every multiple of `DAY_MS` is one.
+fn floor_to_day_ms(ms: u64) -> u64 {
+    ms - (ms % DAY_MS)
+}
+
+/// Ceil a Unix-epoch millisecond timestamp to the start of the NEXT UTC day (or itself, if already
+/// exactly on a boundary) — the day-bucketing mitigation's window-end counterpart to
+/// [`floor_to_day_ms`].
+fn ceil_to_day_ms(ms: u64) -> u64 {
+    let floored = floor_to_day_ms(ms);
+    if floored == ms {
+        ms
+    } else {
+        floored + DAY_MS
+    }
+}
 const ENVELOPE_SCHEMA: &str = "kriya.envelope.v1";
 
 /// One source's new receipt lines for a window, plus the prior window's tail hash (to seed the
@@ -117,6 +139,14 @@ pub struct WindowInput {
     /// downlink's applied state (`policy::load_state()`). `None` pre-P3 / before any bundle has ever
     /// been applied — the envelope simply omits the field (byte-for-byte v1.0-identical).
     pub policy_state: Option<kriya_verify::PolicyStateEcho>,
+    /// The applied `io_verbosity` dial (doc 24 §4.5/§7.5, EG-4) — `"off"` | `"pattern-echo"`, resolved
+    /// by the caller from `policy::current_io_verbosity`. `"off"` (the default) means `io_destinations`
+    /// is never computed, byte-for-byte v1.1-identical.
+    pub io_verbosity: String,
+    /// The applied bundle's operator-authored egress destination patterns (`policy::
+    /// current_egress_patterns`) — the ONLY strings [`kriya_verify::minimize_io`] may ever echo for a
+    /// matched destination. Ignored when `io_verbosity` is `"off"`.
+    pub egress_patterns: Vec<String>,
 }
 
 /// Assemble + sign one `AttestationEnvelope` from a verified window. Reuses the shared trust core
@@ -163,6 +193,21 @@ pub fn build_signed_envelope(
 
     // 3. Minimized actions (drop-by-default) over verified receipts, at the applied verbosity dial.
     let actions = minimize_window(&verified_values, &allowlist_for(&input.envelope_verbosity));
+
+    // 3b. Pattern-echo fleet destination visibility (doc 24 §4.5/§7.5, EG-4) — `None` (the envelope
+    // omits the field entirely) unless the applied bundle's `io_verbosity` dial is `"pattern-echo"`.
+    let io_destinations =
+        (input.io_verbosity == "pattern-echo").then(|| minimize_io(&verified_values, &input.egress_patterns));
+    // Privacy mitigation (§7.5): once pattern-echo is active, this envelope's OWN window boundaries
+    // are day-bucketed (UTC) rather than the compiler's normal fine-grained cadence — per-device
+    // destination-pattern activity correlated against an hour-level window is exactly the
+    // surveillance-shaped signal the mitigation exists to blunt. Only the REPORTED window narrows;
+    // seq/chain continuity (the structural mechanics) are untouched.
+    let (window_from_ms, window_to_ms) = if io_destinations.is_some() {
+        (floor_to_day_ms(input.window_from_ms), ceil_to_day_ms(input.window_to_ms))
+    } else {
+        (input.window_from_ms, input.window_to_ms)
+    };
 
     // 4. Signer-fingerprint rollup + 5. operator-pseudonym rollup (HMAC; never the plaintext name).
     let mut by_signer: BTreeMap<String, u32> = BTreeMap::new();
@@ -227,8 +272,8 @@ pub fn build_signed_envelope(
         seq: input.seq,
         prev_envelope_hash: input.prev_envelope_hash.clone(),
         window: Window {
-            from_ms: input.window_from_ms,
-            to_ms: input.window_to_ms,
+            from_ms: window_from_ms,
+            to_ms: window_to_ms,
         },
         signers,
         actions,
@@ -254,6 +299,7 @@ pub fn build_signed_envelope(
             produced_ms: input.produced_ms,
         },
         policy_state: input.policy_state.clone(),
+        io_destinations,
     };
     let signature = hex::encode(key.sign(&envelope_canonical_bytes(&envelope)).to_bytes());
     Ok(SignedEnvelope {
@@ -314,6 +360,8 @@ mod builder_tests {
             }],
             envelope_verbosity: "standard".into(),
             policy_state: None,
+            io_verbosity: "off".into(),
+            egress_patterns: vec![],
         };
         let key = SigningKey::from_bytes(&[11u8; 32]);
         let signed = build_signed_envelope(&input, &key, &[3u8; 32]).expect("build");
@@ -368,6 +416,8 @@ mod builder_tests {
             }],
             envelope_verbosity: "standard".into(),
             policy_state: None,
+            io_verbosity: "off".into(),
+            egress_patterns: vec![],
         };
         let key = SigningKey::from_bytes(&[11u8; 32]);
         let signed = build_signed_envelope(&input, &key, &[3u8; 32]).unwrap();
@@ -379,6 +429,101 @@ mod builder_tests {
             signed.envelope.integrity.broken_sources,
             vec!["notes.jsonl@1"]
         );
+    }
+
+    /// A signed `kriya.io.egress.*` receipt line carrying a real `dest_host` param — for exercising
+    /// the pattern-echo path, which `signed_receipt_line` (empty `params`) can't.
+    fn io_receipt_line(host: &SigningKey, step: &str, action_id: &str, dest_host: &str) -> String {
+        let params = format!(r#"{{"dest_host":"{dest_host}"}}"#);
+        let fields = format!(
+            r#""step_id":{},"action_id":{},"params":{params},"success":{},"ts_ms":1"#,
+            serde_json::json!(step),
+            serde_json::json!(action_id),
+            !action_id.ends_with(".deny"),
+        );
+        let canon = format!("{{{fields}}}");
+        let sig = hex::encode(host.sign(canon.as_bytes()).to_bytes());
+        let pk = hex::encode(host.verifying_key().to_bytes());
+        format!(r#"{{{fields},"public_key":"{pk}","signature":"{sig}"}}"#)
+    }
+
+    #[test]
+    fn pattern_echo_off_by_default_omits_io_destinations() {
+        let host = SigningKey::from_bytes(&[44u8; 32]);
+        let l1 = io_receipt_line(&host, "s1", "kriya.io.egress.http.allow", "eu.vendor.com");
+        let input = WindowInput {
+            org_id: "acme".into(),
+            business_unit: None,
+            window_from_ms: 1000,
+            window_to_ms: 2000,
+            seq: 1,
+            prev_envelope_hash: None,
+            produced_ms: 2000,
+            sources: vec![SourceWindow { source: "x.jsonl".into(), lines: vec![l1], prev_tail_hash: None }],
+            envelope_verbosity: "standard".into(),
+            policy_state: None,
+            io_verbosity: "off".into(),
+            egress_patterns: vec!["*.vendor.com".to_string()],
+        };
+        let key = SigningKey::from_bytes(&[45u8; 32]);
+        let signed = build_signed_envelope(&input, &key, &[3u8; 32]).unwrap();
+        assert!(signed.envelope.io_destinations.is_none(), "off means the field is never computed");
+        // Unaffected: window boundaries stay exactly as given, no day-bucketing when off.
+        assert_eq!(signed.envelope.window.from_ms, 1000);
+        assert_eq!(signed.envelope.window.to_ms, 2000);
+    }
+
+    #[test]
+    fn pattern_echo_on_populates_io_destinations_and_day_buckets_the_window() {
+        let host = SigningKey::from_bytes(&[46u8; 32]);
+        let l1 = io_receipt_line(&host, "s1", "kriya.io.egress.http.allow", "eu.vendor.com");
+        let l2 = io_receipt_line(&host, "s2", "kriya.io.egress.mcp.deny", "unknown.example");
+        // A window that starts and ends mid-day — must be bucketed OUT to the surrounding day
+        // boundaries once pattern-echo engages.
+        let mid_day_1 = DAY_MS * 10 + 3_600_000; // day 10, 01:00
+        let mid_day_1_end = DAY_MS * 10 + 7_200_000; // day 10, 02:00
+        let input = WindowInput {
+            org_id: "acme".into(),
+            business_unit: None,
+            window_from_ms: mid_day_1,
+            window_to_ms: mid_day_1_end,
+            seq: 1,
+            prev_envelope_hash: None,
+            produced_ms: mid_day_1_end,
+            sources: vec![SourceWindow {
+                source: "x.jsonl".into(),
+                lines: vec![l1, l2],
+                prev_tail_hash: None,
+            }],
+            envelope_verbosity: "standard".into(),
+            policy_state: None,
+            io_verbosity: "pattern-echo".into(),
+            egress_patterns: vec!["*.vendor.com".to_string()],
+        };
+        let key = SigningKey::from_bytes(&[47u8; 32]);
+        let signed = build_signed_envelope(&input, &key, &[3u8; 32]).unwrap();
+
+        let io_destinations = signed.envelope.io_destinations.clone().expect("pattern-echo populates the field");
+        let by: std::collections::HashMap<&str, &IoDestinationPattern> =
+            io_destinations.iter().map(|p| (p.pattern.as_str(), p)).collect();
+        assert_eq!(by["*.vendor.com"].count, 1);
+        assert_eq!(by["*.vendor.com"].denied, 0);
+        assert_eq!(by[UNLISTED_PATTERN].count, 1);
+        assert_eq!(by[UNLISTED_PATTERN].denied, 1);
+
+        // Day-bucketed: from_ms floors to day 10's start, to_ms ceils to day 11's start.
+        assert_eq!(signed.envelope.window.from_ms, DAY_MS * 10);
+        assert_eq!(signed.envelope.window.to_ms, DAY_MS * 11);
+
+        assert!(verify_envelope(&serde_json::to_value(&signed).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn day_bucketing_helpers_are_idempotent_on_exact_boundaries() {
+        assert_eq!(floor_to_day_ms(DAY_MS * 5), DAY_MS * 5);
+        assert_eq!(ceil_to_day_ms(DAY_MS * 5), DAY_MS * 5);
+        assert_eq!(floor_to_day_ms(DAY_MS * 5 + 1), DAY_MS * 5);
+        assert_eq!(ceil_to_day_ms(DAY_MS * 5 + 1), DAY_MS * 6);
     }
 
     /// Emits a compact, builder-produced (real merkle_root) signed envelope on one line — the auditor
@@ -404,6 +549,8 @@ mod builder_tests {
             }],
             envelope_verbosity: "standard".into(),
             policy_state: None,
+            io_verbosity: "off".into(),
+            egress_patterns: vec![],
         };
         let signed =
             build_signed_envelope(&input, &SigningKey::from_bytes(&[11u8; 32]), &[3u8; 32])

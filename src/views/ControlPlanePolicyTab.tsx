@@ -29,6 +29,8 @@ function assembleDraftBundle(form: {
   governClaudeCode: GovernChoice;
   governHermes: GovernChoice;
   killSwitch: boolean;
+  ioVerbosity: string;
+  purposeStatement: string;
 }): { ok: true; text: string } | { ok: false; error: string } {
   let policy: unknown;
   let budgets: unknown;
@@ -69,6 +71,10 @@ function assembleDraftBundle(form: {
     // an off bundle's diff/hash never spuriously differs just because this field exists (see
     // `src/lib/policyBundle.ts`'s `PolicyBundle.kill_switch` doc comment).
     ...(form.killSwitch ? { kill_switch: true } : {}),
+    // Same omit-when-default treatment as kill_switch — "off" (io_verbosity) must never appear
+    // literally, matching the Rust `is_io_verbosity_off` skip_serializing_if.
+    ...(form.ioVerbosity !== "off" ? { io_verbosity: form.ioVerbosity } : {}),
+    ...(form.purposeStatement.trim() ? { purpose_statement: form.purposeStatement.trim() } : {}),
   };
   return { ok: true, text: JSON.stringify(shape, null, 2) };
 }
@@ -88,6 +94,8 @@ function assembleLatestText(bundle: PolicyBundleDraft): string {
       govern: bundle.govern ?? [],
       envelope_verbosity: bundle.envelope_verbosity ?? "standard",
       ...(bundle.kill_switch ? { kill_switch: true } : {}),
+      ...(bundle.io_verbosity && bundle.io_verbosity !== "off" ? { io_verbosity: bundle.io_verbosity } : {}),
+      ...(bundle.purpose_statement ? { purpose_statement: bundle.purpose_statement } : {}),
     },
     null,
     2,
@@ -116,6 +124,8 @@ export function ControlPlanePolicyTab() {
   const [governClaudeCode, setGovernClaudeCode] = useState<GovernChoice>("no-change");
   const [governHermes, setGovernHermes] = useState<GovernChoice>("no-change");
   const [killSwitch, setKillSwitch] = useState(false);
+  const [ioVerbosity, setIoVerbosity] = useState("off");
+  const [purposeStatement, setPurposeStatement] = useState("");
 
   const [orgKey, setOrgKey] = useState<OrgKeyInfo | null>(null);
   const [keygenBusy, setKeygenBusy] = useState(false);
@@ -140,6 +150,8 @@ export function ControlPlanePolicyTab() {
           setBudgetsJson(JSON.stringify(r.bundle.budgets, null, 2));
           setEnvelopeVerbosity(r.bundle.envelope_verbosity || "standard");
           setKillSwitch(r.bundle.kill_switch ?? false);
+          setIoVerbosity(r.bundle.io_verbosity || "off");
+          setPurposeStatement(r.bundle.purpose_statement ?? "");
         }
       })
       .catch((e) => {
@@ -165,6 +177,8 @@ export function ControlPlanePolicyTab() {
         governClaudeCode,
         governHermes,
         killSwitch,
+        ioVerbosity,
+        purposeStatement,
       }),
     [
       orgId,
@@ -177,6 +191,8 @@ export function ControlPlanePolicyTab() {
       governClaudeCode,
       governHermes,
       killSwitch,
+      ioVerbosity,
+      purposeStatement,
     ],
   );
 
@@ -221,6 +237,8 @@ export function ControlPlanePolicyTab() {
         ],
         envelopeVerbosity,
         killSwitch,
+        ioVerbosity,
+        purposeStatement: purposeStatement.trim() || null,
       });
       setPublishResult(result);
       // Refresh "latest" so a second publish diffs against what just landed.
@@ -362,6 +380,49 @@ export function ControlPlanePolicyTab() {
               policy/budgets below
             </span>
           </label>
+        </div>
+
+        <div
+          className="field"
+          style={{
+            marginBottom: 12,
+            padding: 10,
+            borderRadius: 6,
+            border: "1px solid var(--line-strong)",
+            background: ioVerbosity !== "off" ? "var(--warn-bg)" : undefined,
+          }}
+        >
+          <div style={{ display: "flex", gap: 12, alignItems: "flex-end" }}>
+            <div className="field" style={{ flex: 1 }}>
+              <label className="field-label" htmlFor="pol-io-verbosity">Fleet destination visibility (pattern-echo)</label>
+              <select id="pol-io-verbosity" value={ioVerbosity} onChange={(e) => setIoVerbosity(e.target.value)}>
+                <option value="off">off (default)</option>
+                <option value="pattern-echo">pattern-echo</option>
+              </select>
+            </div>
+            <div className="field" style={{ flex: 2 }}>
+              <label className="field-label" htmlFor="pol-purpose">Purpose statement (echoed in every export)</label>
+              <input
+                id="pol-purpose"
+                type="text"
+                placeholder="e.g. compliance/security evidence; never performance evaluation"
+                value={purposeStatement}
+                onChange={(e) => setPurposeStatement(e.target.value)}
+                disabled={ioVerbosity === "off"}
+              />
+            </div>
+          </div>
+          {ioVerbosity !== "off" && (
+            <p className={"small"} style={{ marginTop: 8 }}>
+              <span className="warn-text">
+                Devices start echoing which operator-authored destination pattern each egress call
+                matched (never a raw host) into their signed envelopes. This is new per-device
+                metadata — confirm your works-council/GDPR review is complete before publishing (see
+                TRUST.md). Small counts stay withheld in the fleet report until explicitly revealed,
+                and every reveal is itself a signed, chained event.
+              </span>
+            </p>
+          )}
         </div>
 
         <div style={{ display: "flex", gap: 12, marginBottom: 4 }}>
