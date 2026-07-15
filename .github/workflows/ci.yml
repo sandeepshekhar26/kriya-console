@@ -1,0 +1,36 @@
+name: CI
+
+# The trust spine, in public: the TypeScript verifier and the Rust signer must agree
+# byte-for-byte, and the types must check. A green badge here is the product's own claim,
+# independently re-runnable by anyone.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  trust-spine:
+    name: TS ↔ Rust trust spine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+
+      - name: TypeScript trust-spine tests (verifier ↔ signer parity, policy, compliance)
+        run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust shared verifier crate (kriya-verify)
+        run: cargo test -p kriya-verify
+        working-directory: src-tauri
