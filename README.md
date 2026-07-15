@@ -1,8 +1,10 @@
 # kriya Console
 
-**Proprietary — paid tier. Not open source.** All rights reserved; see [`LICENSE`](LICENSE).
+**Source-available** under the [Functional Source License](LICENSE) (FSL-1.1-ALv2): read it, run
+it, audit it — not to compete with it; each release becomes Apache-2.0 after two years.
 Built on the open-source [kriya](https://github.com/sandeepshekhar26/kriya) runtime (MIT).
-**The engine is open; the cockpit is paid.**
+**The engine is open; the cockpit is source-available — free tier free forever, paid features
+unlock with an offline license.**
 
 > **Your AI agents act on your machine. kriya controls what they can do — and gives you signed
 > proof of what they did.** Everything runs on your device or your own server. Nothing goes to
@@ -63,9 +65,8 @@ npm run tauri dev   # build + launch the desktop app
 npm test            # THE trust spine: TS verifier ↔ Rust signer byte parity
 ```
 
-New machine or new contributor? Start at [`SETUP.md`](SETUP.md). Strategy or product questions?
-Start at [`docs/ideas/README.md`](docs/ideas/README.md) — the repo, not memory, is the source of
-truth ([`CLAUDE.md`](CLAUDE.md)).
+New machine or new contributor? Start at [`SETUP.md`](SETUP.md). Every feature in plain words:
+[`docs/FEATURES.md`](docs/FEATURES.md). Release history: [`CHANGELOG.md`](CHANGELOG.md).
 
 ## What it does
 
@@ -113,11 +114,11 @@ truth ([`CLAUDE.md`](CLAUDE.md)).
 | **Org-wide evidence** | The export a CMMC assessor asks the *organization* for: fleet coverage (silent devices named honestly as red cells), AU-family + CM-family, computed across every machine. |
 | **Privacy by structure** | What leaves each device is a minimized, allowlisted summary — raw parameters and operator names **cannot** leave; the schema has no field to put them in. Operators become pseudonyms. Survives a works-council review. |
 
-### 6. Control what leaves the machine — egress governance 🔨 *(in build — the current engineering push; nothing in this section ships in v0.2.3)*
+### 6. Control what leaves the machine — egress governance 🟢 *(built and merged on `main`; ships in the next DMG, v0.2.4)*
 
-The next release closes the loop from *"what did the agent do"* to *"what did the agent send, and
+The egress pack closes the loop from *"what did the agent do"* to *"what did the agent send, and
 to whom"* — at full feature parity with the strongest egress tools, plus one thing nobody else
-has:
+has. All of it is implemented, tested, and merged; it is not in the v0.2.3 DMG.
 
 | Feature | In plain terms |
 |---|---|
@@ -131,13 +132,13 @@ has:
 | **Connector registry** | A new MCP server or tool is **disabled until a human approves it**, and tool descriptions are scanned for drift and poisoning. |
 | **Operation rails** | Allow or deny specific outbound API operations — down to the HTTP verb, path, or GraphQL mutation. |
 | **Credential brokering** | The agent holds a placeholder; the real secret is injected only at the moment of egress. The agent never sees your keys. |
-| **OS containment** | Launch agents inside a sandbox that *forces* their traffic through the governed lane — turning all of the above from "observed" into "enforced" for everything kriya launches. |
-| **Fleet egress** | The allowlist, the kill-switch, and the egress evidence, distributed and rolled up across the fleet. |
+| **OS containment** | `kriya-gateway run -- <agent>` launches an agent inside a macOS Seatbelt sandbox that *forces* its traffic through the governed lane — turning all of the above from "observed" into "enforced" for everything kriya launches. |
+| **Fleet egress + kill switch** | The allowlist, budgets, kill-switch, and egress evidence, distributed and rolled up across the fleet in the org-signed policy bundle. |
 
-Honest scope, stated up front: until containment lands, these controls cover the **governed
-lanes** (what routes through kriya's hook, gateway, and broker) — a determined agent spawning raw
-processes can bypass a lane; containment is what closes that. Status and design:
-[doc 24](docs/ideas/24-egress-study.md).
+Honest scope, stated up front: these controls cover the **governed lanes** (what routes through
+kriya's hook, gateway, and broker, plus anything launched under containment) — a determined agent
+spawning raw processes outside a contained session can bypass a lane, and the Coverage Map shows
+that honestly. Limits: [`docs/TRUST.md`](docs/TRUST.md).
 
 ## How it works
 
@@ -180,9 +181,9 @@ canonical:
   whoever controls its settings file has the last word there. kriya fails closed on its own errors.
 - **Evidence, not certification.** Every export says so in the footer. Controls kriya can't
   earn (e.g. OS-level audit-role separation, 3.3.9) are shown as permanent, visible gaps.
-- **No egress claims today.** Until the egress build ships, kriya does not claim SC-7, DLP, or
-  boundary enforcement — and even after, enforcement verbs stay scoped to the lanes that actually
-  enforce.
+- **Egress claims stay scoped.** The egress controls govern kriya's lanes (hook, gateway, broker,
+  contained sessions) — kriya does not claim host-wide DLP or network-boundary enforcement, and
+  enforcement verbs stay scoped to the lanes that actually enforce.
 
 ## Free vs paid
 
@@ -190,14 +191,14 @@ canonical:
 |---|---|---|
 | Monitor, Audit, Coverage Map | ✅ | ✅ |
 | Policy, Approvals, Budgets, Identity | ✅ | ✅ |
-| Govern All, Connections, guided setup | ✅ | ✅ |
+| Govern All, Connections, egress controls | ✅ | ✅ |
 | Auditor CLI | ✅ | ✅ |
 | Evidence export (5 frameworks) | — | ✅ |
 | Fleet cockpit + `kriyad` control plane | — | ✅ (`fleet-console`) |
 
 The license is an Ed25519-signed offline token — no phone-home, no accounts. Licensed via
-design-partner engagements today (not self-serve yet). Draft pricing:
-[`docs/PRICING.md`](docs/PRICING.md).
+design-partner engagements today (not self-serve yet) — pricing and contact at
+[kriyanative.com](https://kriyanative.com).
 
 ## How it compares
 
@@ -208,7 +209,7 @@ design-partner engagements today (not self-serve yet). Draft pricing:
 | Record is independently re-verifiable | ❌ trust us | ❌ trust us | some (signed logs) | ✅ offline, free CLI |
 | Sees agent *decisions* (hook seam), not just packets | ❌ | ❌ | ❌ | ✅ |
 | Maps evidence to CMMC / SOC 2 / ISO 42001 / EU AI Act | ❌ | ✅ cloud-resident | ❌ | ✅ on-device |
-| Proof is a precondition of the action | ❌ | ❌ | ❌ | ⭐ "no receipt, no egress" (in build) |
+| Proof is a precondition of the action | ❌ | ❌ | ❌ | ⭐ "no receipt, no egress" (merged; ships v0.2.4) |
 
 ## Who it's for
 
@@ -240,8 +241,8 @@ src/views/        Monitor · Coverage · Audit · Approvals · Policy · Budget 
 src-tauri/        Rust backend: audit · paid (evidence) · license · govern · onboarding · control_plane/
 src-tauri/crates/ kriya-verify (shared trust core) · kriya-aggregator (kriyad) · kriya-audit-cli
 test/             TS↔Rust parity suites (receipts · envelopes · drift · org evidence)
-docs/             TRUST · FEATURE-PROOF (the claim→proof ledger) · PRICING · ROADMAP ·
-                  ideas/ (strategy — start at its README) · gtm/
+docs/             TRUST (the honest trust model) · FEATURES (plain-words feature list) ·
+                  FEATURE-PROOF (the claim→proof ledger) · THREAT-MODEL-brokering · privacy/ · screenshots/
 ```
 
 ---

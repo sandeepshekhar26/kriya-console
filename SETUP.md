@@ -133,7 +133,7 @@ bash crates/kriya-aggregator/scripts/kriyd-ca.sh /tmp/ca --device <device_pub_he
 KRIYAD_CA_DIR=/tmp/ca \
 KRIYAD_LICENSE=crates/kriya-aggregator/fixtures/dev-control-plane-license.json \
 KRIYAD_BIND=127.0.0.1:8455 \
-target/debug/kriyad     # now on https:// with role gating (device≠operator, doc 22 §11-B2)
+target/debug/kriyad     # now on https:// with role gating (device≠operator certs)
 
 # an operator-role client (device certs are 403'd on fleet reads — that's P6 working):
 curl --cacert /tmp/ca/ca.pem --cert /tmp/ca/operator.pem --key /tmp/ca/operator.key \
@@ -152,7 +152,30 @@ Full customer-facing install (BOX systemd / K8S / air-gap) lives in
 
 ---
 
-## 4. Shipping a signed macOS release (maintainer only)
+## 4. Wire your agents into governance
+
+The fastest path is in the app: open the Console and click **Govern All** — it detects the agents
+on this Mac and wires hooks + gateway + policy for all of them, reversibly. What that means (and
+the manual equivalent) per agent:
+
+| Agent | How it's governed |
+|---|---|
+| **Claude Code** | Native hook (`kriya-hook`) written into Claude Code's settings — captures every tool call, including subagents and headless runs |
+| **Hermes** | `kriya-hermes-hook` registered under its `mcp_servers` |
+| **Any MCP server** | Routed through the `kriya-gateway` broker, zero changes to the server — add it in the **Connections** view (which also walks you through macOS permissions) |
+| **Desktop apps without an API** | The computer-use lane |
+| **Anything else** | `kriya-gateway run -- <command>` — contained launch: a generated macOS Seatbelt profile + recording CONNECT proxy force the process's traffic through the governed lane *(merged on `main`; in the DMG from v0.2.4)* |
+
+Verify it worked in the **Coverage Map** view — governed lanes go GREEN — and watch receipts land
+live in **Monitor** (they're written to `~/.kriya/audit/`). Rules for what agents may do are
+authored in the **Policy** view; risky actions queue in **Approvals**.
+
+End-user versions of these steps (with screenshots) live on the website:
+[kriyanative.com/docs/console-setup](https://kriyanative.com/docs/console-setup/).
+
+---
+
+## 5. Shipping a signed macOS release (maintainer only)
 
 Needs an Apple **Developer ID Application** cert in the login keychain + notarization creds (an App Store
 Connect API key `.p8`, or an Apple ID app-specific password). See the header of
@@ -176,7 +199,7 @@ spctl -a -vvv -t open --context context:primary-signature <dmg>   # → accepted
 
 ---
 
-## 5. Fresh-machine checklist / troubleshooting
+## 6. Fresh-machine checklist / troubleshooting
 
 - [ ] `experiment1` cloned next to `kriya-console` (or `KRIYA_REPO` set) — else `bundle-gateway.sh` fails.
 - [ ] `rustup target add aarch64-apple-darwin x86_64-apple-darwin` — else `--universal` release fails.
