@@ -1,8 +1,10 @@
 # kriya Console
 
-**Proprietary — paid tier. Not open source.** All rights reserved; see [`LICENSE`](LICENSE).
+**Source-available** under the [Functional Source License](LICENSE) (FSL-1.1-ALv2): read it, run
+it, audit it — not to compete with it; each release becomes Apache-2.0 after two years.
 Built on the open-source [kriya](https://github.com/sandeepshekhar26/kriya) runtime (MIT).
-**The engine is open; the cockpit is paid.**
+**The engine is open; the cockpit is source-available — free tier free forever, paid features
+unlock with an offline license.**
 
 > **Your AI agents act on your machine. kriya controls what they can do — and gives you signed
 > proof of what they did.** Everything runs on your device or your own server. Nothing goes to
