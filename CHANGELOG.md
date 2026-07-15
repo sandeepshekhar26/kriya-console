@@ -29,32 +29,58 @@ Everything below is merged on `main` and ships in the next DMG.
 
 ## v0.2.3 — 2026-07-10
 
-- **The fleet control plane** (paid): mTLS device uplink with signed DeviceInfo beacons, the fleet
-  cockpit view, org-key-signed policy distribution with anti-rollback (author → sign → publish →
-  device pull/verify/apply → signed "applied" receipt), the drift & governance view, org-wide
-  evidence export, and cert-role separation (a device credential cannot read the fleet; an
-  operator credential cannot post evidence).
-- **One-click Hermes governance** via the new `kriya-hermes-hook`.
-- **Govern All hardening** — every install path now wires policy plus a real approval default.
-- Refreshed in-app onboarding and marketing stills.
+The control-plane cockpit comes together — central governance, fleet drift, org-wide evidence.
 
-## v0.1.2 — 2026-07-06
+- **Central policy authoring + signed downlink** — author once, sign with your org key, publish to
+  your on-prem `kriyad`; each device pulls, re-verifies, and applies (anti-rollback included), and
+  the applied policy becomes part of that device's own signed evidence trail.
+- **Fleet drift & governance view** — per device: in-sync / behind / silent-behind, every verdict
+  re-verified locally from the device's own signed envelopes, never the server's word.
+- **Org-wide assessor-ready evidence export** — coverage-completeness + AU-family + CM controls
+  across the fleet, computed from re-verified envelopes.
+- **mTLS cert-role separation** — a device cert can't read the fleet; an operator cert can't post
+  device evidence.
+- `kriyad` ship skins: static binary, distroless image, systemd box install, cosign-signed
+  air-gap bundle, release CI gated on the trust-spine tests.
 
-- **Coverage Map** — the six-lane honest view of what is and isn't recorded, with signed
-  coverage-change receipts and TS↔Rust parity fixtures.
-- **CMMC / NIST 800-171 AU-family mapping** in the evidence export.
-- **Free auditor CLI published** — `kriya-audit` as a signed public download.
-- **kriyad release CI** — one tag builds every deployment skin (systemd box, container, air-gap
-  bundle), gated on the trust-spine tests, with a real-systemd verification job.
+## v0.2.2 / v0.2.1 — 2026-07-08
+
+- **Hermes native-tool governance** via the new `kriya-hermes-hook` — terminal, file edits,
+  computer-use, browser automation, plus every MCP server it's attached to; one-click install
+  from Govern All. (v0.2.1 fixed Hermes detection: `mcp_servers` vs `mcpServers`.)
+
+## v0.2.0 — 2026-07-08
+
+- **Govern All** — one button detects every governable agent on the machine (Claude Code, Claude
+  Desktop, Hermes, desktop apps) and wires each through its seam: preview, apply, revert. Idempotent.
+- **Bundled `kriya-hook`** — the Console ships the Claude Code hooks adapter itself; no separate
+  install to govern native tools.
+- **Multi-agent Coverage Map** — lanes grouped per agent, with an honest "cloud, out of scope"
+  line for surfaces that execute off-device.
+- Compliance export names the distinct governed agents and cites the signed
+  coverage-completeness chain (NIST 800-171 3.3.1 / 3.3.4).
+
+## v0.1.2 — 2026-07-07
+
+- **NIST SP 800-171 / CMMC L2 AU-family mapping** (3.3.1–3.3.9, with 800-53 crosswalk) in the
+  evidence export — every status derived from re-verified receipts, never hard-coded.
+- Notarized universal (Intel + Apple Silicon) DMG.
+
+## v0.1.1 — 2026-07-03
+
+- **The Coverage Map** — six lanes, three states, signed into its own hash chain so a stopped
+  watcher is visible by absence, not a quiet nothing.
+- `kriya-hook` shipped in the public runtime; the gateway's remote-MCP broker (hosted MCP servers
+  over HTTP/SSE).
 
 ## v0.1.0 — 2026-07-01
 
-- First **signed + notarized universal macOS DMG** (Apple Silicon + Intel).
-- The Console core: Monitor, Audit, Policy, Approvals, Budgets, Identity, Reports — every view
-  computed from Ed25519-signed, hash-chained receipts re-verified on device.
+- First public release: the live governance Monitor, offline receipt verification, Connections
+  manager, guided first-run setup — signed with our Apple Developer ID and notarized by Apple.
+- The free **`kriya-audit` CLI** published alongside — verify any signed receipt log offline,
+  independent of the Console.
 - The trust spine: byte-for-byte parity between the TypeScript verifier and the Rust signer,
   enforced by `npm test`.
-- `kriyad` aggregator ship skins: static-musl binary, distroless image, systemd box install,
-  cosign-signed air-gap bundle; end-to-end pilot demo (air-gap ingest → mTLS serve → offline
-  auditor re-verification).
-- First-run setup wizard, clean shippable build, app icon, screenshot pipeline.
+
+Every tagged release (notarized DMG + SHA-256) lives on
+[GitHub Releases](https://github.com/sandeepshekhar26/kriya/releases), tagged `console-vX.Y.Z`.
