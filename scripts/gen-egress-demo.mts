@@ -2,7 +2,7 @@
 //
 //   npm run gen:egress-demo
 //
-// Produces docs/gtm/samples/egress-receipt-demo/{kriya-egress-receipts.html, receipts.jsonl, README.md}:
+// Produces docs/samples/egress-receipt-demo/{kriya-egress-receipts.html, receipts.jsonl, README.md}:
 // 7 Ed25519-signed, hash-chained, egress-shaped receipts on the EXISTING schema (the kriya.io.*
 // vocabulary, §4.2 — no schema change), that re-verify themselves offline in the browser using the
 // Console's REAL verifier (src/lib/verify.ts, bundled into the page by esbuild) plus the shared TS
@@ -268,7 +268,7 @@ Each \`kriya.io.*\` receipt carries \`hash_scheme\` (\`wire-bytes\` on the gatew
 1. **In the browser** — open \`kriya-egress-receipts.html\`. No server, no network.
 2. **With the open CLI** — \`kriya-audit receipts.jsonl\` (signature-gated; also reports the chain):
    \`\`\`
-   ./dist-audit/kriya-audit docs/gtm/samples/egress-receipt-demo/receipts.jsonl
+   ./dist-audit/kriya-audit docs/samples/egress-receipt-demo/receipts.jsonl
    \`\`\`
 3. **Flip a byte** — edit any digit in \`receipts.jsonl\` and re-run the CLI, or edit the embedded
    block in the HTML and reopen it. Both go red.

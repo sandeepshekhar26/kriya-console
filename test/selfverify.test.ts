@@ -8,7 +8,7 @@ import { renderSelfVerifyingHtml, tamperOneByte } from "../src/lib/selfverify";
 import type { SignedReceipt } from "../src/lib/types";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const sampleDir = join(here, "../docs/gtm/samples/egress-receipt-demo");
+const sampleDir = join(here, "../docs/samples/egress-receipt-demo");
 const jsonlFile = readFileSync(join(sampleDir, "receipts.jsonl"), "utf8");
 const htmlFile = readFileSync(join(sampleDir, "kriya-egress-receipts.html"), "utf8");
 

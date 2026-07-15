@@ -7,10 +7,10 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const sampleDir = join(root, "docs/gtm/samples/au-family-sample");
+const sampleDir = join(root, "docs/samples/au-family-sample");
 const PII = /\b(alice|bob|carol)\b|@/i;
 
-describe("AU-family sample pack (docs/gtm/samples/au-family-sample)", () => {
+describe("AU-family sample pack (docs/samples/au-family-sample)", () => {
   it("evidence.json is PII-free and has at least one verified receipt", () => {
     const text = readFileSync(join(sampleDir, "evidence.json"), "utf8");
     expect(text).not.toMatch(PII);

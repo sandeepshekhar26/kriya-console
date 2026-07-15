@@ -131,7 +131,7 @@ pub struct IoDestinationPattern {
 }
 
 /// Match an operator-authored **host pattern** against a concrete host. Deliberately reimplemented
-/// here (this crate never depends on the runtime `kriya` crate — one-way dependency, see CLAUDE.md)
+/// here (this crate never depends on the runtime `kriya` crate — one-way dependency)
 /// rather than shared: same semantics as the runtime's own `permissions::host_matches` so a pattern
 /// authored in a `PolicyBundle`'s `policy.egress.rules[].host` and echoed here means the same thing
 /// on both sides of the wire.

@@ -56,7 +56,7 @@ const bundle = buildEvidence(rows, policy, {
   coverage: { snapshots: 14, chainOk: true },
 });
 
-const outDir = join(here, "../docs/gtm/samples/au-family-sample");
+const outDir = join(here, "../docs/samples/au-family-sample");
 mkdirSync(outDir, { recursive: true });
 writeFileSync(join(outDir, "evidence.md"), renderMarkdown(bundle));
 writeFileSync(join(outDir, "evidence.json"), renderJson(bundle));

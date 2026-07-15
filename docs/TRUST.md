@@ -231,7 +231,7 @@ kriya cannot verify it, and does not claim to.
 
 ## Fleet kill switch and the A2A seam (EG-F) — honest limits
 
-The signed `PolicyBundle` (doc 22 §5) an org publishes can carry `kill_switch: true` — a device
+The signed `PolicyBundle` an org publishes can carry `kill_switch: true` — a device
 applying that bundle replaces its policy with a fixed, maximally-restrictive deny-all fallback
 instead of the bundle's own `policy`/`budgets`. A device also engages the SAME fallback on its own,
 without any bundle saying so, the moment its currently-applied bundle's `expires_ms` passes — "the
@@ -242,7 +242,7 @@ stale-policy kill switch." Read this before treating either as a remote-shutdown
   air gap). A kill switch takes effect only as fast as the next pull, not instantly, and a device
   that cannot reach kriyad at all keeps running its LAST applied policy until that bundle itself
   goes stale.
-- **"kriyad authors nothing" applies here too** (doc 22 §3). The explicit switch is
+- **"kriyad authors nothing" applies here too**. The explicit switch is
   operator-authored and org-key-signed like every other bundle field; the staleness trigger is the
   device's own clock, not a kriyad decision — kriyad may be the very thing that's unreachable when
   it fires.
@@ -276,12 +276,12 @@ section, and get your works-council/GDPR review done, before turning it on for a
   `minimize_window` uses for the drop-by-default redaction floor — not a policy choice a future
   change could quietly widen.
 - **Raw-host mode does not exist in this product.** If a customer ever needs literal destination
-  hostnames centralized, that is doc 22 §2's own named, explicit, non-default product decision — it
+  hostnames centralized, that is its own named, explicit, non-default product decision — it
   is not a dial anywhere in the shipped code today, and turning pattern-echo on never approaches it.
 - **New metadata, even in pattern form.** Per-device destination-pattern activity, correlated over
   time, is new information about what one person's agent did — that is exactly the concern the EG-3
   privacy artifact pack (`docs/privacy/`) exists to walk through BEFORE deployment, and it is why
-  this feature is gated on that pack existing (doc 24 §7.5), not merely on demand.
+  this feature is gated on that pack existing, not merely on demand.
 - **Privacy mitigations that ship WITH the feature, not after:**
   - Envelope timestamps are DAY-BUCKETED (UTC) whenever pattern-echo is active, coarser than the
     Compiler's normal window cadence — correlating a destination pattern against an hour-level

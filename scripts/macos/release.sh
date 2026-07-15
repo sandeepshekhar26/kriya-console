@@ -174,7 +174,7 @@ echo "==> Artifact: $FINAL (+ .sha256)"
 # 8) Optional: publish to a GitHub Release.
 #    IMPORTANT: publish to the PUBLIC runtime repo, NOT this private Console repo — so the free-tier
 #    download is publicly fetchable (no auth) AND GitHub meters every fetch (asset.downloadCount = the
-#    traction number; see docs/ideas/SHIP-ROADMAP.md HOST-1). `gh` defaults to the current repo's origin
+#    traction number). `gh` defaults to the current repo's origin
 #    (private kriya-console), so we pass -R explicitly. Console releases are namespaced `console-v*` so
 #    they never collide with the runtime's own tags in the shared repo.
 if [ "$GH_RELEASE" -eq 1 ]; then

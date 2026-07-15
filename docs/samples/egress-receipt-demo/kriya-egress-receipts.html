@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>kriya — governed egress receipts (verifies itself)</title>
+<style>:root {
+  color-scheme: light dark;
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #1a1d21; --muted: #5b6470; --line: #e2e6ea;
+  --accent: #2f6feb; --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --ok-bg: #e7f6ec; --ok-ink: #0f7a37; --ok-line: #b6e2c6;
+  --bad-bg: #fdeaea; --bad-ink: #c0322b; --bad-line: #f3c2bf;
+  --warn-bg: #fdf4e3; --warn-ink: #9a6a10; --warn-line: #f0dcae;
+  --neutral-bg: #eef1f4; --neutral-ink: #45505c;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171b; --panel: #1c2026; --ink: #e8ebee; --muted: #98a2ad; --line: #2a2f36;
+    --accent: #5b8cf0;
+    --ok-bg: #102c1b; --ok-ink: #55d089; --ok-line: #1f5236;
+    --bad-bg: #331817; --bad-ink: #f08a83; --bad-line: #63302c;
+    --warn-bg: #2e2611; --warn-ink: #e0b357; --warn-line: #574716;
+    --neutral-bg: #232830; --neutral-ink: #aeb8c2;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+.wrap { max-width: 900px; margin: 0 auto; padding: 24px 16px 48px; }
+header.doc { margin-bottom: 18px; }
+header.doc h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: -0.01em; }
+header.doc .sub { color: var(--muted); font-size: 13px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+#app { margin: 16px 0; }
+.verdict {
+  display: flex; gap: 12px; align-items: flex-start; padding: 16px 18px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--neutral-bg);
+}
+.verdict .icon { font-size: 22px; line-height: 1.1; }
+.verdict .headline { font-weight: 650; font-size: 16px; }
+.verdict .detail { color: var(--muted); font-size: 13.5px; margin-top: 3px; }
+.verdict.ok { background: var(--ok-bg); border-color: var(--ok-line); }
+.verdict.ok .headline, .verdict.ok .icon { color: var(--ok-ink); }
+.verdict.bad { background: var(--bad-bg); border-color: var(--bad-line); }
+.verdict.bad .headline, .verdict.bad .icon { color: var(--bad-ink); }
+.verdict.warn { background: var(--warn-bg); border-color: var(--warn-line); }
+.verdict.warn .headline, .verdict.warn .icon { color: var(--warn-ink); }
+.verdict ul { margin: 8px 0 0; padding-left: 18px; }
+.verdict li { font-size: 13px; margin: 2px 0; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+button {
+  font: inherit; font-size: 13.5px; font-weight: 550; cursor: pointer;
+  background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 13px;
+}
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: default; }
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+table { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 640px; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { color: var(--muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+tr:last-child td { border-bottom: none; }
+td.host { font-family: var(--mono); font-size: 12px; }
+td.bytes { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; }
+.badge.allow { background: var(--ok-bg); color: var(--ok-ink); }
+.badge.deny { background: var(--bad-bg); color: var(--bad-ink); }
+.badge.approve { background: var(--warn-bg); color: var(--warn-ink); }
+.sig.ok { color: var(--ok-ink); font-weight: 650; }
+.sig.bad { color: var(--bad-ink); font-weight: 650; }
+.dir { color: var(--muted); }
+pre.raw {
+  margin: 12px 0 0; padding: 14px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 12px; overflow-x: auto; font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+  white-space: pre; color: var(--ink);
+}
+footer.note {
+  margin-top: 24px; padding: 16px 18px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 12px; color: var(--muted); font-size: 12.5px; line-height: 1.6;
+}
+footer.note b { color: var(--ink); }
+.legend { color: var(--muted); font-size: 12px; margin-top: 10px; }
+@media (max-width: 420px) {
+  .wrap { padding: 16px 10px 40px; }
+  header.doc h1 { font-size: 18px; }
+}</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="doc">
+    <h1>kriya — governed egress receipts (verifies itself)</h1>
+    <div class="sub">kriya governed-egress sample · synthetic dataset (2026-06) · verifies offline in your browser — no server, no network</div>
+  </header>
+  <main id="app">
+    <div class="verdict warn">
+      <div class="icon">…</div>
+      <div>
+        <div class="headline">Verifying…</div>
+        <div class="detail">Re-checking every signature and the hash-chain, locally.</div>
+      </div>
+    </div>
+    <noscript>
+      <div class="verdict warn" style="margin-top:12px">
+        <div class="icon">⚠</div>
+        <div><div class="headline">JavaScript is off</div><div class="detail">Live verification needs JavaScript. The receipts are embedded below and can be re-verified with the open <code>kriya-audit</code> CLI.</div></div>
+      </div>
+    </noscript>
+  </main>
+  <footer class="note">These are governed-lane records: kriya signs the calls it proxies (MCP connectors, tool calls). Host-level egress — a spawned curl, a subprocess, a stdio server's own outbound HTTP — is the watcher layer, not claimed here. Full-fidelity records stay on the device; only minimized counts ever leave it. Flip any byte in this file and the verdict below goes red — that's the point.</footer>
+</div>
+<script type="application/json" id="kriya-receipts">
+{"step_id":"kriya-io-0001","action_id":"kriya.io.egress.mcp.allow","params":{"corr":"act-0001","dest_host":"api.vendor-crm.example","dest_kind":"mcp","method":"tools/call","bytes_out":4300,"bytes_in":18240,"content_sha256":"3f8dade3209fc0c05a508679dd1ca5d1875c0926dd1e6ade4b3327751944b86b","hash_scheme":"wire-bytes","policy_rule":"*.vendor-crm.example","decision":"allow","synthetic":true},"success":true,"ts_ms":1781700000000,"actor":{"agent":"claude-code","user":"platform-eng"},"public_key":"21544be1e9da180df80b8f81f60733741e9959a079eb1318ca665ee4d9c50bab","signature":"5a66e0365639d205bca0177b39e79021034f82f3bc1f6d7609bdca2bd6374c503e37bd1bb6777118b9d5a726d27b03cc0363652bbb867466a2afaef9139c4400"}
+{"step_id":"kriya-io-0002","action_id":"kriya.io.ingress.mcp.allow","params":{"corr":"act-0002","dest_host":"api.vendor-crm.example","dest_kind":"mcp","method":"tools/call","bytes_out":0,"bytes_in":18240,"content_sha256":"ca8a8290ee55c19d6292d96f0b95b3a83dea8868f9ed89496fa40bd5d7970e89","hash_scheme":"wire-bytes","policy_rule":"*.vendor-crm.example","decision":"allow","synthetic":true},"success":true,"ts_ms":1781700137000,"actor":{"agent":"claude-code","user":"platform-eng"},"prev_hash":"94ec50e05c84ff713d23425c37dfcd6aca1799333b4e1e076cbbb0d73a3dc538","public_key":"21544be1e9da180df80b8f81f60733741e9959a079eb1318ca665ee4d9c50bab","signature":"ad6d92d845904db6607951b059dce9fcd3f649fb2dd10a4685e384cdb7ac62466dcd79f039ab31433721c66d310353266517306839b2886ab7b27bf4a406320c"}
+{"step_id":"kriya-io-0003","action_id":"kriya.io.egress.model.allow","params":{"corr":"act-0003","dest_host":"api.model-provider.example","dest_kind":"model","method":"messages","bytes_out":2100,"bytes_in":6400,"content_sha256":"5d89e318ba080ab393d17af04041ed5ee3e9e1836533a603f90869d805d0b561","hash_scheme":"wire-bytes","policy_rule":"api.model-provider.example","decision":"allow","synthetic":true},"success":true,"ts_ms":1781700274000,"actor":{"agent":"claude-code","user":"platform-eng"},"prev_hash":"6b3b3aacb5ee32a792f8ae2d95da530d6ede4b8740a7ad618465d3698c376cef","public_key":"21544be1e9da180df80b8f81f60733741e9959a079eb1318ca665ee4d9c50bab","signature":"0c5193ba6b2be5de085a37ce2934ab9e588e8a23bae0757360b96a280632660ff3d2eb41f75b7ec81c4676834b1bf6d613303478dd4b0e2ea27c902d99112a0d"}
+{"step_id":"kriya-io-0004","action_id":"kriya.io.egress.http.deny","params":{"corr":"act-0004","dest_host":"api.unknown-3p.example","dest_kind":"http","method":"POST","bytes_out":0,"bytes_in":0,"hash_scheme":"wire-bytes","policy_rule":"default-deny","decision":"deny","synthetic":true},"success":false,"ts_ms":1781700411000,"actor":{"agent":"claude-code","user":"platform-eng"},"prev_hash":"cd711f10a78f70d73e3b1f61a1cffb29467fd3f874519f2f52e01a1b22bb5524","public_key":"21544be1e9da180df80b8f81f60733741e9959a079eb1318ca665ee4d9c50bab","signature":"3ad8a73a73e6360f477dfed3a212fde3930624e09b94c4a1b0bf7a05a631b7a2bde05f31bb6571e2abb5cd73f66bb57cf8fa84d27fbb4d3981fe06f82230ed0c"}
+{"step_id":"kriya-io-0005","action_id":"kriya.io.egress.mcp.allow","params":{"corr":"act-0005","dest_host":"api.vendor-search.example","dest_kind":"mcp","method":"tools/call","bytes_out":880,"bytes_in":5120,"content_sha256":"f9113b5bd717cb88c63833a77b43edcd9aa5523e038a29f01860f6ba8c3c34bd","hash_scheme":"wire-bytes","policy_rule":"*.vendor-search.example","decision":"allow","synthetic":true},"success":true,"ts_ms":1781700548000,"actor":{"agent":"claude-code","user":"platform-eng"},"prev_hash":"786aecf458afbe429f84249ac11677a609971061eed328755bfb335caa1fcd2b","public_key":"21544be1e9da180df80b8f81f60733741e9959a079eb1318ca665ee4d9c50bab","signature":"d656568e3a4f7d0833cedb3512e062e42f7c397138f42137c77e7a5ac08edde22818d4067969da79187169aa4e40760f20993329983eb4248783a1203af25108"}
+{"step_id":"kriya-io-0006","action_id":"kriya.io.egress.http.approve","params":{"corr":"act-0006","dest_host":"hooks.partner-webhook.example","dest_kind":"http","method":"POST","bytes_out":1536,"bytes_in":64,"content_sha256":"a8d177d3a924e8c4aeb5185707f84de28485c065a3e994ed126126e1066e5abf","hash_scheme":"wire-bytes","policy_rule":"approve:hooks.partner-webhook.example","decision":"approve","approved_by":"secops-oncall","synthetic":true},"success":true,"ts_ms":1781700685000,"actor":{"agent":"claude-code","user":"platform-eng"},"prev_hash":"3848c04ec8ca217a705afd4aec70d46fe371e254bcd8f62d0b9afd4a10c53b00","public_key":"21544be1e9da180df80b8f81f60733741e9959a079eb1318ca665ee4d9c50bab","signature":"fe482cd753b45faaab64770935f5175a7b86ab97a6f6765dda98281e094324257bf53ff2ed41a4985e80ee134618d7b84009a2c7892613e6e31a5c6ce368c704"}
+{"step_id":"kriya-io-0007","action_id":"kriya.io.ingress.http.allow","params":{"corr":"act-0007","dest_host":"docs.partner-feed.example","dest_kind":"http","method":"GET","bytes_out":0,"bytes_in":9400,"content_sha256":"a057b6c1fceb8ae46bf41d14893098ec71a8451dbb63f972426533bd01200bc6","hash_scheme":"canonical-json","policy_rule":"docs.partner-feed.example","decision":"allow","synthetic":true},"success":true,"ts_ms":1781700822000,"actor":{"agent":"claude-code","user":"platform-eng"},"prev_hash":"5b648e16846462e5e413cf12f2e3109108b4939e978d500774ab24b98981c0a3","public_key":"21544be1e9da180df80b8f81f60733741e9959a079eb1318ca665ee4d9c50bab","signature":"47f72b66b6f76333aaac859f7ca4b5a22eecb2c98f8039d0dad56ffc9b66967c2ffb2d63bf9270fa6bfe94db04c92e457db65bb2dcd7bf8b286f44c3704ab408"}
+</script>
+<script>"use strict";(()=>{var _e=Object.defineProperty;var Te=(e,t,n)=>t in e?_e(e,t,{enumerable:!0,configurable:!0,writable:!0,value:n}):e[t]=n;var E=(e,t,n)=>Te(e,typeof t!="symbol"?t+"":t,n);var Re={p:0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffedn,n:0x1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3edn,h:8n,a:0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffecn,d:0x52036cee2b6ffe738cc740797779e89800700a4d4141d8ab75eb4dca135978a3n,Gx:0x216936d3cd6e53fec0a4e231fdd6dc5c692cc7609525a7b2c9562d608f25d51an,Gy:0x6666666666666666666666666666666666666666666666666666666666666658n},{p:g,n:H,Gx:re,Gy:se,a:V,d:X}=Re,$e=8n,z=32,F=64,m=(e="")=>{throw new Error(e)},Oe=e=>typeof e=="bigint",le=e=>typeof e=="string",ze=e=>e instanceof Uint8Array||ArrayBuffer.isView(e)&&e.constructor.name==="Uint8Array",$=(e,t)=>!ze(e)||typeof t=="number"&&t>0&&e.length!==t?m("Uint8Array expected"):e,C=e=>new Uint8Array(e),G=e=>Uint8Array.from(e),fe=(e,t)=>e.toString(16).padStart(t,"0"),D=e=>Array.from($(e)).map(t=>fe(t,2)).join(""),k={_0:48,_9:57,A:65,F:70,a:97,f:102},oe=e=>{if(e>=k._0&&e<=k._9)return e-k._0;if(e>=k.A&&e<=k.F)return e-(k.A-10);if(e>=k.a&&e<=k.f)return e-(k.a-10)},q=e=>{let t="hex invalid";if(!le(e))return m(t);let n=e.length,r=n/2;if(n%2)return m(t);let o=C(r);for(let s=0,c=0;s<r;s++,c+=2){let a=oe(e.charCodeAt(c)),d=oe(e.charCodeAt(c+1));if(a===void 0||d===void 0)return m(t);o[s]=a*16+d}return o},P=(e,t)=>$(le(e)?q(e):G($(e)),t),pe=()=>globalThis?.crypto,Ne=()=>pe()?.subtle??m("crypto.subtle must be defined"),Y=(...e)=>{let t=C(e.reduce((r,o)=>r+$(o).length,0)),n=0;return e.forEach(r=>{t.set(r,n),n+=r.length}),t},He=(e=z)=>pe().getRandomValues(C(e)),I=BigInt,_=(e,t,n,r="bad number: out of range")=>Oe(e)&&t<=e&&e<n?e:m(r),i=(e,t=g)=>{let n=e%t;return n>=0n?n:t+n},Pe=e=>i(e,H),ue=(e,t)=>{(e===0n||t<=0n)&&m("no inverse n="+e+" mod="+t);let n=i(e,t),r=t,o=0n,s=1n,c=1n,a=0n;for(;n!==0n;){let d=r/n,l=r%n,f=o-c*d,p=s-a*d;r=n,n=l,o=c,s=a,c=f,a=p}return r===1n?i(o,t):m("no inverse")};var ie=e=>e instanceof S?e:m("Point expected"),j=2n**256n,w=class w{constructor(t,n,r,o){E(this,"ex");E(this,"ey");E(this,"ez");E(this,"et");let s=j;this.ex=_(t,0n,s),this.ey=_(n,0n,s),this.ez=_(r,1n,s),this.et=_(o,0n,s),Object.freeze(this)}static fromAffine(t){return new w(t.x,t.y,1n,i(t.x*t.y))}static fromBytes(t,n=!1){let r=X,o=G($(t,z)),s=t[31];o[31]=s&-129;let c=W(o);_(c,0n,n?j:g);let d=i(c*c),l=i(d-1n),f=i(r*d+1n),{isValid:p,value:h}=Ce(l,f);p||m("bad point: y not sqrt");let b=(h&1n)===1n,y=(s&128)!==0;return!n&&h===0n&&y&&m("bad point: x==0, isLastByteOdd"),y!==b&&(h=i(-h)),new w(h,c,1n,i(h*c))}assertValidity(){let t=V,n=X,r=this;if(r.is0())throw new Error("bad point: ZERO");let{ex:o,ey:s,ez:c,et:a}=r,d=i(o*o),l=i(s*s),f=i(c*c),p=i(f*f),h=i(d*t),b=i(f*i(h+l)),y=i(p+i(n*i(d*l)));if(b!==y)throw new Error("bad point: equation left != right (1)");let x=i(o*s),A=i(c*a);if(x!==A)throw new Error("bad point: equation left != right (2)");return this}equals(t){let{ex:n,ey:r,ez:o}=this,{ex:s,ey:c,ez:a}=ie(t),d=i(n*a),l=i(s*o),f=i(r*a),p=i(c*o);return d===l&&f===p}is0(){return this.equals(R)}negate(){return new w(i(-this.ex),this.ey,this.ez,i(-this.et))}double(){let{ex:t,ey:n,ez:r}=this,o=V,s=i(t*t),c=i(n*n),a=i(2n*i(r*r)),d=i(o*s),l=t+n,f=i(i(l*l)-s-c),p=d+c,h=p-a,b=d-c,y=i(f*h),x=i(p*b),A=i(f*b),N=i(h*p);return new w(y,x,N,A)}add(t){let{ex:n,ey:r,ez:o,et:s}=this,{ex:c,ey:a,ez:d,et:l}=ie(t),f=V,p=X,h=i(n*c),b=i(r*a),y=i(s*p*l),x=i(o*d),A=i((n+r)*(c+a)-h-b),N=i(x-y),te=i(x+y),ne=i(b-f*h),Se=i(A*N),Be=i(te*ne),Ae=i(A*ne),Ee=i(N*te);return new w(Se,Be,Ee,Ae)}multiply(t,n=!0){if(!n&&(t===0n||this.is0()))return R;if(_(t,1n,H),t===1n)return this;if(this.equals(O))return Fe(t).p;let r=R,o=O;for(let s=this;t>0n;s=s.double(),t>>=1n)t&1n?r=r.add(s):n&&(o=o.add(s));return r}toAffine(){let{ex:t,ey:n,ez:r}=this;if(this.equals(R))return{x:0n,y:1n};let o=ue(r,g);return i(r*o)!==1n&&m("invalid inverse"),{x:i(t*o),y:i(n*o)}}toBytes(){let{x:t,y:n}=this.assertValidity().toAffine(),r=Ie(n);return r[31]|=t&1n?128:0,r}toHex(){return D(this.toBytes())}clearCofactor(){return this.multiply(I($e),!1)}isSmallOrder(){return this.clearCofactor().is0()}isTorsionFree(){let t=this.multiply(H/2n,!1).double();return H%2n&&(t=t.add(this)),t.is0()}static fromHex(t,n){return w.fromBytes(P(t),n)}get x(){return this.toAffine().x}get y(){return this.toAffine().y}toRawBytes(){return this.toBytes()}};E(w,"BASE"),E(w,"ZERO");var S=w,O=new S(re,se,1n,i(re*se)),R=new S(0n,1n,1n,0n);S.BASE=O;S.ZERO=R;var Ie=e=>q(fe(_(e,0n,j),F)).reverse(),W=e=>I("0x"+D(G($(e)).reverse())),v=(e,t)=>{let n=e;for(;t-- >0n;)n*=n,n%=g;return n},Le=e=>{let n=e*e%g*e%g,r=v(n,2n)*n%g,o=v(r,1n)*e%g,s=v(o,5n)*o%g,c=v(s,10n)*s%g,a=v(c,20n)*c%g,d=v(a,40n)*a%g,l=v(d,80n)*d%g,f=v(l,80n)*d%g,p=v(f,10n)*s%g;return{pow_p_5_8:v(p,2n)*e%g,b2:n}},ae=0x2b8324804fc1df0b2b4d00993dfbd7a72f431806ad2fe478c4ee1b274a0ea0b0n,Ce=(e,t)=>{let n=i(t*t*t),r=i(n*n*t),o=Le(e*r).pow_p_5_8,s=i(e*n*o),c=i(t*s*s),a=s,d=i(s*ae),l=c===e,f=c===i(-e),p=c===i(-e*ae);return l&&(s=a),(f||p)&&(s=d),(i(s)&1n)===1n&&(s=i(-s)),{isValid:l||f,value:s}},Je=e=>Pe(W(e)),Ze=(...e)=>J.sha512Async(...e);var Me=e=>Ze(e.hashable).then(e.finish);var be={zip215:!0},Ue=(e,t,n,r=be)=>{e=P(e,F),t=P(t),n=P(n,z);let{zip215:o}=r,s,c,a,d,l=Uint8Array.of();try{s=S.fromHex(n,o),c=S.fromHex(e.slice(0,z),o),a=W(e.slice(z,F)),d=O.multiply(a,!1),l=Y(c.toBytes(),s.toBytes(),t)}catch{}return{hashable:l,finish:p=>{if(d==null||!o&&s.isSmallOrder())return!1;let h=Je(p);return c.add(s.multiply(h,!1)).add(d.negate()).clearCofactor().is0()}}},he=async(e,t,n,r=be)=>Me(Ue(e,t,n,r));var J={sha512Async:async(...e)=>{let t=Ne(),n=Y(...e);return C(await t.digest("SHA-512",n.buffer))},sha512Sync:void 0,bytesToHex:D,hexToBytes:q,concatBytes:Y,mod:i,invert:ue,randomBytes:He};var L=8,Ve=256,ge=Math.ceil(Ve/L)+1,K=2**(L-1),Xe=()=>{let e=[],t=O,n=t;for(let r=0;r<ge;r++){n=t,e.push(n);for(let o=1;o<K;o++)n=n.add(t),e.push(n);t=n.double()}return e},ce,de=(e,t)=>{let n=t.negate();return e?n:t},Fe=e=>{let t=ce||(ce=Xe()),n=R,r=O,o=2**L,s=o,c=I(o-1),a=I(L);for(let d=0;d<ge;d++){let l=Number(e&c);e>>=a,l>K&&(l-=s,e+=1n);let f=d*K,p=f,h=f+Math.abs(l)-1,b=d%2!==0,y=l<0;l===0?r=r.add(de(b,t[p])):n=n.add(de(y,t[h]))}return{p:n,f:r}};J.sha512Async=async(...e)=>{let t=Uint8Array.from(J.concatBytes(...e)),n=await crypto.subtle.digest("SHA-512",t);return new Uint8Array(n)};var je=/^[0-9a-f]{64}$/,Ke=/^[0-9a-f]{128}$/,Ge=new TextEncoder;function De(e){let t=e.actor===void 0?"":',"actor":{"agent":'+JSON.stringify(e.actor.agent)+',"user":'+JSON.stringify(e.actor.user)+"}",n=e.prev_hash===void 0?"":',"prev_hash":'+JSON.stringify(e.prev_hash),r='{"step_id":'+JSON.stringify(e.step_id)+',"action_id":'+JSON.stringify(e.action_id)+',"params":'+Q(e.params)+',"success":'+(e.success?"true":"false")+',"ts_ms":'+ye(e.ts_ms)+t+n+"}";return Ge.encode(r)}function Q(e){if(e===null)return"null";switch(typeof e){case"boolean":return e?"true":"false";case"number":return ye(e);case"string":return JSON.stringify(e)}return Array.isArray(e)?"["+e.map(Q).join(",")+"]":"{"+Object.keys(e).sort().map(n=>JSON.stringify(n)+":"+Q(e[n])).join(",")+"}"}function ye(e){if(!Number.isFinite(e))throw new Error(`non-finite number in receipt: ${e}`);return String(e)}async function me(e){if(!je.test(e.public_key))return{ok:!1,reason:"public_key must be 32 bytes of lowercase hex"};if(!Ke.test(e.signature))return{ok:!1,reason:"signature must be 64 bytes of lowercase hex"};try{let t=De(e);return await he(e.signature,t,e.public_key)?{ok:!0}:{ok:!1,reason:"signature does not match receipt"}}catch(t){return{ok:!1,reason:t instanceof Error?t.message:String(t)}}}var qe=new TextEncoder;async function We(e){let t=await crypto.subtle.digest("SHA-256",qe.encode(e));return Array.from(new Uint8Array(t)).map(n=>n.toString(16).padStart(2,"0")).join("")}async function xe(e){let t=null;for(let[n,r]of e.entries()){let o;try{let s=JSON.parse(r);o=typeof s.prev_hash=="string"?s.prev_hash:null}catch{return n+1}if(o!==t)return n+1;t=await We(r)}return null}var Qe=["bytes_out","bytes_in","ts_ms","dest_host"];function ve(e){for(let r of Qe){let o=new RegExp(`("${r}":)(\\d+)`),s=o.exec(e);if(s){let d=s[2],l=d[0],p=(l==="9"?"8":String(Number(l)+1))+d.slice(1);return{line:e.replace(o,`$1${p}`),field:r,before:`${r}=${d}`,after:`${r}=${p}`}}let c=new RegExp(`("${r}":")([^"\\\\]+)(")`),a=c.exec(e);if(a){let d=a[2],f=(d[0]==="a"?"b":"a")+d.slice(1);return{line:e.replace(c,`$1${f}$3`),field:r,before:`${r}=${d}`,after:`${r}=${f}`}}}let t=/("signature":")([0-9a-f])([0-9a-f]{127}")/,n=t.exec(e);if(n){let r=n[2],o=r==="a"?"b":"a";return{line:e.replace(t,`$1${o}$3`),field:"signature",before:`signature[0]=${r}`,after:`signature[0]=${o}`}}throw new Error("tamperOneByte: no tamperable field found in line")}var pt=`
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #1a1d21; --muted: #5b6470; --line: #e2e6ea;
+  --accent: #2f6feb; --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --ok-bg: #e7f6ec; --ok-ink: #0f7a37; --ok-line: #b6e2c6;
+  --bad-bg: #fdeaea; --bad-ink: #c0322b; --bad-line: #f3c2bf;
+  --warn-bg: #fdf4e3; --warn-ink: #9a6a10; --warn-line: #f0dcae;
+  --neutral-bg: #eef1f4; --neutral-ink: #45505c;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171b; --panel: #1c2026; --ink: #e8ebee; --muted: #98a2ad; --line: #2a2f36;
+    --accent: #5b8cf0;
+    --ok-bg: #102c1b; --ok-ink: #55d089; --ok-line: #1f5236;
+    --bad-bg: #331817; --bad-ink: #f08a83; --bad-line: #63302c;
+    --warn-bg: #2e2611; --warn-ink: #e0b357; --warn-line: #574716;
+    --neutral-bg: #232830; --neutral-ink: #aeb8c2;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+.wrap { max-width: 900px; margin: 0 auto; padding: 24px 16px 48px; }
+header.doc { margin-bottom: 18px; }
+header.doc h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: -0.01em; }
+header.doc .sub { color: var(--muted); font-size: 13px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+#app { margin: 16px 0; }
+.verdict {
+  display: flex; gap: 12px; align-items: flex-start; padding: 16px 18px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--neutral-bg);
+}
+.verdict .icon { font-size: 22px; line-height: 1.1; }
+.verdict .headline { font-weight: 650; font-size: 16px; }
+.verdict .detail { color: var(--muted); font-size: 13.5px; margin-top: 3px; }
+.verdict.ok { background: var(--ok-bg); border-color: var(--ok-line); }
+.verdict.ok .headline, .verdict.ok .icon { color: var(--ok-ink); }
+.verdict.bad { background: var(--bad-bg); border-color: var(--bad-line); }
+.verdict.bad .headline, .verdict.bad .icon { color: var(--bad-ink); }
+.verdict.warn { background: var(--warn-bg); border-color: var(--warn-line); }
+.verdict.warn .headline, .verdict.warn .icon { color: var(--warn-ink); }
+.verdict ul { margin: 8px 0 0; padding-left: 18px; }
+.verdict li { font-size: 13px; margin: 2px 0; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+button {
+  font: inherit; font-size: 13.5px; font-weight: 550; cursor: pointer;
+  background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 13px;
+}
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: default; }
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+table { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 640px; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { color: var(--muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+tr:last-child td { border-bottom: none; }
+td.host { font-family: var(--mono); font-size: 12px; }
+td.bytes { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600; }
+.badge.allow { background: var(--ok-bg); color: var(--ok-ink); }
+.badge.deny { background: var(--bad-bg); color: var(--bad-ink); }
+.badge.approve { background: var(--warn-bg); color: var(--warn-ink); }
+.sig.ok { color: var(--ok-ink); font-weight: 650; }
+.sig.bad { color: var(--bad-ink); font-weight: 650; }
+.dir { color: var(--muted); }
+pre.raw {
+  margin: 12px 0 0; padding: 14px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 12px; overflow-x: auto; font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+  white-space: pre; color: var(--ink);
+}
+footer.note {
+  margin-top: 24px; padding: 16px 18px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 12px; color: var(--muted); font-size: 12.5px; line-height: 1.6;
+}
+footer.note b { color: var(--ink); }
+.legend { color: var(--muted); font-size: 12px; margin-top: 10px; }
+@media (max-width: 420px) {
+  .wrap { padding: 16px 10px 40px; }
+  header.doc h1 { font-size: 18px; }
+}
+`.trim();var et="kriya-receipts",tt="app",ee=0;function nt(){return(document.getElementById(et)?.textContent??"").split(`
+`).filter(n=>n.trim()!=="")}function rt(e){let t={dir:"?",kind:"?",decision:"?",host:"\u2014",bytesOut:null,bytesIn:null,ts:null,actionId:"(unparseable)",approvedBy:null,hashScheme:null},n=null;try{n=JSON.parse(e)}catch{return{receipt:null,view:t}}let r=n.params??{},o=String(n.action_id??"").split("."),s=o[0]==="kriya"&&o[1]==="io",c=d=>typeof d=="number"&&Number.isFinite(d)?d:null,a=d=>typeof d=="string"?d:null;return{receipt:n,view:{dir:s?o[2]??"?":"?",kind:a(r.dest_kind)??(s?o[3]??"?":"?"),decision:a(r.decision)??(s?o[4]??"?":"?"),host:a(r.dest_host)??"\u2014",bytesOut:c(r.bytes_out),bytesIn:c(r.bytes_in),ts:c(n.ts_ms),actionId:String(n.action_id??"(none)"),approvedBy:a(r.approved_by),hashScheme:a(r.hash_scheme)}}}function st(e){return e===null?"\u2014":new Date(e).toISOString().slice(0,19).replace("T"," ")+"Z"}function ot(e){let t=e.bytesOut===null?"\u2014":String(e.bytesOut),n=e.bytesIn===null?"\u2014":String(e.bytesIn);return`\u2191${t} \u2193${n}`}function u(e,t={},n){let r=document.createElement(e);for(let[o,s]of Object.entries(t))r.setAttribute(o,s);return n!==void 0&&(r.textContent=n),r}var ke=nt(),B=[...ke],T=null,M=!1,we=0;function Z(e,t,n,r,o=[]){let s=u("div",{class:`verdict ${e}`});s.append(u("div",{class:"icon"},t));let c=u("div");if(c.append(u("div",{class:"headline"},n)),c.append(u("div",{class:"detail"},r)),o.length){let a=u("ul");for(let d of o)a.append(u("li",{},d));c.append(a)}return s.append(c),s}function it(e,t){let n=u("div",{class:"tablewrap"}),r=u("table"),o=u("thead"),s=u("tr");for(let a of["Time (UTC)","Dir","Destination","Kind","Bytes","Decision","Signature"])s.append(u("th",{},a));o.append(s),r.append(o);let c=u("tbody");return e.forEach((a,d)=>{let l=u("tr");l.append(u("td",{},st(a.ts))),l.append(u("td",{class:"dir"},a.dir==="egress"?"egress \u2191":a.dir==="ingress"?"ingress \u2193":a.dir));let f=u("td",{class:"host"},a.host);a.hashScheme&&(f.title=`content hash scheme: ${a.hashScheme}`),l.append(f),l.append(u("td",{},a.kind)),l.append(u("td",{class:"bytes"},ot(a)));let p=u("td"),h=u("span",{class:`badge ${a.decision}`},a.decision);a.approvedBy&&(h.title=`approved_by: ${a.approvedBy}`),p.append(h),l.append(p);let b=t[d]??!1;l.append(u("td",{class:`sig ${b?"ok":"bad"}`},b?"\u2713 valid":"\u2717 invalid")),c.append(l)}),r.append(c),n.append(r),n}function at(){let e=u("div",{class:"controls"}),t=u("button",{},M?"Hide raw JSONL":"View raw JSONL");t.addEventListener("click",()=>{M=!M,U()}),e.append(t);let n=u("button",{class:"primary"},"Tamper one byte");T&&n.setAttribute("disabled","true"),n.addEventListener("click",()=>{let o=B[ee];if(o===void 0)return;let s=ve(o);B=B.map((c,a)=>a===ee?s.line:c),T=s,U()}),e.append(n);let r=u("button",{},"Restore");return T||r.setAttribute("disabled","true"),r.addEventListener("click",()=>{B=[...ke],T=null,U()}),e.append(r),e}async function U(){let e=document.getElementById(tt);if(!e)return;let t=++we;if(typeof crypto>"u"||!crypto.subtle){e.replaceChildren(Z("warn","\u26A0","WebCrypto blocked \u2014 not verified","This browser/context did not expose the cryptographic API (crypto.subtle) needed to check these signatures. Verification did NOT run \u2014 this is not a pass. Open the file directly in a current browser, or re-verify with the open kriya-audit CLI."));return}if(B.length===0){e.replaceChildren(Z("bad","\u2717","No receipts found","The embedded receipt block is empty or was removed."));return}let n=B.map(rt),r=await Promise.all(n.map(b=>b.receipt?me(b.receipt):Promise.resolve({ok:!1,reason:"line is not valid JSON"}))),o=await xe(B);if(t!==we)return;let s=r.map(b=>b.ok===!0),c=s.every(Boolean),a=o===null,d=at(),l=it(n.map(b=>b.view),s),f;if(c&&a)f=Z("ok","\u2713",`Verified offline \u2014 ${B.length} signed receipts`,"Every Ed25519 signature is valid and the hash-chain is intact. This ran entirely in your browser \u2014 nothing left your machine.");else{let b=[];T&&b.push(`You changed ${T.before} \u2192 ${T.after} on receipt #${ee+1}.`),n.forEach((y,x)=>{if(!s[x]){let A=r[x]?.ok===!1?r[x]?.reason:"signature does not match";b.push(`Receipt #${x+1} (${y.view.actionId}): signature invalid \u2014 ${A}.`)}}),o!==null&&b.push(`Hash-chain break at receipt #${o}: prev_hash \u2260 SHA-256 of the previous line (a line was altered, inserted, deleted, or reordered).`),f=Z("bad","\u2717","Tampering detected","At least one check failed. Two independent mechanisms caught it \u2014 the per-receipt signature and the hash-chain over the raw lines.",b)}let p=[f,d,l],h=u("div",{class:"legend"},"Signature = the receipt's own Ed25519 signature over its canonical bytes. Chain = each line's prev_hash is the SHA-256 of the previous raw line. Both re-checked here, offline.");p.push(h),M&&p.push(u("pre",{class:"raw"},B.join(`
+`))),e.replaceChildren(...p)}U();})();
+//! The receipt hash-chain check (R20) in TypeScript — the FIRST TS implementation of the rule the
+//! compiled `kriya_verify::chain_continues_from` (crates/kriya-verify/src/receipts.rs) enforces:
+//! each non-genesis line's `prev_hash` must equal the lowercase-hex SHA-256 of the PREVIOUS raw JSONL
+//! line's bytes, and the genesis (first) line must carry no `prev_hash`. A deletion, truncation,
+//! reorder, or single-byte edit of any line surfaces as a break.
+//!
+//! Pure and DOM-free on purpose, so the desktop `AuditView` and the offline self-verifying artifact
+//! (`src/selfverify/runtime.ts`) share this ONE implementation rather than each rolling their own — a
+//! second, subtly-different chain check is exactly how a false green ships.
+//! Parity: this mirrors `chain_continues_from(None, lines)` — the genesis seed is `null`. The
+//! *envelope* chain (`prev_envelope_hash`) is a different linkage with its own sibling primitive
+//! (`sha256Hex` in envelope.ts); this module is the RECEIPT-line chain.
+//! `renderSelfVerifyingHtml` — render a set of signed, hash-chained receipts into ONE self-contained
+//! HTML file that re-verifies itself in the browser, offline, with zero external references. The
+//! bundled verifier (esbuild IIFE of `src/selfverify/runtime.ts`) is inlined by the caller; this
+//! module only lays out the page and embeds the RAW JSONL verbatim (re-serializing would change the
+//! bytes the hash-chain committed to, so the embedded lines must be byte-identical to what was
+//! signed). It is the reusable core R5-1 later extends with an `EvidenceBundle` (see the payload type).
+//! GUARDRAIL (binding on R5-1): rendering REAL receipts through this template is gated on a redaction
+//! profile — actor pseudonymized, content_sha256 omitted or keyed, dest_host only where the export's
+//! stated purpose requires it — and the export itself is receipted. The shipped demo uses only
+//! SYNTHETIC receipts (dedicated published key, `params.synthetic: true`) so real and demo artifacts
+//! stay cryptographically distinguishable forever.
+//! The code that runs INSIDE the self-verifying artifact (bundled to a minified IIFE by esbuild and
+//! inlined into the HTML). It re-verifies the embedded receipts entirely on-device:
+//!   1. every signature, via the Console's real `verifyReceipt` (src/lib/verify.ts) — reused, not
+//!      re-implemented, so the artifact's verdict is the same code the desktop app runs;
+//!   2. the hash-chain, via `chainBreak` (src/lib/chain.ts) — the shared TS chain check.
+//! It NEVER fails open: if WebCrypto is unavailable (some `file://` / sandbox configs) it says so and
+//! renders a neutral "not verified" banner — never green. Any parse/verify surprise renders red.
+//! Vanilla DOM only; no framework. Kept deliberately small so the whole artifact stays well under the
+//! size budget and readable at 375px.
+/*! Bundled license information:
+
+@noble/ed25519/index.js:
+  (*! noble-ed25519 - MIT License (c) 2019 Paul Miller (paulmillr.com) *)
+*/
+</script>
+</body>
+</html>

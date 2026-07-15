@@ -209,4 +209,4 @@ spctl -a -vvv -t open --context context:primary-signature <dmg>   # → accepted
 - [ ] kriyad 403s every route under mTLS? Your client cert has no role SAN — reissue with `kriyd-ca.sh
       --operator`/`--device`, or set `KRIYAD_ALLOW_LEGACY_CERTS=1` during migration.
 
-Orientation for the codebase itself is in [`CLAUDE.md`](CLAUDE.md) and [`README.md`](README.md).
+Orientation for the codebase itself is in [`README.md`](README.md).

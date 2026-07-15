@@ -1,8 +1,8 @@
 //! kriya-verify — the shared, Tauri-free trust core for the kriya control plane.
 //!
 //! Extracted from the Console's compiled verifier so the device Console, the `kriyad` aggregator,
-//! and the auditor CLI all verify the SAME bytes with the SAME code (the `kriya-verify` seam named in
-//! CLAUDE.md). The canonical signed-byte format mirrors `crates/kriya/src/audit.rs` exactly (kept
+//! and the auditor CLI all verify the SAME bytes with the SAME code (the `kriya-verify` seam named in the
+//! workspace README). The canonical signed-byte format mirrors `crates/kriya/src/audit.rs` exactly (kept
 //! honest by the `canonical_parity` test): a receipt is signed as `serde_json::to_vec(&receipt)` with
 //! fields in declaration order — `step_id, action_id, params, success, ts_ms`, then optional `actor`
 //! (R8), then optional `prev_hash` (R20) — both skipped when absent, and `params` object keys

@@ -162,4 +162,3 @@ the one destination it was scoped for, and nothing else ever saw it."
 
 - [`TRUST.md`](TRUST.md) — the Console-wide trust and tamper-evidence claims this doc is a focused
   extension of.
-- `docs/ideas/24-egress-study.md` §11 B13 — the design decision this implements.

@@ -14,7 +14,7 @@ import { mkdirSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const PORT = 1456;
-const SHOTS = "docs/gtm/screenshots";
+const SHOTS = "docs/screenshots";
 mkdirSync(SHOTS, { recursive: true });
 
 const server = spawn("npx", ["vite", "--port", String(PORT), "--clearScreen", "false"], {

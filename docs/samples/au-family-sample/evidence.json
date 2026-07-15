@@ -1,0 +1,250 @@
+{
+  "generatedAt": "2026-07-06T00:00:00.000Z",
+  "organization": "Sample contractor — illustrative data",
+  "period": {
+    "from": "2026-06-17T12:40:00.000Z",
+    "to": "2026-06-17T13:46:48.000Z"
+  },
+  "integrity": {
+    "totalReceipts": 28,
+    "verified": 27,
+    "failed": 1,
+    "distinctSigners": 3
+  },
+  "attribution": {
+    "attributed": 27,
+    "coveragePct": 100,
+    "agents": [
+      "claude-desktop",
+      "cursor"
+    ],
+    "users": [
+      "fin-ops",
+      "platform-eng",
+      "sales-ops"
+    ]
+  },
+  "onDevice": {
+    "attestations": 0,
+    "sealedBackends": [],
+    "components": []
+  },
+  "humanOversight": {
+    "approvalGatedActions": [
+      "restart_service",
+      "scale_service",
+      "deploy"
+    ],
+    "denyByDefault": true,
+    "budgetCapPerMinute": 60
+  },
+  "actionInventory": [
+    {
+      "action": "categorize_transaction",
+      "count": 6,
+      "tier": "allow",
+      "destructive": false
+    },
+    {
+      "action": "update_contact",
+      "count": 3,
+      "tier": "allow",
+      "destructive": false
+    },
+    {
+      "action": "get_logs",
+      "count": 3,
+      "tier": "allow",
+      "destructive": false
+    },
+    {
+      "action": "create_note",
+      "count": 3,
+      "tier": "allow",
+      "destructive": false
+    },
+    {
+      "action": "list_transactions",
+      "count": 2,
+      "tier": "allow",
+      "destructive": false
+    },
+    {
+      "action": "list_contacts",
+      "count": 2,
+      "tier": "allow",
+      "destructive": false
+    },
+    {
+      "action": "list_services",
+      "count": 2,
+      "tier": "allow",
+      "destructive": false
+    },
+    {
+      "action": "get_balance",
+      "count": 2,
+      "tier": "allow",
+      "destructive": false
+    },
+    {
+      "action": "restart_service",
+      "count": 1,
+      "tier": "approval",
+      "destructive": false
+    },
+    {
+      "action": "list_deals",
+      "count": 1,
+      "tier": "allow",
+      "destructive": false
+    },
+    {
+      "action": "scale_service",
+      "count": 1,
+      "tier": "approval",
+      "destructive": false
+    },
+    {
+      "action": "deploy",
+      "count": 1,
+      "tier": "approval",
+      "destructive": false
+    }
+  ],
+  "controls": [
+    {
+      "framework": "EU AI Act",
+      "control": "Art. 12 — Record-keeping",
+      "requirement": "High-risk AI systems must automatically log events over their lifetime.",
+      "evidence": "27 signed receipt(s) verified, 1 failed/tampered; 3 signer key(s).",
+      "status": "partial"
+    },
+    {
+      "framework": "EU AI Act",
+      "control": "Art. 14 — Human oversight",
+      "requirement": "High-risk actions must be subject to effective human oversight.",
+      "evidence": "3 action(s) gated behind human approval: restart_service, scale_service, deploy. Deny-by-default: yes.",
+      "status": "satisfied"
+    },
+    {
+      "framework": "EU AI Act",
+      "control": "Art. 12(2) — Traceability",
+      "requirement": "Logging shall enable the traceability of the AI system's functioning appropriate to its intended purpose.",
+      "evidence": "100% of verified receipts attributed to an agent + operator (agents: claude-desktop, cursor).",
+      "status": "satisfied"
+    },
+    {
+      "framework": "EU AI Act",
+      "control": "Art. 26(6) — Deployer log retention",
+      "requirement": "Deployers of high-risk AI systems keep the automatically generated logs for an appropriate period (at least six months).",
+      "evidence": "28 receipt(s) retained locally as JSONL under the deployer's own control; kriya does not enforce or verify a specific retention schedule (e.g. the six-month minimum) — that is the deployer's responsibility.",
+      "status": "partial"
+    },
+    {
+      "framework": "SOC 2",
+      "control": "CC7.2 — Monitoring",
+      "requirement": "Monitor system components and detect anomalies / tampering.",
+      "evidence": "1 receipt(s) failed verification — tampering or corruption detected.",
+      "status": "partial"
+    },
+    {
+      "framework": "SOC 2",
+      "control": "CC7.3 — Security event evaluation",
+      "requirement": "The entity evaluates security events to determine whether they could or have resulted in a failure to meet objectives and, if so, takes action.",
+      "evidence": "Per-receipt verification failures and hash-chain-break flags surface the security-event signal; the evaluation and response process itself is organizational, outside kriya.",
+      "status": "partial"
+    },
+    {
+      "framework": "SOC 2",
+      "control": "CC8.1 — Change management",
+      "requirement": "The entity authorizes, designs, tests, approves, and implements changes.",
+      "evidence": "3 agent-driven change action(s) require human approval before execution: restart_service, scale_service, deploy. Deny-by-default: yes.",
+      "status": "satisfied"
+    },
+    {
+      "framework": "ISO 42001",
+      "control": "A.9 — Operation controls",
+      "requirement": "Operate the AI system under defined controls (policy, limits, oversight).",
+      "evidence": "Deny-by-default policy with 12 action(s) observed; budget cap 60/min.",
+      "status": "satisfied"
+    },
+    {
+      "framework": "ISO 42001",
+      "control": "A.6.2.6 — Operation and monitoring",
+      "requirement": "Define and implement the elements necessary for the ongoing operation and monitoring of the AI system, including logging.",
+      "evidence": "The signed receipt stream is the operation/monitoring log (27 verified of 28), surfaced live in the Console Monitor.",
+      "status": "partial"
+    },
+    {
+      "framework": "Data residency",
+      "control": "On-device processing",
+      "requirement": "Sensitive data is processed on-device with no remote egress.",
+      "evidence": "No on-device attestations in this trail.",
+      "status": "gap"
+    },
+    {
+      "framework": "NIST 800-171",
+      "control": "3.3.1 (AU.L2-3.3.1 · AU-2/3/12) — Audit record creation & retention",
+      "requirement": "Create and retain system audit logs/records to enable monitoring, analysis, investigation, and reporting of unlawful or unauthorized activity.",
+      "evidence": "28 signed receipt(s) retained across 1 app(s) and 2 governed agent(s) as a hash-chained local JSONL log; 1 failed verification; each record carries action id, parameters, timestamp, outcome, and signer. Completeness is itself attested: 14 signed coverage snapshot(s) (chain intact) record which lanes were governed over the window — what was and wasn't logged is provable, not asserted.",
+      "status": "partial"
+    },
+    {
+      "framework": "NIST 800-171",
+      "control": "3.3.2 (AU.L2-3.3.2 · AU-3) — Individual accountability",
+      "requirement": "Ensure the actions of individual system users can be uniquely traced to those users so they can be held accountable.",
+      "evidence": "100% of verified receipts carry a signed agent + individual-operator identity (operators: fin-ops, platform-eng, sales-ops).",
+      "status": "satisfied"
+    },
+    {
+      "framework": "NIST 800-171",
+      "control": "3.3.3 (AU.L2-3.3.3 · AU-2) — Review & update logged events",
+      "requirement": "Review and update logged events.",
+      "evidence": "12 distinct action type(s) captured across policy tiers (allow/approval/deny); the periodic review and update of which events to log is an organizational process outside kriya.",
+      "status": "partial"
+    },
+    {
+      "framework": "NIST 800-171",
+      "control": "3.3.4 (AU.L2-3.3.4 · AU-5) — Audit logging process failure alerting",
+      "requirement": "Alert in the event of an audit logging process failure.",
+      "evidence": "Per-receipt verification failures and hash-chain breaks surface live in the Console, and the Coverage Map flags silent lanes; no external paging/alerting integration exists. The signed coverage chain makes a stopped or silenced logging process visible by absence — a gap in the heartbeat chain, not a quiet nothing.",
+      "status": "partial"
+    },
+    {
+      "framework": "NIST 800-171",
+      "control": "3.3.5 (AU.L2-3.3.5 · AU-6(3)) — Correlate audit review & analysis",
+      "requirement": "Correlate audit record review, analysis, and reporting processes for investigation and response to indications of suspicious activity.",
+      "evidence": "Cross-app correlation on this machine (Audit view filtering across 1 app(s)) plus tamper flags support investigation; this is single-machine correlation, not cross-machine SIEM aggregation.",
+      "status": "partial"
+    },
+    {
+      "framework": "NIST 800-171",
+      "control": "3.3.6 (AU.L2-3.3.6 · AU-7) — Audit record reduction & report generation",
+      "requirement": "Provide audit record reduction and report generation to support on-demand analysis and reporting.",
+      "evidence": "This Markdown + JSON evidence bundle is itself the reduction/report artifact, generated on-demand from the signed trail and independently re-verifiable offline via kriya-audit.",
+      "status": "satisfied"
+    },
+    {
+      "framework": "NIST 800-171",
+      "control": "3.3.7 (AU.L2-3.3.7 · AU-8) — Clock synchronization for time stamps",
+      "requirement": "Provide a system capability that compares and synchronizes internal system clocks with an authoritative source for audit-record time stamps.",
+      "evidence": "Every receipt carries a host timestamp (ts_ms); clock synchronization against an authoritative source is OS-provided (NTP), outside kriya's control — this control is capped at partial regardless of trail size.",
+      "status": "partial"
+    },
+    {
+      "framework": "NIST 800-171",
+      "control": "3.3.8 (AU.L2-3.3.8 · AU-9) — Protect audit information & tools",
+      "requirement": "Protect audit information and audit logging tools from unauthorized access, modification, and deletion.",
+      "evidence": "1 receipt(s) failed verification — tampering detected; the detection control is functioning as intended, investigate the flagged record(s).",
+      "status": "partial"
+    },
+    {
+      "framework": "NIST 800-171",
+      "control": "3.3.9 (AU.L2-3.3.9 · AU-9(4)) — Limit audit-logging management to privileged users",
+      "requirement": "Limit management of audit logging functionality to a subset of privileged users.",
+      "evidence": "kriya's audit tooling runs under the operator's own OS account, and in-app roles are self-asserted (see docs/TRUST.md) — kriya enforces no privileged-user restriction on who can manage audit logging; this must be enforced by an OS-level or organizational access control.",
+      "status": "gap"
+    }
+  ]
+}

@@ -4,7 +4,7 @@
 # Claim (honest): every agent action is device-signed and RE-VERIFIED OFFLINE at ingest, so forged,
 # altered, deleted, or tail-truncated EVIDENCE is detectable — by an independent auditor, without
 # trusting the vendor or the network. It does NOT prove the action itself was safe; the guarantee
-# starts at the signing key. (See demo/STORY.md for the full beat sheet + honest caveats.)
+# starts at the signing key.
 #
 # Drives: kriyad (ingest + re-verify + serve) and kriya-audit (offline re-prover) — the shipped
 # binaries, nothing mocked. Recorded with VHS (demo/kriya-demo.tape).
