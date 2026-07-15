@@ -7,8 +7,8 @@ your own server — there is no vendor cloud to trust.
 
 Status labels, used honestly:
 
-- ✅ **Shipped** — in the current notarized DMG (v0.2.3).
-- 🟢 **Merged** — built, tested, and merged on `main`; ships in the next DMG (v0.2.4).
+- ✅ **Shipped** — in the current notarized DMG (v0.2.4).
+- 🟢 **Merged** — built, tested, and merged on `main`; ships in the next DMG.
 - 🧭 **Roadmap** — not built; we don't sell it.
 
 Every ✅/🟢 claim traces to a test, a signed sample, or a public release —
@@ -73,10 +73,10 @@ Every ✅/🟢 claim traces to a test, a signed sample, or a public release —
 - **Privacy by structure** — what leaves each device is a minimized, allowlisted summary. Raw
   parameters and operator names **cannot** leave: the schema has no field to put them in.
 
-## 6 · Control what leaves the machine — 🟢 merged, ships in v0.2.4
+## 6 · Control what leaves the machine — ✅ shipped in v0.2.4
 
 The egress pack closes the loop from *"what did the agent do"* to *"what did it send, and to
-whom."* All of it is built, tested, and merged on `main`; it ships in the next notarized DMG.
+whom."*
 
 - **Egress allowlist** — deny-by-default outbound rules: agents talk only to hosts you listed.
 - **"No receipt, no egress"** ⭐ — the inversion nobody else has: the signed receipt is a
@@ -103,7 +103,9 @@ whom."* All of it is built, tested, and merged on `main`; it ships in the next n
   *observed* into *enforced* for everything kriya launches.
 - **Fleet egress + kill switch** — the allowlist, budgets, kill-switch, and egress evidence,
   distributed and rolled up across the fleet under the same signed policy bundle.
-- **Fleet destination visibility** (pattern-echo) — 🧭 in review.
+- **Fleet destination visibility** — a privacy-minimized pattern-echo of destinations in the
+  fleet envelopes, so the cockpit can answer "which hosts is the fleet talking to" without raw
+  parameters ever leaving a device.
 
 **Honest scope, stated first:** these controls cover the governed lanes — what routes through
 kriya's hook, gateway, and broker, plus anything launched under containment. A determined agent

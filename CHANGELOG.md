@@ -3,9 +3,7 @@
 All notable changes to the Console and the `kriyad` control plane. Dates are release dates of the
 signed, notarized macOS DMG unless noted.
 
-## Unreleased (v0.2.4) — the egress pack
-
-Everything below is merged on `main` and ships in the next DMG.
+## v0.2.4 — 2026-07-15 — the egress pack
 
 - **Egress governance core** — per-destination allowlists (deny-by-default), byte budgets,
   fail-closed *"no receipt, no egress"* (the signed receipt is a precondition of the network call),
@@ -25,7 +23,8 @@ Everything below is merged on `main` and ships in the next DMG.
 - **Evidence & privacy** — egress control rows in the compliance export (scoped honestly to
   governed lanes), redaction manifest for egress receipts, and a customer privacy pack
   (`docs/privacy/`): DPIA template, employee notice, works-agreement clause.
-- In review: fleet destination visibility (pattern-echo, privacy-minimized).
+- **Fleet destination visibility** — privacy-minimized pattern-echo of destinations in fleet
+  envelopes (additive `io_destinations` field, sealed minimizer, per-bundle `io_verbosity`).
 
 ## v0.2.3 — 2026-07-10
 

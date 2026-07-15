@@ -10,8 +10,8 @@ unlock with an offline license.**
 > proof of what they did.** Everything runs on your device or your own server. Nothing goes to
 > our cloud, because we don't have one.
 
-**Current release: v0.2.3** — signed + notarized macOS app.
-[Download the latest DMG](https://github.com/sandeepshekhar26/kriya/releases/tag/console-v0.2.3) ·
+**Current release: v0.2.4** — signed + notarized macOS app, now with egress governance.
+[Download the latest DMG](https://github.com/sandeepshekhar26/kriya/releases/tag/console-v0.2.4) ·
 [kriyanative.com](https://kriyanative.com)
 
 ---
@@ -49,7 +49,7 @@ side as a signed, tamper-evident receipt you can re-verify yourself, offline.**
 
 **Use it (macOS):**
 
-1. [Download the DMG](https://github.com/sandeepshekhar26/kriya/releases/tag/console-v0.2.3) and open **kriya Console**.
+1. [Download the DMG](https://github.com/sandeepshekhar26/kriya/releases/tag/console-v0.2.4) and open **kriya Console**.
 2. Click **Govern All**. The Console detects the agents on your Mac (Claude Code, Hermes) and
    wires them into governance in one click — reversible, no config files to edit.
 3. Use your agents as normal. Watch the **Monitor** view fill with live, signed, verified receipts.
@@ -114,11 +114,11 @@ New machine or new contributor? Start at [`SETUP.md`](SETUP.md). Every feature i
 | **Org-wide evidence** | The export a CMMC assessor asks the *organization* for: fleet coverage (silent devices named honestly as red cells), AU-family + CM-family, computed across every machine. |
 | **Privacy by structure** | What leaves each device is a minimized, allowlisted summary — raw parameters and operator names **cannot** leave; the schema has no field to put them in. Operators become pseudonyms. Survives a works-council review. |
 
-### 6. Control what leaves the machine — egress governance 🟢 *(built and merged on `main`; ships in the next DMG, v0.2.4)*
+### 6. Control what leaves the machine — egress governance ✅ *(shipped in v0.2.4)*
 
 The egress pack closes the loop from *"what did the agent do"* to *"what did the agent send, and
 to whom"* — at full feature parity with the strongest egress tools, plus one thing nobody else
-has. All of it is implemented, tested, and merged; it is not in the v0.2.3 DMG.
+has.
 
 | Feature | In plain terms |
 |---|---|
@@ -209,7 +209,7 @@ design-partner engagements today (not self-serve yet) — pricing and contact at
 | Record is independently re-verifiable | ❌ trust us | ❌ trust us | some (signed logs) | ✅ offline, free CLI |
 | Sees agent *decisions* (hook seam), not just packets | ❌ | ❌ | ❌ | ✅ |
 | Maps evidence to CMMC / SOC 2 / ISO 42001 / EU AI Act | ❌ | ✅ cloud-resident | ❌ | ✅ on-device |
-| Proof is a precondition of the action | ❌ | ❌ | ❌ | ⭐ "no receipt, no egress" (merged; ships v0.2.4) |
+| Proof is a precondition of the action | ❌ | ❌ | ❌ | ⭐ "no receipt, no egress" |
 
 ## Who it's for
 
