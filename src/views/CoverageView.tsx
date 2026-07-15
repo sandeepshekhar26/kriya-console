@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { coverageStatus, isTauri, onAuditChanged, type CoverageStatus, type LaneInfo, type LaneState } from "../lib/tauri";
+import { coverageStatus, governAll, isTauri, onAuditChanged, type CoverageStatus, type LaneInfo, type LaneState } from "../lib/tauri";
 import { Icon } from "../components/Icon";
 import type { View } from "../components/Sidebar";
 
@@ -95,6 +95,7 @@ const PREVIEW_STATUS: CoverageStatus = {
   lastSnapshotMs: Date.now() - 2 * 3600e3,
   snapshotChainOk: true,
   snapshots: 14,
+  hookHealth: { status: "fresh" },
   agents: [
     {
       agent: "claude-code",
@@ -136,11 +137,22 @@ const STATE_BADGE: Record<LaneState, string> = { green: "ok", amber: "warn", gre
 export function CoverageView({ onNavigate }: { onNavigate: (v: View) => void }) {
   const live = isTauri();
   const [status, setStatus] = useState<CoverageStatus | null>(live ? null : PREVIEW_STATUS);
+  const [regoverning, setRegoverning] = useState(false);
 
   const refresh = useCallback(() => {
     if (!live) return;
     coverageStatus().then(setStatus).catch(() => {});
   }, [live]);
+
+  // Re-run Govern All to re-point Claude Code at this build's hook, then refresh so the banner clears.
+  const reGovern = useCallback(() => {
+    if (!live) return;
+    setRegoverning(true);
+    governAll()
+      .then(() => refresh())
+      .catch(() => {})
+      .finally(() => setRegoverning(false));
+  }, [live, refresh]);
 
   useEffect(() => {
     refresh();
@@ -177,6 +189,31 @@ export function CoverageView({ onNavigate }: { onNavigate: (v: View) => void }) 
           <span className="pill">{counts.grey} uncovered</span>
         </div>
       </header>
+
+      {status?.hookHealth?.status === "stale" && (
+        <section className="hook-stale-banner">
+          <h2>⚠ Claude Code is running an outdated kriya-hook</h2>
+          <p>
+            Claude Code is wired to a hook this version didn't ship
+            {status.hookHealth.reason === "missing-policy-flag"
+              ? " (installed before policy enforcement landed)"
+              : " (left over from an earlier install)"}
+            , so egress events — like the destinations of WebSearch and WebFetch — aren't being
+            recorded and the network-egress lane below stays grey. Re-run Govern All to point Claude
+            Code at this build's hook; it's reversible and changes nothing else.
+          </p>
+          {status.hookHealth.wiredPath && (
+            <p className="paths">
+              wired now: {status.hookHealth.wiredPath}
+              <br />
+              this build: {status.hookHealth.bundledPath}
+            </p>
+          )}
+          <button className="btn primary small" onClick={reGovern} disabled={regoverning || !live}>
+            {regoverning ? "Re-governing…" : "Re-run Govern All"}
+          </button>
+        </section>
+      )}
 
       <section className="panel-grid">
         {LANE_META.map((meta) => {

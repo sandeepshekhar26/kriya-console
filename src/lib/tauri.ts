@@ -73,6 +73,20 @@ export interface AgentCoverage {
   label: string;
   lanes: AgentLane[];
 }
+/** Whether Claude Code's wired kriya-hook matches the one this Console build ships. */
+export type HookStatus = "notConfigured" | "fresh" | "stale";
+/** Mirrors Rust `coverage::HookHealth`. UI-only advice (never in the signed snapshot): a `stale`
+ *  hook is one an in-place upgrade left pointing at an older kriya-hook that predates egress
+ *  capture — re-running Govern All re-points it. */
+export interface HookHealth {
+  status: HookStatus;
+  /** The binary actually wired into ~/.claude/settings.json. Present only when `stale`. */
+  wiredPath?: string | null;
+  /** The binary this build ships and would wire on a re-govern. Present only when `stale`. */
+  bundledPath?: string | null;
+  /** "path-mismatch" | "missing-policy-flag". Present only when `stale`. */
+  reason?: string | null;
+}
 export interface CoverageStatus {
   windowH: number;
   lanes: Record<string, LaneInfo>;
@@ -81,6 +95,8 @@ export interface CoverageStatus {
   snapshots: number;
   /** Per-agent coverage groups (Claude Code, Hermes) — a view layer over the same audit dir. */
   agents: AgentCoverage[];
+  /** Is Claude Code's wired hook the one this build ships? Flags a stale post-upgrade hook. */
+  hookHealth: HookHealth;
 }
 export const coverageStatus = () => invoke<CoverageStatus>("coverage_status");
 

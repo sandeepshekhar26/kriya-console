@@ -3,6 +3,15 @@
 All notable changes to the Console and the `kriyad` control plane. Dates are release dates of the
 signed, notarized macOS DMG unless noted.
 
+## v0.2.5 — 2026-07-15
+
+- **Stale-hook detection.** After an in-place upgrade, Claude Code can keep calling an *older*
+  `kriya-hook` (a leftover `cargo install`, or a pre-`--policy` wiring) that predates egress
+  capture — so WebSearch/WebFetch egress silently never records and the network-egress lane stays
+  grey. The Coverage view now compares the wired hook against the binary this build ships and, when
+  they differ, shows a warning with a one-click **Re-run Govern All** to re-point it. Previously the
+  app treated any `kriya-hook` string as healthy.
+
 ## v0.2.4 — 2026-07-15 — the egress pack
 
 - **Egress governance core** — per-destination allowlists (deny-by-default), byte budgets,

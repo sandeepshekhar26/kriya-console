@@ -92,6 +92,42 @@ pub struct LaneInfo {
     pub contained_session: Option<bool>,
 }
 
+/// Whether Claude Code's wired `kriya-hook` matches the hook this Console build actually ships.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub enum HookStatus {
+    /// No `kriya-hook` wired into Claude Code at all (the AMBER/GREY story, handled elsewhere).
+    NotConfigured,
+    /// Wired to the binary this build ships, with the modern flags — nothing to do.
+    Fresh,
+    /// Wired to an *older* kriya-hook (a different path, or a pre-`--policy` install). It predates
+    /// egress capture, so `kriya.io.egress.*` receipts never appear and the egress lane stays grey.
+    /// Re-running Govern All re-points it. This is the compensating signal for an in-place upgrade
+    /// that left Claude Code calling the previous version's hook.
+    Stale,
+}
+
+/// UI-only health of the Claude Code hook wiring vs. the bundled binary. Deliberately **not** part
+/// of [`LaneInfo`] / the signed coverage snapshot — it is a comparison against *this build's*
+/// sidecar path, pure device-local advice, and must never enter an envelope. Surfaced so an upgrade
+/// that left a stale hook wired is shown loudly instead of as a silently-grey egress lane.
+#[derive(Serialize, Clone, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct HookHealth {
+    pub status: HookStatus,
+    /// The binary path currently wired into `~/.claude/settings.json` (what actually runs). Set
+    /// only when `Stale`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wired_path: Option<String>,
+    /// The binary this Console build ships and would wire on a re-govern. Set only when `Stale`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bundled_path: Option<String>,
+    /// `"path-mismatch"` (points at a different binary) or `"missing-policy-flag"` (pre-B0 install
+    /// running the permissive default). Set only when `Stale`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// What the Coverage view renders (pure read — no side effects, no snapshot writes).
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -108,6 +144,8 @@ pub struct CoverageStatus {
     /// Per-agent coverage groups (GA-2) — Claude Code and Hermes on the same substrate, with the
     /// honest cloud line. A view layer over the same audit dir; not part of the signed snapshot.
     pub agents: Vec<AgentCoverage>,
+    /// Is Claude Code's wired hook the one this build ships? Flags a stale post-upgrade hook.
+    pub hook_health: HookHealth,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -226,6 +264,91 @@ fn state_of(fresh: bool, configured: bool) -> LaneState {
         (false, true) => LaneState::Amber,
         (false, false) => LaneState::Grey,
     }
+}
+
+/// Extract the wired `kriya-hook` command string from a parsed Claude Code settings value, if any.
+/// Walks `hooks.PreToolUse` then `hooks.PostToolUse` for the first command mentioning `kriya-hook`
+/// (which is never a substring of `kriya-hermes-hook`, so this stays Claude-Code-specific).
+fn wired_hook_command(v: &Value) -> Option<String> {
+    let hooks = v.get("hooks")?;
+    for event in ["PreToolUse", "PostToolUse"] {
+        let Some(groups) = hooks.get(event).and_then(Value::as_array) else {
+            continue;
+        };
+        for group in groups {
+            let Some(inner) = group.get("hooks").and_then(Value::as_array) else {
+                continue;
+            };
+            for h in inner {
+                if let Some(cmd) = h.get("command").and_then(Value::as_str) {
+                    if cmd.contains(HOOK_MARK_KRIYA) {
+                        return Some(cmd.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+const HOOK_MARK_KRIYA: &str = "kriya-hook";
+
+/// The binary path of a shell hook command — its first token, unquoted. Mirrors the single-quoting
+/// [`crate::govern`]'s `shell_quote` applies on install. Paths containing a literal `'` are
+/// pathological for a hook binary and only risk a benign false "stale" (re-govern is idempotent).
+fn first_shell_token(cmd: &str) -> String {
+    let cmd = cmd.trim_start();
+    if let Some(rest) = cmd.strip_prefix('\'') {
+        return rest.split('\'').next().unwrap_or(rest).to_string();
+    }
+    cmd.split_whitespace().next().unwrap_or("").to_string()
+}
+
+/// Pure core of [`hook_health`]: compare the wired hook command against the bundled binary path.
+/// String comparison is exact-right here — a fresh install writes the *same* `resolve_hook()` path
+/// this check reads, so they only differ when the wiring genuinely predates this build (an old
+/// install location, or a pre-`--policy` command). When the bundled path is unknown (dev with no
+/// staged sidecar) we return `Fresh` rather than nag a correctly-wired user.
+pub fn classify_hook_health(wired_cmd: Option<&str>, bundled: Option<&str>) -> HookHealth {
+    let fresh = HookHealth {
+        status: HookStatus::Fresh,
+        wired_path: None,
+        bundled_path: None,
+        reason: None,
+    };
+    let Some(cmd) = wired_cmd else {
+        return HookHealth {
+            status: HookStatus::NotConfigured,
+            ..fresh
+        };
+    };
+    let Some(bundled) = bundled.filter(|b| !b.is_empty()) else {
+        return fresh;
+    };
+    let wired = first_shell_token(cmd);
+    let reason = if wired != bundled {
+        "path-mismatch"
+    } else if !cmd.contains("--policy") {
+        "missing-policy-flag"
+    } else {
+        return fresh;
+    };
+    HookHealth {
+        status: HookStatus::Stale,
+        wired_path: Some(wired),
+        bundled_path: Some(bundled.to_string()),
+        reason: Some(reason.to_string()),
+    }
+}
+
+/// Is the wired Claude Code hook the one this build ships? Reads settings + compares to `bundled`
+/// (the current `resolve_hook()` path). See [`classify_hook_health`] for the (pure, tested) logic.
+pub fn hook_health(settings: Option<&Path>, bundled: Option<&str>) -> HookHealth {
+    let cmd = settings
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| wired_hook_command(&v));
+    classify_hook_health(cmd.as_deref(), bundled)
 }
 
 /// Classify the six lanes from an audit dir + the Claude settings file, against `now_ms` and a
@@ -884,6 +1007,8 @@ pub fn coverage_status() -> CoverageStatus {
         hermes_hook,
         hermes_gateway,
     );
+    let bundled_hook = crate::onboarding::resolve_hook().map(|(p, _)| p.to_string_lossy().into_owned());
+    let hook_health = hook_health(claude_settings_path().as_deref(), bundled_hook.as_deref());
     CoverageStatus {
         window_h: DEFAULT_WINDOW_H,
         lanes,
@@ -891,6 +1016,7 @@ pub fn coverage_status() -> CoverageStatus {
         snapshot_chain_ok: snapshots == 0 || chain_break(&text).is_none(),
         snapshots,
         agents,
+        hook_health,
     }
 }
 
@@ -1116,6 +1242,85 @@ mod tests {
         assert_eq!(lanes["claude-code-tools"].state, LaneState::Amber, "wired but silent");
         assert_eq!(lanes["remote-mcp"].state, LaneState::Amber);
         assert_eq!(lanes["desktop-apps"].state, LaneState::Grey, "hook config says nothing about AX");
+    }
+
+    #[test]
+    fn hook_health_fresh_when_wired_matches_bundled() {
+        let bundled = "/Applications/Kriya Console.app/Contents/MacOS/kriya-hook";
+        let cmd = format!("'{bundled}' pre --policy '/Users/x/.kriya/agent-policy.yaml' --approval gui");
+        let h = classify_hook_health(Some(&cmd), Some(bundled));
+        assert_eq!(h.status, HookStatus::Fresh);
+        assert!(h.reason.is_none() && h.wired_path.is_none());
+    }
+
+    #[test]
+    fn hook_health_stale_on_path_mismatch() {
+        // A pre-v0.2.0 `cargo install` wired ~/.cargo/bin/kriya-hook — a different binary the new
+        // DMG never replaces, so it keeps running (no egress capture) until a re-govern.
+        let cmd = "/Users/x/.cargo/bin/kriya-hook pre --policy '/p.yaml' --approval gui";
+        let bundled = "/Applications/Kriya Console.app/Contents/MacOS/kriya-hook";
+        let h = classify_hook_health(Some(cmd), Some(bundled));
+        assert_eq!(h.status, HookStatus::Stale);
+        assert_eq!(h.reason.as_deref(), Some("path-mismatch"));
+        assert_eq!(h.wired_path.as_deref(), Some("/Users/x/.cargo/bin/kriya-hook"));
+        assert_eq!(h.bundled_path.as_deref(), Some(bundled));
+    }
+
+    #[test]
+    fn hook_health_stale_when_pre_b0_install_lacks_policy_flag() {
+        // Right binary, but an old command that never passed --policy (ran the permissive default).
+        let bundled = "/Applications/Kriya Console.app/Contents/MacOS/kriya-hook";
+        let cmd = format!("'{bundled}' pre");
+        let h = classify_hook_health(Some(&cmd), Some(bundled));
+        assert_eq!(h.status, HookStatus::Stale);
+        assert_eq!(h.reason.as_deref(), Some("missing-policy-flag"));
+    }
+
+    #[test]
+    fn hook_health_not_configured_and_never_nags_when_bundled_unknown() {
+        assert_eq!(
+            classify_hook_health(None, Some("/x/kriya-hook")).status,
+            HookStatus::NotConfigured
+        );
+        // dev / sidecar not staged: can't prove staleness, so don't send a correct setup in circles
+        assert_eq!(classify_hook_health(Some("/a/kriya-hook pre"), None).status, HookStatus::Fresh);
+        assert_eq!(classify_hook_health(Some("/a/kriya-hook pre"), Some("")).status, HookStatus::Fresh);
+    }
+
+    #[test]
+    fn wired_hook_command_finds_claude_hook_and_ignores_hermes() {
+        let v: Value = serde_json::from_str(
+            r#"{ "hooks": { "PreToolUse": [{ "hooks": [{ "type":"command", "command":"'/a/kriya-hook' pre --policy '/p'" }] }] } }"#,
+        ).unwrap();
+        assert_eq!(wired_hook_command(&v).as_deref(), Some("'/a/kriya-hook' pre --policy '/p'"));
+        // kriya-hook is NOT a substring of kriya-hermes-hook, so a hermes-only blob must not match.
+        let hermes: Value = serde_json::from_str(
+            r#"{ "hooks": { "PreToolUse": [{ "hooks": [{ "type":"command", "command":"kriya-hermes-hook pre" }] }] } }"#,
+        ).unwrap();
+        assert_eq!(wired_hook_command(&hermes), None);
+    }
+
+    #[test]
+    fn first_shell_token_unquotes_paths_with_spaces() {
+        assert_eq!(
+            first_shell_token("'/Applications/Kriya Console.app/Contents/MacOS/kriya-hook' pre --policy '/p'"),
+            "/Applications/Kriya Console.app/Contents/MacOS/kriya-hook"
+        );
+        assert_eq!(first_shell_token("/Users/x/.cargo/bin/kriya-hook pre"), "/Users/x/.cargo/bin/kriya-hook");
+    }
+
+    #[test]
+    fn hook_health_reads_a_settings_file_end_to_end() {
+        let dir = tmp("hookhealth");
+        let settings = dir.join("settings.json");
+        std::fs::write(
+            &settings,
+            r#"{ "hooks": { "PreToolUse": [{ "hooks": [{ "type":"command", "command":"/old/kriya-hook pre --policy /p" }] }] } }"#,
+        )
+        .unwrap();
+        let h = hook_health(Some(&settings), Some("/new/kriya-hook"));
+        assert_eq!(h.status, HookStatus::Stale);
+        assert_eq!(h.reason.as_deref(), Some("path-mismatch"));
     }
 
     #[test]
