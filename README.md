@@ -10,8 +10,8 @@ unlock with an offline license.**
 > proof of what they did.** Everything runs on your device or your own server. Nothing goes to
 > our cloud, because we don't have one.
 
-**Current release: v0.2.5** — signed + notarized macOS app, with egress governance.
-[Download the latest DMG](https://github.com/sandeepshekhar26/kriya-console/releases/tag/v0.2.5) ·
+**Current release: v0.2.6** — signed + notarized macOS app, with egress governance.
+[Download the latest DMG](https://github.com/sandeepshekhar26/kriya-console/releases/tag/v0.2.6) ·
 [kriyanative.com](https://kriyanative.com)
 
 ---
@@ -49,7 +49,7 @@ side as a signed, tamper-evident receipt you can re-verify yourself, offline.**
 
 **Use it (macOS):**
 
-1. [Download the DMG](https://github.com/sandeepshekhar26/kriya-console/releases/tag/v0.2.5) and open **kriya Console**.
+1. [Download the DMG](https://github.com/sandeepshekhar26/kriya-console/releases/tag/v0.2.6) and open **kriya Console**.
 2. Click **Govern All**. The Console detects the agents on your Mac (Claude Code, Hermes) and
    wires them into governance in one click — reversible, no config files to edit.
 3. Use your agents as normal. Watch the **Monitor** view fill with live, signed, verified receipts.

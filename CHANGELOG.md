@@ -3,6 +3,12 @@
 All notable changes to the Console and the `kriyad` control plane. Dates are release dates of the
 signed, notarized macOS DMG unless noted.
 
+## v0.2.6 — 2026-07-16
+
+- **Audit log: date-range filter + sort by time.** The Audit log now has a From/To date filter
+  (UTC, matching the "When" column) and a Newest/Oldest sort, defaulting to newest-first — so a
+  receipt is findable by *when* it happened, not only by text/status/source.
+
 ## v0.2.5 — 2026-07-15
 
 - **Stale-hook detection.** After an in-place upgrade, Claude Code can keep calling an *older*
