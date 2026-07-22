@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { Icon } from "../components/Icon";
+import { TIER_LABEL, type Tier } from "../lib/policy";
 import { diffLines } from "../lib/textDiff";
 import {
   fleetPolicyPreview,
   fleetPublishPolicy,
   orgPolicyKeygen,
+  simulatePolicy,
   type OrgKeyInfo,
   type PolicyBundleDraft,
   type PublishResult,
+  type SimulationReport,
 } from "../lib/tauri";
 
 const DEFAULT_POLICY_JSON = JSON.stringify({ rules: [{ action: "*", allow: true }] }, null, 2);
@@ -135,6 +138,10 @@ export function ControlPlanePolicyTab() {
   const [publishErr, setPublishErr] = useState<string | null>(null);
   const [publishResult, setPublishResult] = useState<PublishResult | null>(null);
 
+  const [simBusy, setSimBusy] = useState(false);
+  const [simErr, setSimErr] = useState<string | null>(null);
+  const [simReport, setSimReport] = useState<SimulationReport | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     fleetPolicyPreview()
@@ -211,6 +218,23 @@ export function ControlPlanePolicyTab() {
       setKeygenErr(String(e));
     } finally {
       setKeygenBusy(false);
+    }
+  }
+
+  // I3 Policy CI — the pre-rollout gate: replay the DRAFT bundle's policy against this device's own
+  // verified receipt history before it's signed and published fleet-wide. Same command PolicyView's
+  // single-device "test before apply" uses — a candidate is a candidate, fleet-scoped or not.
+  async function simulate() {
+    if (!draft.ok) return;
+    setSimBusy(true);
+    setSimErr(null);
+    try {
+      setSimReport(await simulatePolicy(policyJson));
+    } catch (e) {
+      setSimErr(String(e));
+      setSimReport(null);
+    } finally {
+      setSimBusy(false);
     }
   }
 
@@ -467,6 +491,65 @@ export function ControlPlanePolicyTab() {
               </div>
             ))}
           </pre>
+        )}
+      </section>
+
+      <section className="panel" style={{ marginBottom: 16 }}>
+        <div className="panel-head">
+          <h2>Simulate impact</h2>
+        </div>
+        <p className="muted small" style={{ margin: "0 0 12px" }}>
+          Replays this draft's policy against the last 7 days of THIS device's own verified
+          receipts before you sign and publish it fleet-wide — "this change would have blocked N
+          of last week's M actions." Action-tier gate only (allow/approval/deny, incl. the
+          read-only preset); budget, egress-tier, and detection-pack heuristics aren't replayed.
+        </p>
+        <button className="btn" disabled={!draft.ok || simBusy} onClick={() => void simulate()}>
+          <Icon name="play" size={14} /> {simBusy ? "Simulating…" : "Simulate impact"}
+        </button>
+        {simErr && <p className="warn-text small" style={{ marginTop: 8 }}>{simErr}</p>}
+        {simReport && (
+          <div style={{ marginTop: 12 }}>
+            {simReport.totalReplayed === 0 ? (
+              <p className="muted small">No verified receipts in the last 7 days on this device.</p>
+            ) : simReport.changed === 0 ? (
+              <p className="small">
+                No change: all {simReport.totalReplayed} replayed action(s) would get the same
+                decision as under the currently-applied policy.
+              </p>
+            ) : (
+              <>
+                <p className="small">
+                  <strong>{simReport.changed}</strong> of <strong>{simReport.totalReplayed}</strong>{" "}
+                  replayed action(s) would change:{" "}
+                  {simReport.changedToDeny > 0 && <span>{simReport.changedToDeny} → deny</span>}
+                  {simReport.changedToDeny > 0 && (simReport.changedToApproval > 0 || simReport.changedToAllow > 0) && ", "}
+                  {simReport.changedToApproval > 0 && <span>{simReport.changedToApproval} → approval</span>}
+                  {simReport.changedToApproval > 0 && simReport.changedToAllow > 0 && ", "}
+                  {simReport.changedToAllow > 0 && <span>{simReport.changedToAllow} → allow</span>}
+                </p>
+                <table className="decision-table">
+                  <tbody>
+                    {simReport.examples.map((ex, i) => (
+                      <tr key={i}>
+                        <td className="mono">{ex.actionId}</td>
+                        <td>
+                          <span className={`decision-badge tier-${ex.before}`}>{TIER_LABEL[ex.before as Tier]}</span>
+                          {" → "}
+                          <span className={`decision-badge tier-${ex.after}`}>{TIER_LABEL[ex.after as Tier]}</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {simReport.examplesTruncated && (
+                  <p className="muted small" style={{ marginTop: 6 }}>
+                    …and more not shown here (see the signed `kriya.policy.sim.result` receipt on this device for the full counts).
+                  </p>
+                )}
+              </>
+            )}
+          </div>
         )}
       </section>
 

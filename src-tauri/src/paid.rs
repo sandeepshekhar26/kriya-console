@@ -13,15 +13,17 @@ use crate::license;
 use crate::receipts::{chain_break, verify_value};
 use kriya_verify::is_destructive;
 
-const ATTESTATION_ON_DEVICE: &str = "kriya.attestation.on_device";
+/// `pub(crate)`: also excluded from `policy_sim`'s replay corpus (governance meta-evidence, not a
+/// governed agent action).
+pub(crate) const ATTESTATION_ON_DEVICE: &str = "kriya.attestation.on_device";
 /// The signed coverage-completeness snapshot action id (`~/.kriya/audit/coverage.jsonl`). These are
 /// meta-evidence (what was/wasn't governed), not agent actions — separated out and cited as AU-2/
 /// AU-12 completeness evidence rather than counted in the action totals (GA-3).
-const COVERAGE_SNAPSHOT: &str = "kriya.coverage.snapshot";
+pub(crate) const COVERAGE_SNAPSHOT: &str = "kriya.coverage.snapshot";
 /// The reserved `kriya.io.*` namespace prefix (EG-2 / doc 24 §4.2) — governance metadata, like
 /// `ATTESTATION_ON_DEVICE`, excluded from the action-type counts and the sole gate on whether the
 /// egress control rows appear. MUST match `src/lib/compliance.ts`'s `KRIYA_IO_PREFIX` exactly.
-const KRIYA_IO_PREFIX: &str = "kriya.io.";
+pub(crate) const KRIYA_IO_PREFIX: &str = "kriya.io.";
 
 /// The doc 24 §3.1 scope block, verbatim — embedded in every egress-bearing compliance export.
 /// MUST match `src/lib/compliance.ts`'s `EGRESS_SCOPE_BLOCK` exactly (parity is asserted by a test).
@@ -51,9 +53,15 @@ fn egress_evidence(rows: &[Collected]) -> Option<EgressEvidence> {
     }
     Some(EgressEvidence {
         verified_receipts: io.len(),
-        allow: io.iter().filter(|r| r.action_id.ends_with(".allow")).count(),
+        allow: io
+            .iter()
+            .filter(|r| r.action_id.ends_with(".allow"))
+            .count(),
         deny: io.iter().filter(|r| r.action_id.ends_with(".deny")).count(),
-        approve: io.iter().filter(|r| r.action_id.ends_with(".approve")).count(),
+        approve: io
+            .iter()
+            .filter(|r| r.action_id.ends_with(".approve"))
+            .count(),
     })
 }
 
@@ -95,7 +103,11 @@ fn egress_posture(rows: &[Collected]) -> EgressPosture {
     } else {
         EgressPostureState::EgressPresent
     };
-    EgressPosture { state, governed_lane_receipts, egress_receipts }
+    EgressPosture {
+        state,
+        governed_lane_receipts,
+        egress_receipts,
+    }
 }
 
 /// Render the governed-surface posture statement — MUST match TS's `renderEgressPosture` wording
@@ -127,6 +139,10 @@ struct Collected {
     public_key: String,
     verified: bool,
     is_attestation: bool,
+    /// Run correlation (S3): `params["kriya.corr"].run_id` — the session grouping (None = uncorrelated).
+    run_id: Option<String>,
+    /// Run correlation (S3): `params["kriya.corr"].agent_id` — the sub-agent discriminator (hook lane).
+    agent_id: Option<String>,
 }
 
 /// Read + verify every receipt across the standard audit dir. Per-file chain integrity is returned
@@ -164,9 +180,20 @@ fn collect() -> (Vec<Collected>, BTreeMap<String, Option<usize>>) {
                 .and_then(|x| x.as_str())
                 .unwrap_or("")
                 .to_string();
+            // Run correlation (S3): read the reserved `kriya.corr` params key (mirrors sessionTree.ts).
+            let corr_field = |k: &str| -> Option<String> {
+                v.get("params")
+                    .and_then(|p| p.get("kriya.corr"))
+                    .and_then(|c| c.get(k))
+                    .and_then(|x| x.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            };
             out.push(Collected {
                 source: source.clone(),
                 is_attestation: action_id == ATTESTATION_ON_DEVICE,
+                run_id: corr_field("run_id"),
+                agent_id: corr_field("agent_id"),
                 action_id,
                 success: v.get("success").and_then(|x| x.as_bool()).unwrap_or(false),
                 ts_ms: v.get("ts_ms").and_then(|x| x.as_u64()).unwrap_or(0),
@@ -349,7 +376,10 @@ pub struct CoverageEvidence {
 
 /// Build the coverage summary from the separated coverage-snapshot rows + that chain's break status.
 /// `None` when there are no coverage snapshots (evidence text is then unchanged).
-fn coverage_evidence(coverage_rows: &[Collected], chain_break: Option<usize>) -> Option<CoverageEvidence> {
+fn coverage_evidence(
+    coverage_rows: &[Collected],
+    chain_break: Option<usize>,
+) -> Option<CoverageEvidence> {
     if coverage_rows.is_empty() {
         return None;
     }
@@ -357,6 +387,57 @@ fn coverage_evidence(coverage_rows: &[Collected], chain_break: Option<usize>) ->
     Some(CoverageEvidence {
         snapshots: coverage_rows.len(),
         chain_ok,
+    })
+}
+
+/// Run-correlation appendix numbers (S3) — the Rust mirror of `sessionTree.ts`'s `CorrelationSummary`,
+/// computed from the same verified `kriya.corr` receipts so the desktop export matches the web one.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CorrelationSummary {
+    pub runs: usize,
+    pub sub_agents: usize,
+    pub spawns: usize,
+    pub actions: usize,
+    pub blocked: usize,
+}
+
+/// A subagent-spawn action id (Claude Code's Task tool → `claude-code__task`); mirrors sessionTree.ts.
+fn is_spawn_action(action_id: &str) -> bool {
+    let a = action_id.to_ascii_lowercase();
+    a == "task" || a.ends_with("__task")
+}
+
+/// Roll the verified, correlated receipts up into the appendix numbers. `None` when the trail carries
+/// no correlated receipts — the signal that keeps the export byte-identical to a pre-S3 one. Mirrors
+/// `summarizeCorrelation(buildSessionTrees(rows))`: a receipt participates iff it is verified, not the
+/// attestation marker, and carries `kriya.corr.run_id`; `sub_agents` = distinct (run_id, agent_id)
+/// pairs (i.e. the sum over runs of that run's distinct sub-agents).
+fn correlation_summary(rows: &[Collected]) -> Option<CorrelationSummary> {
+    let correlated: Vec<&Collected> = rows
+        .iter()
+        .filter(|r| r.verified && !r.is_attestation && r.run_id.is_some())
+        .collect();
+    if correlated.is_empty() {
+        return None;
+    }
+    let runs: BTreeSet<&str> = correlated
+        .iter()
+        .filter_map(|r| r.run_id.as_deref())
+        .collect();
+    let sub_agents: BTreeSet<(&str, &str)> = correlated
+        .iter()
+        .filter_map(|r| Some((r.run_id.as_deref()?, r.agent_id.as_deref()?)))
+        .collect();
+    Some(CorrelationSummary {
+        runs: runs.len(),
+        sub_agents: sub_agents.len(),
+        spawns: correlated
+            .iter()
+            .filter(|r| is_spawn_action(&r.action_id))
+            .count(),
+        actions: correlated.len(),
+        blocked: correlated.iter().filter(|r| !r.success).count(),
     })
 }
 
@@ -380,6 +461,11 @@ pub struct ComplianceBundle {
     pub egress: Option<EgressEvidence>,
     /// The governed-surface posture statement (doc 24 §7.2 row 4) — always present, unlike `egress`.
     pub egress_posture: EgressPosture,
+    /// Run-correlation appendix (S3) — the session structure from verified `kriya.corr` receipts.
+    /// Omitted when the trail carries no correlated receipts, so a zero-correlation export stays
+    /// byte-identical to a pre-S3 one (BC law).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation: Option<CorrelationSummary>,
     /// A ready-to-file Markdown report and the structured JSON, both generated in Rust.
     pub markdown: String,
     pub json: String,
@@ -500,6 +586,9 @@ pub fn export_compliance(framework: String) -> Result<ComplianceBundle, String> 
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
 
+    // Run correlation (S3): the appendix numbers, present ONLY when correlated receipts exist.
+    let correlation = correlation_summary(&rows);
+
     let (generic_controls, extra_controls) = controls.split_at(generic_count);
     let markdown = render_markdown(
         &framework,
@@ -517,9 +606,10 @@ pub fn export_compliance(framework: String) -> Result<ComplianceBundle, String> 
         &chains,
         egress.as_ref(),
         &egress_posture,
+        correlation.as_ref(),
     );
 
-    let bundle_json = serde_json::json!({
+    let mut bundle_json = serde_json::json!({
         "framework": framework,
         "generatedMs": generated_ms,
         "summary": {
@@ -537,6 +627,10 @@ pub fn export_compliance(framework: String) -> Result<ComplianceBundle, String> 
         "egress": egress,
         "egressPosture": egress_posture,
     });
+    // Add the correlation key ONLY when present, so a zero-correlation JSON export is byte-identical.
+    if let Some(c) = &correlation {
+        bundle_json["correlation"] = serde_json::to_value(c).map_err(|e| e.to_string())?;
+    }
     let json = serde_json::to_string_pretty(&bundle_json).map_err(|e| e.to_string())?;
 
     Ok(ComplianceBundle {
@@ -554,6 +648,7 @@ pub fn export_compliance(framework: String) -> Result<ComplianceBundle, String> 
         controls,
         egress,
         egress_posture,
+        correlation,
         markdown,
         json,
     })
@@ -583,7 +678,11 @@ fn framework_controls(
     egress: Option<&EgressEvidence>,
 ) -> Vec<Control> {
     let has_rows = total > 0;
-    let coverage_pct = if verified == 0 { 0 } else { (attributed * 100) / verified };
+    let coverage_pct = if verified == 0 {
+        0
+    } else {
+        (attributed * 100) / verified
+    };
 
     // GA-3: cite the signed coverage-completeness chain as AU-2/AU-12 completeness evidence. Wording
     // mirrors the TS `mapControls` so the desktop + web bundles carry the same NIST rows.
@@ -624,7 +723,13 @@ fn framework_controls(
     // Several rows describe an organizational/OS-level process (review cadence, alerting, clock
     // sync, change-authorization policy) kriya can surface signal for but never itself complete —
     // capped at partial, never satisfied, exactly like the TS `partialWhenReceipts` helper.
-    let partial_when_rows = || -> &'static str { if has_rows { "partial" } else { "gap" } };
+    let partial_when_rows = || -> &'static str {
+        if has_rows {
+            "partial"
+        } else {
+            "gap"
+        }
+    };
 
     // Egress/ingress ledger rows (EG-2/EG-3, doc 24 §3) — appear ONLY when `egress` carries at least
     // one verified `kriya.io.*` receipt; never hard-coded, never present as "gap" when absent (that
@@ -892,16 +997,16 @@ fn framework_controls(
         }],
         "EU-AI-Act" => {
             let mut rows = vec![Control {
-            id: "Art.26(6)".into(),
-            name: "Deployer log retention".into(),
-            status: partial_when_rows().into(),
-            evidence: if has_rows {
-                format!(
+                id: "Art.26(6)".into(),
+                name: "Deployer log retention".into(),
+                status: partial_when_rows().into(),
+                evidence: if has_rows {
+                    format!(
                     "{total} receipt(s) retained locally as JSONL under the deployer's own control; kriya does not enforce or verify a specific retention schedule (e.g. the six-month minimum) — that is the deployer's responsibility."
                 )
-            } else {
-                "No logs retained yet.".into()
-            },
+                } else {
+                    "No logs retained yet.".into()
+                },
             }];
             if let Some(e) = egress {
                 rows.extend(eu_dora_egress_rows(e));
@@ -929,6 +1034,7 @@ fn render_markdown(
     chains: &BTreeMap<String, Option<usize>>,
     egress: Option<&EgressEvidence>,
     egress_posture: &EgressPosture,
+    correlation: Option<&CorrelationSummary>,
 ) -> String {
     let mut s = String::new();
     s.push_str(&format!(
@@ -1000,6 +1106,16 @@ fn render_markdown(
     for app in apps {
         s.push_str(&format!("- {app}\n"));
     }
+    // Run-correlation appendix (S3) — appended ONLY when correlated receipts exist, so a
+    // zero-correlation report is byte-identical to a pre-S3 one.
+    if let Some(c) = correlation {
+        s.push_str("\n## Session correlation (appendix)\n\n");
+        s.push_str(&format!(
+            "Computed from verified `kriya.corr` receipts: **{}** run(s) across **{}** correlated action(s); **{}** sub-agent(s) observed; **{}** subagent-spawn action(s); **{}** blocked/failed attempt(s).\n\n",
+            c.runs, c.actions, c.sub_agents, c.spawns, c.blocked
+        ));
+        s.push_str("_Run correlation groups a session's actions from the signed receipts; approval decisions are recorded separately in the approvals queue._\n");
+    }
     s
 }
 
@@ -1010,7 +1126,21 @@ mod framework_controls_tests {
     // A small synthetic "fully verified, fully attributed" fact set: 10 receipts across 2 apps, 5
     // distinct action types, all attributed, 3 destructive actions, an intact hash chain.
     fn healthy() -> Vec<Control> {
-        framework_controls("NIST-800-171", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None, None)
+        framework_controls(
+            "NIST-800-171",
+            10,
+            10,
+            0,
+            2,
+            5,
+            10,
+            3,
+            3,
+            true,
+            2,
+            None,
+            None,
+        )
     }
 
     #[test]
@@ -1023,7 +1153,21 @@ mod framework_controls_tests {
         // Privileged-user restriction on audit-logging management is never provided by kriya
         // itself — the status must read "gap" regardless of how clean the rest of the trail is.
         for integrity_ok in [true, false] {
-            let rows = framework_controls("NIST-800-171", 10, 10, 0, 2, 5, 10, 3, 3, integrity_ok, 2, None, None);
+            let rows = framework_controls(
+                "NIST-800-171",
+                10,
+                10,
+                0,
+                2,
+                5,
+                10,
+                3,
+                3,
+                integrity_ok,
+                2,
+                None,
+                None,
+            );
             let c = rows.iter().find(|c| c.id == "AU.L2-3.3.9").unwrap();
             assert_eq!(c.status, "gap");
         }
@@ -1037,7 +1181,21 @@ mod framework_controls_tests {
             "satisfied"
         );
 
-        let tampered = framework_controls("NIST-800-171", 10, 8, 2, 2, 5, 8, 3, 3, false, 2, None, None);
+        let tampered = framework_controls(
+            "NIST-800-171",
+            10,
+            8,
+            2,
+            2,
+            5,
+            8,
+            3,
+            3,
+            false,
+            2,
+            None,
+            None,
+        );
         let c = tampered.iter().find(|c| c.id == "AU.L2-3.3.8").unwrap();
         assert_eq!(c.status, "partial");
         assert!(
@@ -1046,7 +1204,8 @@ mod framework_controls_tests {
             c.evidence
         );
 
-        let empty = framework_controls("NIST-800-171", 0, 0, 0, 0, 0, 0, 0, 0, false, 0, None, None);
+        let empty =
+            framework_controls("NIST-800-171", 0, 0, 0, 0, 0, 0, 0, 0, false, 0, None, None);
         assert_eq!(
             empty.iter().find(|c| c.id == "AU.L2-3.3.8").unwrap().status,
             "gap"
@@ -1064,37 +1223,122 @@ mod framework_controls_tests {
 
     #[test]
     fn soc2_iso42001_eu_ai_act_each_add_one_row() {
-        assert_eq!(framework_controls("SOC2", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None, None).len(), 2);
-        assert_eq!(framework_controls("ISO42001", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None, None).len(), 1);
-        assert_eq!(framework_controls("EU-AI-Act", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None, None).len(), 1);
+        assert_eq!(
+            framework_controls("SOC2", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None, None).len(),
+            2
+        );
+        assert_eq!(
+            framework_controls("ISO42001", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None, None).len(),
+            1
+        );
+        assert_eq!(
+            framework_controls("EU-AI-Act", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None, None).len(),
+            1
+        );
     }
 
     #[test]
     fn unknown_framework_key_returns_no_extra_controls_without_panicking() {
-        assert!(framework_controls("FEDRAMP", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None, None).is_empty());
+        assert!(
+            framework_controls("FEDRAMP", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None, None)
+                .is_empty()
+        );
     }
 
     #[test]
     fn coverage_completeness_and_agent_span_are_cited_in_3_3_1_and_3_3_4() {
-        let cov = CoverageEvidence { snapshots: 14, chain_ok: true };
-        let rows = framework_controls("NIST-800-171", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, Some(&cov), None);
+        let cov = CoverageEvidence {
+            snapshots: 14,
+            chain_ok: true,
+        };
+        let rows = framework_controls(
+            "NIST-800-171",
+            10,
+            10,
+            0,
+            2,
+            5,
+            10,
+            3,
+            3,
+            true,
+            2,
+            Some(&cov),
+            None,
+        );
         let c331 = rows.iter().find(|c| c.id == "AU.L2-3.3.1").unwrap();
-        assert!(c331.evidence.contains("2 governed agent(s)"), "3.3.1 spans agents: {}", c331.evidence);
-        assert!(c331.evidence.contains("14 signed coverage snapshot(s)"), "3.3.1 cites coverage: {}", c331.evidence);
+        assert!(
+            c331.evidence.contains("2 governed agent(s)"),
+            "3.3.1 spans agents: {}",
+            c331.evidence
+        );
+        assert!(
+            c331.evidence.contains("14 signed coverage snapshot(s)"),
+            "3.3.1 cites coverage: {}",
+            c331.evidence
+        );
         assert!(c331.evidence.contains("chain intact"));
         let c334 = rows.iter().find(|c| c.id == "AU.L2-3.3.4").unwrap();
-        assert!(c334.evidence.contains("visible by absence"), "3.3.4 cites the heartbeat chain: {}", c334.evidence);
+        assert!(
+            c334.evidence.contains("visible by absence"),
+            "3.3.4 cites the heartbeat chain: {}",
+            c334.evidence
+        );
 
         // A broken coverage chain is named honestly, not hidden.
-        let broken = CoverageEvidence { snapshots: 3, chain_ok: false };
-        let rows = framework_controls("NIST-800-171", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, Some(&broken), None);
-        assert!(rows.iter().find(|c| c.id == "AU.L2-3.3.1").unwrap().evidence.contains("chain BROKEN"));
+        let broken = CoverageEvidence {
+            snapshots: 3,
+            chain_ok: false,
+        };
+        let rows = framework_controls(
+            "NIST-800-171",
+            10,
+            10,
+            0,
+            2,
+            5,
+            10,
+            3,
+            3,
+            true,
+            2,
+            Some(&broken),
+            None,
+        );
+        assert!(rows
+            .iter()
+            .find(|c| c.id == "AU.L2-3.3.1")
+            .unwrap()
+            .evidence
+            .contains("chain BROKEN"));
 
         // Without a coverage summary the evidence is unchanged (backward compatible) and 3.3.9 is
         // still a permanent gap.
-        let rows = framework_controls("NIST-800-171", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None, None);
-        assert!(!rows.iter().find(|c| c.id == "AU.L2-3.3.1").unwrap().evidence.contains("coverage snapshot"));
-        assert_eq!(rows.iter().find(|c| c.id == "AU.L2-3.3.9").unwrap().status, "gap");
+        let rows = framework_controls(
+            "NIST-800-171",
+            10,
+            10,
+            0,
+            2,
+            5,
+            10,
+            3,
+            3,
+            true,
+            2,
+            None,
+            None,
+        );
+        assert!(!rows
+            .iter()
+            .find(|c| c.id == "AU.L2-3.3.1")
+            .unwrap()
+            .evidence
+            .contains("coverage snapshot"));
+        assert_eq!(
+            rows.iter().find(|c| c.id == "AU.L2-3.3.9").unwrap().status,
+            "gap"
+        );
     }
 
     // ── egress/ingress ledger rows (EG-3, doc 24 §3) ──────────────────────────────────────────────
@@ -1102,23 +1346,69 @@ mod framework_controls_tests {
     const FORBIDDEN: [&str; 6] = ["3.13.1", "3.13.6", "SC-7", "SC-8", "CC6.6", "DLP"];
 
     fn sample_egress() -> EgressEvidence {
-        EgressEvidence { verified_receipts: 4, allow: 2, deny: 1, approve: 1 }
+        EgressEvidence {
+            verified_receipts: 4,
+            allow: 2,
+            deny: 1,
+            approve: 1,
+        }
     }
 
     #[test]
     fn no_egress_rows_when_egress_is_none() {
-        let rows = framework_controls("NIST-800-171", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None, None);
+        let rows = framework_controls(
+            "NIST-800-171",
+            10,
+            10,
+            0,
+            2,
+            5,
+            10,
+            3,
+            3,
+            true,
+            2,
+            None,
+            None,
+        );
         assert!(!rows.iter().any(|c| c.id == "3.1.3"));
-        assert_eq!(rows.len(), 9, "exactly the 9 AU-family rows, no egress rows");
+        assert_eq!(
+            rows.len(),
+            9,
+            "exactly the 9 AU-family rows, no egress rows"
+        );
     }
 
     #[test]
     fn nist_800_171_gains_five_egress_rows_all_partial_when_egress_present() {
         let egress = sample_egress();
-        let rows = framework_controls("NIST-800-171", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None, Some(&egress));
+        let rows = framework_controls(
+            "NIST-800-171",
+            10,
+            10,
+            0,
+            2,
+            5,
+            10,
+            3,
+            3,
+            true,
+            2,
+            None,
+            Some(&egress),
+        );
         assert_eq!(rows.len(), 14, "9 AU-family + 5 egress rows");
-        for id in ["3.1.3", "3.4.2", "3.14.6/3.14.7", "NIST 800-53 AC-4", "NIST 800-53 SI-4"] {
-            let c = rows.iter().find(|c| c.id == id).unwrap_or_else(|| panic!("missing control row {id}"));
+        for id in [
+            "3.1.3",
+            "3.4.2",
+            "3.14.6/3.14.7",
+            "NIST 800-53 AC-4",
+            "NIST 800-53 SI-4",
+        ] {
+            let c = rows
+                .iter()
+                .find(|c| c.id == id)
+                .unwrap_or_else(|| panic!("missing control row {id}"));
             assert_eq!(c.status, "partial", "{id} must be capped at partial");
         }
         let c313 = rows.iter().find(|c| c.id == "3.1.3").unwrap();
@@ -1129,10 +1419,27 @@ mod framework_controls_tests {
     #[test]
     fn soc2_gains_three_egress_rows() {
         let egress = sample_egress();
-        let rows = framework_controls("SOC2", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None, Some(&egress));
+        let rows = framework_controls(
+            "SOC2",
+            10,
+            10,
+            0,
+            2,
+            5,
+            10,
+            3,
+            3,
+            true,
+            2,
+            None,
+            Some(&egress),
+        );
         assert_eq!(rows.len(), 5, "2 existing + 3 egress rows");
         for id in ["CC6.1", "CC6.7", "CC7.2 (governed-lane egress)"] {
-            let c = rows.iter().find(|c| c.id == id).unwrap_or_else(|| panic!("missing {id}"));
+            let c = rows
+                .iter()
+                .find(|c| c.id == id)
+                .unwrap_or_else(|| panic!("missing {id}"));
             assert_eq!(c.status, "partial");
             assert!(!c.evidence.to_uppercase().contains("DLP"));
         }
@@ -1141,10 +1448,30 @@ mod framework_controls_tests {
     #[test]
     fn eu_ai_act_gains_three_egress_and_dora_rows() {
         let egress = sample_egress();
-        let rows = framework_controls("EU-AI-Act", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None, Some(&egress));
+        let rows = framework_controls(
+            "EU-AI-Act",
+            10,
+            10,
+            0,
+            2,
+            5,
+            10,
+            3,
+            3,
+            true,
+            2,
+            None,
+            Some(&egress),
+        );
         assert_eq!(rows.len(), 4, "1 existing + 3 egress/DORA rows");
-        let art12 = rows.iter().find(|c| c.id == "Art.12 (governed-lane egress)").unwrap();
-        assert!(art12.evidence.contains("INAPPLICABLE"), "the non-high-risk caveat must be present");
+        let art12 = rows
+            .iter()
+            .find(|c| c.id == "Art.12 (governed-lane egress)")
+            .unwrap();
+        assert!(
+            art12.evidence.contains("INAPPLICABLE"),
+            "the non-high-risk caveat must be present"
+        );
         assert!(rows.iter().any(|c| c.id == "DORA Art.28(3)"));
         assert!(rows.iter().any(|c| c.id == "DORA Art.10(2)/17"));
     }
@@ -1153,14 +1480,47 @@ mod framework_controls_tests {
     fn iso42001_is_unaffected_by_egress() {
         // ISO42001 has no egress bucket wired — presence of egress data must not add rows there.
         let egress = sample_egress();
-        let rows = framework_controls("ISO42001", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None, Some(&egress));
+        let rows = framework_controls(
+            "ISO42001",
+            10,
+            10,
+            0,
+            2,
+            5,
+            10,
+            3,
+            3,
+            true,
+            2,
+            None,
+            Some(&egress),
+        );
         assert_eq!(rows.len(), 1);
     }
 
     #[test]
     fn deny_count_is_cited_honestly_when_zero() {
-        let egress = EgressEvidence { verified_receipts: 2, allow: 2, deny: 0, approve: 0 };
-        let rows = framework_controls("NIST-800-171", 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None, Some(&egress));
+        let egress = EgressEvidence {
+            verified_receipts: 2,
+            allow: 2,
+            deny: 0,
+            approve: 0,
+        };
+        let rows = framework_controls(
+            "NIST-800-171",
+            10,
+            10,
+            0,
+            2,
+            5,
+            10,
+            3,
+            3,
+            true,
+            2,
+            None,
+            Some(&egress),
+        );
         let si4 = rows.iter().find(|c| c.id == "3.14.6/3.14.7").unwrap();
         assert!(si4.evidence.contains("No denials observed"));
     }
@@ -1169,7 +1529,21 @@ mod framework_controls_tests {
     fn no_egress_row_ever_carries_a_killed_control_id_or_dlp() {
         let egress = sample_egress();
         for framework in ["NIST-800-171", "SOC2", "ISO42001", "EU-AI-Act", "FEDRAMP"] {
-            let rows = framework_controls(framework, 10, 10, 0, 2, 5, 10, 3, 3, true, 2, None, Some(&egress));
+            let rows = framework_controls(
+                framework,
+                10,
+                10,
+                0,
+                2,
+                5,
+                10,
+                3,
+                3,
+                true,
+                2,
+                None,
+                Some(&egress),
+            );
             for c in &rows {
                 for banned in FORBIDDEN {
                     assert!(
@@ -1183,36 +1557,139 @@ mod framework_controls_tests {
     }
 
     #[test]
-    fn egress_evidence_is_computed_from_verified_kriya_io_receipts_and_excluded_from_action_counts() {
+    fn egress_evidence_is_computed_from_verified_kriya_io_receipts_and_excluded_from_action_counts()
+    {
         let rows = vec![
-            Collected { source: "x".into(), action_id: "create_note".into(), success: true, ts_ms: 1, actor_agent: None, actor_user: None, public_key: "pk".into(), verified: true, is_attestation: false },
-            Collected { source: "x".into(), action_id: "kriya.io.egress.mcp.allow".into(), success: true, ts_ms: 2, actor_agent: None, actor_user: None, public_key: "pk".into(), verified: true, is_attestation: false },
-            Collected { source: "x".into(), action_id: "kriya.io.egress.mcp.allow".into(), success: true, ts_ms: 3, actor_agent: None, actor_user: None, public_key: "pk".into(), verified: true, is_attestation: false },
-            Collected { source: "x".into(), action_id: "kriya.io.egress.mcp.deny".into(), success: false, ts_ms: 4, actor_agent: None, actor_user: None, public_key: "pk".into(), verified: true, is_attestation: false },
+            Collected {
+                source: "x".into(),
+                action_id: "create_note".into(),
+                success: true,
+                ts_ms: 1,
+                actor_agent: None,
+                actor_user: None,
+                public_key: "pk".into(),
+                verified: true,
+                is_attestation: false,
+                run_id: None,
+                agent_id: None,
+            },
+            Collected {
+                source: "x".into(),
+                action_id: "kriya.io.egress.mcp.allow".into(),
+                success: true,
+                ts_ms: 2,
+                actor_agent: None,
+                actor_user: None,
+                public_key: "pk".into(),
+                verified: true,
+                is_attestation: false,
+                run_id: None,
+                agent_id: None,
+            },
+            Collected {
+                source: "x".into(),
+                action_id: "kriya.io.egress.mcp.allow".into(),
+                success: true,
+                ts_ms: 3,
+                actor_agent: None,
+                actor_user: None,
+                public_key: "pk".into(),
+                verified: true,
+                is_attestation: false,
+                run_id: None,
+                agent_id: None,
+            },
+            Collected {
+                source: "x".into(),
+                action_id: "kriya.io.egress.mcp.deny".into(),
+                success: false,
+                ts_ms: 4,
+                actor_agent: None,
+                actor_user: None,
+                public_key: "pk".into(),
+                verified: true,
+                is_attestation: false,
+                run_id: None,
+                agent_id: None,
+            },
             // NOT verified — must not be counted.
-            Collected { source: "x".into(), action_id: "kriya.io.egress.http.approve".into(), success: true, ts_ms: 5, actor_agent: None, actor_user: None, public_key: "pk".into(), verified: false, is_attestation: false },
+            Collected {
+                source: "x".into(),
+                action_id: "kriya.io.egress.http.approve".into(),
+                success: true,
+                ts_ms: 5,
+                actor_agent: None,
+                actor_user: None,
+                public_key: "pk".into(),
+                verified: false,
+                is_attestation: false,
+                run_id: None,
+                agent_id: None,
+            },
         ];
         let e = egress_evidence(&rows).expect("egress evidence present");
-        assert_eq!(e.verified_receipts, 3, "only VERIFIED kriya.io.* receipts count");
+        assert_eq!(
+            e.verified_receipts, 3,
+            "only VERIFIED kriya.io.* receipts count"
+        );
         assert_eq!(e.allow, 2);
         assert_eq!(e.deny, 1);
-        assert_eq!(e.approve, 0, "the unverified approve receipt must not count");
+        assert_eq!(
+            e.approve, 0,
+            "the unverified approve receipt must not count"
+        );
 
         let distinct_actions = rows
             .iter()
-            .filter(|r| r.verified && !r.is_attestation && !r.action_id.starts_with(KRIYA_IO_PREFIX))
+            .filter(|r| {
+                r.verified && !r.is_attestation && !r.action_id.starts_with(KRIYA_IO_PREFIX)
+            })
             .map(|r| r.action_id.as_str())
             .collect::<std::collections::BTreeSet<_>>()
             .len();
-        assert_eq!(distinct_actions, 1, "kriya.io.* must be excluded from the action-type count");
+        assert_eq!(
+            distinct_actions, 1,
+            "kriya.io.* must be excluded from the action-type count"
+        );
     }
 
     // ── governed-surface posture (doc 24 §7.2 row 4) ──────────────────────────────────────────────
 
     fn collected(action_id: &str, verified: bool, is_attestation: bool) -> Collected {
         Collected {
-            source: "x".into(), action_id: action_id.into(), success: true, ts_ms: 1,
-            actor_agent: None, actor_user: None, public_key: "pk".into(), verified, is_attestation,
+            source: "x".into(),
+            action_id: action_id.into(),
+            success: true,
+            ts_ms: 1,
+            actor_agent: None,
+            actor_user: None,
+            public_key: "pk".into(),
+            verified,
+            is_attestation,
+            run_id: None,
+            agent_id: None,
+        }
+    }
+
+    /// A `Collected` carrying run correlation, for the S3 appendix tests.
+    fn correlated(
+        action_id: &str,
+        run_id: &str,
+        agent_id: Option<&str>,
+        success: bool,
+    ) -> Collected {
+        Collected {
+            source: "claude-code.jsonl".into(),
+            action_id: action_id.into(),
+            success,
+            ts_ms: 1,
+            actor_agent: None,
+            actor_user: None,
+            public_key: "pk".into(),
+            verified: true,
+            is_attestation: false,
+            run_id: Some(run_id.into()),
+            agent_id: agent_id.map(str::to_string),
         }
     }
 
@@ -1228,12 +1705,16 @@ mod framework_controls_tests {
 
     #[test]
     fn posture_zero_observed_when_governed_lane_active_but_no_egress() {
-        let rows = vec![collected("create_note", true, false), collected("delete_note", true, false)];
+        let rows = vec![
+            collected("create_note", true, false),
+            collected("delete_note", true, false),
+        ];
         let p = egress_posture(&rows);
         assert_eq!(p.state, EgressPostureState::ZeroObserved);
         assert_eq!(p.governed_lane_receipts, 2);
         assert_eq!(p.egress_receipts, 0);
-        assert!(render_egress_posture(&p).contains("does NOT prove the egress ledger was continuously enabled"));
+        assert!(render_egress_posture(&p)
+            .contains("does NOT prove the egress ledger was continuously enabled"));
     }
 
     #[test]
@@ -1253,7 +1734,7 @@ mod framework_controls_tests {
     fn posture_ignores_unverified_and_attestation_receipts() {
         let rows = vec![
             collected("kriya.attestation.on_device", true, true), // attestation: excluded
-            collected("kriya.io.egress.mcp.allow", false, false),  // unverified: excluded
+            collected("kriya.io.egress.mcp.allow", false, false), // unverified: excluded
         ];
         let p = egress_posture(&rows);
         assert_eq!(p.state, EgressPostureState::NotMonitored);
@@ -1270,15 +1751,120 @@ mod framework_controls_tests {
             "does NOT prove the egress ledger was continuously enabled for the full window",
             "NOT zero —",
         ] {
-            assert!(ts_src.contains(phrase), "TS renderEgressPosture missing phrase: {phrase}");
+            assert!(
+                ts_src.contains(phrase),
+                "TS renderEgressPosture missing phrase: {phrase}"
+            );
         }
+    }
+
+    // ── run correlation appendix (S3) — parity with sessionTree.ts's summarizeCorrelation ─────────
+
+    #[test]
+    fn correlation_summary_is_none_without_correlated_receipts() {
+        // Uncorrelated + unverified-correlated + attestation → nothing to summarize (byte-identical).
+        let rows = vec![
+            collected("create_note", true, false),
+            correlated("claude-code__bash", "sess", None, true),
+        ];
+        // Only the correlated, verified one contributes — but flip THAT to unverified → None.
+        let mut only_unverified = vec![correlated("claude-code__bash", "sess", None, true)];
+        only_unverified[0].verified = false;
+        assert!(correlation_summary(&only_unverified).is_none());
+        // The mixed set DOES have one correlated verified receipt, so it is Some.
+        assert!(correlation_summary(&rows).is_some());
+    }
+
+    #[test]
+    fn correlation_summary_rolls_up_runs_subagents_spawns_actions_blocked() {
+        let rows = vec![
+            correlated("claude-code__task", "sess", None, true), // a spawn, main agent
+            correlated("claude-code__bash", "sess", Some("sub-A"), true),
+            correlated("claude-code__bash", "sess", Some("sub-A"), false), // blocked
+            correlated("claude-code__bash", "sess", Some("sub-B"), true),
+            correlated("web_search", "run2", None, true),
+            // Not counted: unverified, attestation, uncorrelated.
+            collected("kriya.attestation.on_device", true, true),
+            collected("uncorrelated", true, false),
+        ];
+        let s = correlation_summary(&rows).expect("summary present");
+        assert_eq!(s.runs, 2, "sess + run2");
+        assert_eq!(
+            s.sub_agents, 2,
+            "distinct (run,agent) pairs: (sess,sub-A) + (sess,sub-B)"
+        );
+        assert_eq!(s.spawns, 1, "one claude-code__task");
+        assert_eq!(s.actions, 5, "five verified, correlated receipts");
+        assert_eq!(s.blocked, 1, "one success:false");
+    }
+
+    #[test]
+    fn export_markdown_omits_the_appendix_when_uncorrelated_and_includes_it_otherwise() {
+        // No correlation → the appendix heading is absent (byte-identical to pre-S3).
+        let md_none = render_markdown(
+            "NIST-800-171",
+            1,
+            1,
+            0,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            0,
+            0,
+            true,
+            &[],
+            &[],
+            &BTreeMap::new(),
+            None,
+            &egress_posture(&[]),
+            None,
+        );
+        assert!(!md_none.contains("Session correlation"));
+
+        // With correlation → the appendix is present.
+        let summary = CorrelationSummary {
+            runs: 2,
+            sub_agents: 1,
+            spawns: 1,
+            actions: 3,
+            blocked: 0,
+        };
+        let md_some = render_markdown(
+            "NIST-800-171",
+            1,
+            1,
+            0,
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            0,
+            0,
+            true,
+            &[],
+            &[],
+            &BTreeMap::new(),
+            None,
+            &egress_posture(&[]),
+            Some(&summary),
+        );
+        assert!(md_some.contains("## Session correlation (appendix)"));
+        assert!(md_some.contains("**2** run(s)"));
     }
 
     #[test]
     fn egress_evidence_is_none_on_a_trail_with_no_kriya_io_receipts() {
         let rows = vec![Collected {
-            source: "x".into(), action_id: "create_note".into(), success: true, ts_ms: 1,
-            actor_agent: None, actor_user: None, public_key: "pk".into(), verified: true, is_attestation: false,
+            source: "x".into(),
+            action_id: "create_note".into(),
+            success: true,
+            ts_ms: 1,
+            actor_agent: None,
+            actor_user: None,
+            public_key: "pk".into(),
+            verified: true,
+            is_attestation: false,
+            run_id: None,
+            agent_id: None,
         }];
         assert!(egress_evidence(&rows).is_none());
     }
@@ -1305,7 +1891,10 @@ mod framework_controls_tests {
             .step_by(2)
             .collect::<Vec<_>>()
             .join("");
-        assert!(!ts_text.is_empty(), "failed to extract the TS string literal segments");
+        assert!(
+            !ts_text.is_empty(),
+            "failed to extract the TS string literal segments"
+        );
         assert_eq!(
             ts_text, EGRESS_SCOPE_BLOCK,
             "the §3.1 scope block must be byte-identical between compliance.ts and paid.rs"

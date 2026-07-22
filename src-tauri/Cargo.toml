@@ -1,6 +1,6 @@
 [package]
 name = "kriya-console"
-version = "0.2.6"
+version = "0.3.0"
 description = "kriya Console — on-device governance control-plane (paid tier)"
 edition = "2021"
 rust-version = "1.77"

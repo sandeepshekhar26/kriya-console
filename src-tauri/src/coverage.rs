@@ -567,10 +567,13 @@ pub struct AgentCoverage {
 /// Per-agent evidence gathered in one pass over the audit dir (newest receipt ts per family).
 #[derive(Default)]
 struct AgentScan {
-    cc_native: Option<u64>,     // claude-code.jsonl, non-mcp actions
-    cc_mcp: Option<u64>,        // claude-code__mcp__* actions
+    cc_native: Option<u64>, // claude-code.jsonl, non-mcp actions
+    cc_mcp: Option<u64>,    // claude-code__mcp__* actions
     hermes_native: Option<u64>, // hermes.jsonl (the demand-pulled hook's log)
-    hermes_mcp: Option<u64>,    // any gateway per-server receipt attributed to actor.agent "hermes"
+    /// Newest gateway per-server receipt per `actor.agent` — a govern-all wrap tags each receipt
+    /// with the agent whose config pointed at the gateway (`--actor <agent>`), so one bucket serves
+    /// Hermes' MCP lane AND every VS-Code-family / CLI agent (cursor/cline/copilot/gemini).
+    gateway_mcp_by_agent: BTreeMap<String, u64>,
 }
 
 fn scan_agents(audit_dir: &Path) -> AgentScan {
@@ -613,19 +616,35 @@ fn scan_agents(audit_dir: &Path) -> AgentScan {
                 }
             } else if name == "hermes.jsonl" {
                 max_opt(&mut s.hermes_native, ts);
-            } else if actor_agent == Some("hermes") {
-                // A gateway per-server chain attributed to Hermes (govern-all wraps its stdio MCP).
-                max_opt(&mut s.hermes_mcp, ts);
+            } else if let Some(agent) = actor_agent {
+                // A gateway per-server chain, attributed by `--actor <agent>` (Hermes + the whole
+                // VS-Code family / CLIs govern-all wraps). Bucket newest-per-agent.
+                let slot = s.gateway_mcp_by_agent.entry(agent.to_string()).or_insert(0);
+                *slot = (*slot).max(ts);
             }
         }
     }
     s
 }
 
-/// Classify the governed surface **per agent** — Claude Code and Hermes on the same substrate. Pure
-/// with respect to its inputs (audit dir + config-derived flags), so it's fixture-testable. The
-/// config flags (`cc_hook`, `hermes_hook`, `hermes_gateway`) supply the AMBER "configured but silent"
-/// half; the audit dir supplies the GREEN evidence.
+/// A gateway-only agent (no local hook seam) to fold into the per-agent coverage view — the whole
+/// VS-Code family (Cursor/Cline/Copilot) + Gemini CLI. `configured` = it has a `kriya-gateway`-wrapped
+/// server in its config today (the AMBER "wired but silent" half); the audit dir supplies the GREEN
+/// evidence. `builtins_locus` / `cloud_locus` are the honest ceilings for the surfaces the MCP lane
+/// does NOT cover (native built-in tools that bypass MCP; any cloud/off-device execution).
+pub struct ExtraAgent {
+    pub agent: String,
+    pub label: String,
+    pub configured: bool,
+    pub builtins_locus: String,
+    pub cloud_locus: Option<String>,
+}
+
+/// Classify the governed surface **per agent** — Claude Code + Hermes + any gateway-only clients
+/// (`extra_agents`). Pure with respect to its inputs (audit dir + config-derived flags), so it's
+/// fixture-testable. The config flags supply the AMBER "configured but silent" half; the audit dir
+/// supplies the GREEN evidence. An `extra_agents` entry appears only when it is `configured` or has
+/// real receipts — an absent agent never clutters the view.
 pub fn classify_agents(
     audit_dir: &Path,
     now_ms: u64,
@@ -633,9 +652,11 @@ pub fn classify_agents(
     cc_hook: bool,
     hermes_hook: bool,
     hermes_gateway: bool,
+    extra_agents: &[ExtraAgent],
 ) -> Vec<AgentCoverage> {
     let fresh = |ts: Option<u64>| ts.map(|t| now_ms.saturating_sub(t) <= window_ms).unwrap_or(false);
     let s = scan_agents(audit_dir);
+    let hermes_mcp = s.gateway_mcp_by_agent.get("hermes").copied();
 
     let claude_code = AgentCoverage {
         agent: "claude-code".into(),
@@ -690,9 +711,9 @@ pub fn classify_agents(
             AgentLane {
                 id: "mcp".into(),
                 title: "MCP servers".into(),
-                state: state_of(fresh(s.hermes_mcp), hermes_gateway || s.hermes_mcp.is_some()),
+                state: state_of(fresh(hermes_mcp), hermes_gateway || hermes_mcp.is_some()),
                 source: Some("gateway".into()),
-                last_receipt_ms: s.hermes_mcp,
+                last_receipt_ms: hermes_mcp,
                 locus: None,
             },
             AgentLane {
@@ -709,7 +730,52 @@ pub fn classify_agents(
         ],
     };
 
-    vec![claude_code, hermes]
+    let mut groups = vec![claude_code, hermes];
+
+    // Gateway-only agents (Cursor/Cline/Copilot/Gemini): one governed MCP lane via the gateway, plus
+    // the honest greyed ceilings for what the MCP lane can't reach (native built-ins; cloud). Shown
+    // only when configured or evidenced — an uninstalled agent stays out of the view entirely.
+    for ea in extra_agents {
+        let mcp = s.gateway_mcp_by_agent.get(&ea.agent).copied();
+        if !ea.configured && mcp.is_none() {
+            continue;
+        }
+        let mut lanes = vec![
+            AgentLane {
+                id: "mcp".into(),
+                title: "MCP servers".into(),
+                state: state_of(fresh(mcp), ea.configured || mcp.is_some()),
+                source: Some("gateway".into()),
+                last_receipt_ms: mcp,
+                locus: None,
+            },
+            AgentLane {
+                id: "builtins".into(),
+                title: "Built-in tools".into(),
+                state: LaneState::Grey,
+                source: None,
+                last_receipt_ms: None,
+                locus: Some(ea.builtins_locus.clone()),
+            },
+        ];
+        if let Some(cloud) = &ea.cloud_locus {
+            lanes.push(AgentLane {
+                id: "cloud".into(),
+                title: "Cloud".into(),
+                state: LaneState::Grey,
+                source: None,
+                last_receipt_ms: None,
+                locus: Some(cloud.clone()),
+            });
+        }
+        groups.push(AgentCoverage {
+            agent: ea.agent.clone(),
+            label: ea.label.clone(),
+            lanes,
+        });
+    }
+
+    groups
 }
 
 /// Read the Hermes config at the real, standard path for the two AMBER flags (production call site).
@@ -747,6 +813,78 @@ fn hermes_flags_from(path: &Path) -> (bool, bool) {
         })
         .unwrap_or(false);
     (hook, gateway)
+}
+
+/// Does a JSON client config have at least one `kriya-gateway`-wrapped server under `key`?
+/// Best-effort (missing/invalid ⇒ false). The JSON analogue of [`hermes_flags_from`]'s gateway check,
+/// keyed by the client's own servers key (Copilot's `servers` vs everyone else's `mcpServers`).
+fn json_gateway_configured(path: &Path, key: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    v.get(key)
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.values().any(|e| {
+                e.get("command")
+                    .and_then(Value::as_str)
+                    .and_then(|c| Path::new(c).file_name().and_then(|n| n.to_str()).map(String::from))
+                    .map(|n| n.starts_with("kriya-gateway"))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// The gateway-only agents (VS-Code family + Gemini CLI) folded into the per-agent coverage view,
+/// each carrying the honest ceilings the MCP lane cannot cover. `configured` is read from the real
+/// on-disk config at the production call site (fixture-injected in tests via `classify_agents`).
+fn extra_gateway_agents() -> Vec<ExtraAgent> {
+    use crate::govern::{
+        cline_mcp_path, cursor_mcp_path, gemini_settings_path, vscode_user_mcp_path, Client,
+    };
+    let builtins = |tool: &str| {
+        format!(
+            "{tool} run in-process and bypass MCP entirely — ungoverned unless the agent is launched under containment (`kriya-gateway run --`, B14)."
+        )
+    };
+    vec![
+        ExtraAgent {
+            agent: "cursor".into(),
+            label: "Cursor".into(),
+            configured: json_gateway_configured(&cursor_mcp_path(), Client::Cursor.servers_key()),
+            builtins_locus: builtins("Cursor's built-in edit / terminal / file tools"),
+            cloud_locus: Some(
+                "Cursor's background / cloud agents run off-device — no on-device process, so no receipt is possible.".into(),
+            ),
+        },
+        ExtraAgent {
+            agent: "cline".into(),
+            label: "Cline".into(),
+            configured: json_gateway_configured(&cline_mcp_path(), Client::Cline.servers_key()),
+            builtins_locus: builtins("Cline's own file / command tools"),
+            cloud_locus: None, // Cline executes locally inside the IDE — no separate cloud lane.
+        },
+        ExtraAgent {
+            agent: "copilot".into(),
+            label: "GitHub Copilot".into(),
+            configured: json_gateway_configured(&vscode_user_mcp_path(), Client::Copilot.servers_key()),
+            builtins_locus: builtins("VS Code's + Copilot's built-in tools"),
+            cloud_locus: Some(
+                "Copilot's cloud coding agent runs on GitHub's infrastructure — off-device, out of scope (locus rule).".into(),
+            ),
+        },
+        ExtraAgent {
+            agent: "gemini".into(),
+            label: "Gemini CLI".into(),
+            configured: json_gateway_configured(&gemini_settings_path(), Client::Gemini.servers_key()),
+            builtins_locus: builtins("Gemini CLI's built-in shell / file tools"),
+            cloud_locus: None, // The CLI runs locally; model calls are egress, covered elsewhere.
+        },
+    ]
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -800,10 +938,11 @@ pub fn default_keys_dir() -> PathBuf {
     }
 }
 
-/// Load or mint the coverage signing key (32-byte seed, lowercase hex, 0600 — the runtime's
+/// Load or mint a signing key (32-byte seed, lowercase hex, 0600 — the runtime's
 /// `Signer::with_identity` on-disk format). An existing-but-invalid key is an error, never
-/// silently overwritten (losing a durable identity must be explicit).
-fn load_or_create_key(path: &Path) -> Result<SigningKey, String> {
+/// silently overwritten (losing a durable identity must be explicit). `pub(crate)`: reused by
+/// `policy_sim` for its own free-tier `policy-sim.key` under the same `default_keys_dir()`.
+pub(crate) fn load_or_create_key(path: &Path) -> Result<SigningKey, String> {
     if path.exists() {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
@@ -1006,6 +1145,7 @@ pub fn coverage_status() -> CoverageStatus {
         cc_hook,
         hermes_hook,
         hermes_gateway,
+        &extra_gateway_agents(),
     );
     let bundled_hook = crate::onboarding::resolve_hook().map(|(p, _)| p.to_string_lossy().into_owned());
     let hook_health = hook_health(claude_settings_path().as_deref(), bundled_hook.as_deref());
@@ -1397,7 +1537,7 @@ mod tests {
         // A gateway per-server chain attributed to Hermes (govern-all wraps its stdio MCP).
         write_log(&dir, "fs-server.jsonl", &[line_actor("read_file", NOW - HOUR, "hermes")]);
 
-        let cov = classify_agents(&dir, NOW, WINDOW, false, false, false);
+        let cov = classify_agents(&dir, NOW, WINDOW, false, false, false, &[]);
         assert_eq!(cov.len(), 2, "Claude Code and Hermes lane-groups");
         assert_eq!(agent_lane(&cov, "claude-code", "native-tools").state, LaneState::Green);
         assert_eq!(agent_lane(&cov, "claude-code", "attached-mcp").state, LaneState::Green);
@@ -1417,7 +1557,7 @@ mod tests {
     fn agents_hermes_native_greens_from_hermes_hook_log() {
         let dir = tmp("hermes-native");
         write_log(&dir, "hermes.jsonl", &[line("hermes__terminal", NOW - HOUR)]);
-        let cov = classify_agents(&dir, NOW, WINDOW, false, false, false);
+        let cov = classify_agents(&dir, NOW, WINDOW, false, false, false, &[]);
         let hn = agent_lane(&cov, "hermes", "native-tools");
         assert_eq!(hn.state, LaneState::Green);
         assert_eq!(hn.source.as_deref(), Some("hook.hermes"));
@@ -1427,11 +1567,67 @@ mod tests {
     #[test]
     fn agents_amber_when_configured_but_silent() {
         let dir = tmp("agents-amber");
-        let cov = classify_agents(&dir, NOW, WINDOW, /*cc_hook*/ true, /*hermes_hook*/ false, /*hermes_gateway*/ true);
+        let cov = classify_agents(&dir, NOW, WINDOW, /*cc_hook*/ true, /*hermes_hook*/ false, /*hermes_gateway*/ true, &[]);
         assert_eq!(agent_lane(&cov, "claude-code", "native-tools").state, LaneState::Amber);
         assert_eq!(agent_lane(&cov, "claude-code", "attached-mcp").state, LaneState::Amber);
         assert_eq!(agent_lane(&cov, "hermes", "mcp").state, LaneState::Amber);
         assert_eq!(agent_lane(&cov, "hermes", "native-tools").state, LaneState::Grey, "hook still deferred");
+    }
+
+    // --- S1: the gateway-only agents (Cursor/Cline/Copilot/Gemini) in the per-agent view -----
+
+    #[test]
+    fn extra_gateway_agent_shows_mcp_green_plus_honest_greyed_ceilings() {
+        let dir = tmp("extra-agents");
+        // A gateway per-server chain attributed to Cursor — govern-all wraps its stdio MCP with
+        // `--actor cursor`, so the receipt carries actor.agent "cursor".
+        write_log(&dir, "cursor-fs.jsonl", &[line_actor("read_file", NOW - HOUR, "cursor")]);
+
+        let extras = vec![
+            ExtraAgent {
+                agent: "cursor".into(),
+                label: "Cursor".into(),
+                configured: true,
+                builtins_locus: "Cursor's built-in edit / terminal tools bypass MCP — B14.".into(),
+                cloud_locus: Some("Cursor's cloud agents run off-device.".into()),
+            },
+            // An uninstalled agent (not configured, no evidence) must NOT clutter the view.
+            ExtraAgent {
+                agent: "gemini".into(),
+                label: "Gemini CLI".into(),
+                configured: false,
+                builtins_locus: "…".into(),
+                cloud_locus: None,
+            },
+        ];
+        let cov = classify_agents(&dir, NOW, WINDOW, false, false, false, &extras);
+
+        assert_eq!(agent_lane(&cov, "cursor", "mcp").state, LaneState::Green);
+        assert_eq!(agent_lane(&cov, "cursor", "mcp").source.as_deref(), Some("gateway"));
+        let bi = agent_lane(&cov, "cursor", "builtins");
+        assert_eq!(bi.state, LaneState::Grey);
+        assert!(bi.locus.as_ref().unwrap().contains("bypass MCP"), "the honest built-ins ceiling is stated");
+        assert_eq!(agent_lane(&cov, "cursor", "cloud").state, LaneState::Grey);
+        assert!(
+            !cov.iter().any(|g| g.agent == "gemini"),
+            "an absent (unconfigured, no-evidence) agent stays out of the coverage view"
+        );
+    }
+
+    #[test]
+    fn extra_gateway_agent_is_amber_when_configured_but_silent_and_omits_cloud_when_local() {
+        let dir = tmp("extra-amber");
+        let extras = vec![ExtraAgent {
+            agent: "cline".into(),
+            label: "Cline".into(),
+            configured: true, // wired but no receipts yet
+            builtins_locus: "Cline's own file / command tools bypass MCP — B14.".into(),
+            cloud_locus: None, // runs locally in the IDE — no cloud lane
+        }];
+        let cov = classify_agents(&dir, NOW, WINDOW, false, false, false, &extras);
+        assert_eq!(agent_lane(&cov, "cline", "mcp").state, LaneState::Amber, "configured but silent ⇒ amber");
+        let group = cov.iter().find(|g| g.agent == "cline").unwrap();
+        assert!(group.lanes.iter().all(|l| l.id != "cloud"), "a local-only agent has no cloud lane");
     }
 
     /// Regression (found live, 2026-07-08): a real Hermes config's servers live under `mcp_servers`
@@ -1477,7 +1673,7 @@ mod tests {
     #[test]
     fn agents_empty_dir_is_all_grey_with_cloud_locus() {
         let dir = tmp("agents-grey");
-        let cov = classify_agents(&dir, NOW, WINDOW, false, false, false);
+        let cov = classify_agents(&dir, NOW, WINDOW, false, false, false, &[]);
         for a in &cov {
             for l in &a.lanes {
                 assert_eq!(l.state, LaneState::Grey, "{}/{} must be grey", a.agent, l.id);

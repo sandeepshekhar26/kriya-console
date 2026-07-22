@@ -36,3 +36,6 @@ deck/*.pdf
 deck/build/node_modules/
 deck/slide-*.jpg
 dist-audit/
+
+# autopilot run logs (M5 machine, local only)
+**/autopilot/logs/

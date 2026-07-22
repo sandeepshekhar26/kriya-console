@@ -44,11 +44,16 @@ const PRIV = {
   "budget-app": fromHex("a1b2c3d4e5f6071829303a4b5c6d7e8f90a1b2c3d4e5f6071829303a4b5c6d7e"),
   "crm-app":    fromHex("0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"),
   "devops-app": fromHex("5566778899aabbccddeeff00112233445566778899aabbccddeeff0011223344"),
+  // S3 run correlation lanes — a Claude Code session (with sub-agents) and a LangGraph run (nested).
+  "claude-code": fromHex("11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff"),
+  "langgraph":   fromHex("ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100"),
 };
 const ACTOR = {
   "budget-app": { agent: "claude-desktop", user: "fin-ops" },
   "crm-app":    { agent: "cursor", user: "sales-ops" },
   "devops-app": { agent: "claude-desktop", user: "platform-eng" },
+  "claude-code": { agent: "claude-code", user: "platform-eng" },
+  "langgraph":   { agent: "langgraph", user: "data-eng" },
 };
 
 // --- the action log (PII-free: opaque ids, no names, no emails) ---
@@ -99,6 +104,31 @@ const IO_ROWS = [
   ["devops-app", "kriya.io.ingress.http.allow", { bytes_in: 88420, bytes_out: 0, content_sha256: IO_SHA(7), corr: "devops-app-026", decision: "allow", dest_host: "registry.npmjs.org", dest_kind: "http", hash_scheme: "wire-bytes", method: "GET", policy_rule: "registry.npmjs.org", server: "github" }],
 ];
 
+// --- S3 run-correlation corpus: explicit step ids so lineage (parent_step_id) and sub-agent
+//     grouping (agent_id) reconstruct into a real tree. run_id groups a session; the Claude Code
+//     lane has agent_id (no parent pointer — its hook payload carries none); the LangGraph lane
+//     threads parent_step_id for nested calls. Each row: [app, stepId, action_id, corr, params?, success?]. ---
+const CC = "sess-cc-01";
+const LG = "run-lg-02";
+const SESSION_ROWS = [
+  // LangGraph run (earlier): a top-level search fans out to two nested calls, then a top-level write.
+  ["langgraph", "lg-1", "web_search", { run_id: LG }, { q: "CMMC L2 audit evidence" }],
+  ["langgraph", "lg-2", "fetch_url", { run_id: LG, parent_step_id: "lg-1" }, { url: "https://dodcio.defense.gov" }],
+  ["langgraph", "lg-3", "summarize", { run_id: LG, parent_step_id: "lg-1" }, { doc: "au-family" }],
+  ["langgraph", "lg-4", "write_report", { run_id: LG }, { path: "reports/cmmc.md" }],
+  // Claude Code session (most recent → default-expanded): main agent reads, spawns Explore, spawns
+  // Plan; sub-agents act under their agent_id; one edit blocked by policy. This is the acceptance
+  // scenario — a real Claude Code session that spawns subagents, reconstructed as a tree.
+  ["claude-code", "cc-1", "claude-code__read", { run_id: CC }, { file_path: "src/governor.rs" }],
+  ["claude-code", "cc-2", "claude-code__task", { run_id: CC }, { subagent_type: "Explore", description: "map the egress lanes" }],
+  ["claude-code", "cc-3", "claude-code__grep", { run_id: CC, agent_id: "explore-a1" }, { pattern: "kriya.io.egress" }],
+  ["claude-code", "cc-4", "claude-code__read", { run_id: CC, agent_id: "explore-a1" }, { file_path: "docs/TRUST.md" }],
+  ["claude-code", "cc-5", "claude-code__task", { run_id: CC }, { subagent_type: "Plan", description: "sequence the build" }],
+  ["claude-code", "cc-6", "claude-code__bash", { run_id: CC, agent_id: "plan-b2" }, { command: "cargo test -p kriya" }],
+  ["claude-code", "cc-7", "claude-code__edit", { run_id: CC }, { file_path: "/etc/hosts" }, false], // blocked by policy
+];
+const SESSION_BASE = BASE + 5_000_000;
+
 // --- pending approvals (high-risk actions a policy holds for a human); same role handles, no emails ---
 const APPROVALS = [
   ["budget-app", "delete_transaction", { id: "txn-5012" }, "Looks like a duplicate charge"],
@@ -134,6 +164,23 @@ async function main() {
     const [app, action_id, params] = IO_ROWS[i];
     const ts_ms = BASE + ROWS.length * 145000 + i * 97000;
     const receipt = { step_id: `${action_id}-${ts_ms}`, action_id, params, success: true, ts_ms, actor: ACTOR[app] };
+    const priv = PRIV[app];
+    const pub = await ed.getPublicKeyAsync(priv);
+    const signature = hex(await ed.signAsync(canonicalReceiptBytes(receipt), priv));
+    auditLines.push(JSON.stringify({ ...receipt, source: app, public_key: hex(pub), signature }));
+  }
+
+  // S3 run-correlation rows: real signatures, explicit step ids, kriya.corr stamped into params.
+  for (let i = 0; i < SESSION_ROWS.length; i++) {
+    const [app, stepId, action_id, corr, params = {}, success = true] = SESSION_ROWS[i];
+    const receipt = {
+      step_id: stepId,
+      action_id,
+      params: { ...params, "kriya.corr": corr },
+      success,
+      ts_ms: SESSION_BASE + i * 63000,
+      actor: ACTOR[app],
+    };
     const priv = PRIV[app];
     const pub = await ed.getPublicKeyAsync(priv);
     const signature = hex(await ed.signAsync(canonicalReceiptBytes(receipt), priv));

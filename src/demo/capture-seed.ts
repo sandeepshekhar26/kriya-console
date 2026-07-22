@@ -3,6 +3,33 @@
 // so — like the demo seed — it is tree-shaken out of the shipped desktop app.
 import captureAudit from "./capture/capture-audit.jsonl?raw";
 import captureApprovals from "./capture/capture-approvals.jsonl?raw";
+import type { SimulationReport } from "../lib/tauri";
 
 export const CAPTURE_AUDIT = captureAudit;
 export const CAPTURE_APPROVALS = captureApprovals;
+
+/** Deterministic "Policy CI / test before apply" result for the marketing still (I3). The capture
+ *  seed's receipts are dated weeks back, so a live 7-day replay would show the honest empty state and
+ *  there is no Rust backend in the screenshot browser anyway — so this stands in, computed OFFLINE
+ *  over the REAL signed action-ids in CAPTURE_AUDIT (delete_transaction / deploy / restart_service /
+ *  scale_service) as if a candidate policy tightened destructive-transaction + deploy actions. Like
+ *  the rest of this module it is dynamically imported only behind `__KRIYA_DEMO__`, so it is
+ *  tree-shaken from the shipped app — which always computes the real report via `simulate_policy`. */
+export const CAPTURE_SIM_REPORT: SimulationReport = {
+  windowFromMs: 0,
+  windowToMs: 0,
+  totalReplayed: 28,
+  changed: 4,
+  changedToDeny: 1,
+  changedToApproval: 3,
+  changedToAllow: 0,
+  unchanged: 24,
+  examples: [
+    { source: "budget-app.jsonl", actionId: "delete_transaction", tsMs: 0, before: "allow", after: "deny" },
+    { source: "devops-app.jsonl", actionId: "deploy", tsMs: 0, before: "allow", after: "approval" },
+    { source: "devops-app.jsonl", actionId: "restart_service", tsMs: 0, before: "allow", after: "approval" },
+    { source: "devops-app.jsonl", actionId: "scale_service", tsMs: 0, before: "allow", after: "approval" },
+  ],
+  examplesTruncated: false,
+  candidatePolicyHash: "demo-candidate",
+};

@@ -8,6 +8,7 @@ import { PolicyView } from "./views/PolicyView";
 import { ApprovalsView } from "./views/ApprovalsView";
 import { BudgetView } from "./views/BudgetView";
 import { IdentityView } from "./views/IdentityView";
+import { SessionsView } from "./views/SessionsView";
 import { ReportsView } from "./views/ReportsView";
 import { ConnectionsView } from "./views/ConnectionsView";
 import { SettingsView, type SettingsPane } from "./views/SettingsView";
@@ -401,6 +402,7 @@ export function App() {
           />
         )}
         {view === "coverage" && <CoverageView onNavigate={setView} />}
+        {view === "sessions" && <SessionsView rows={rows} onNavigate={setView} />}
         {view === "audit" && (
           <AuditView
             rows={rows}

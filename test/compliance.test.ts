@@ -342,3 +342,56 @@ describe("buildEvidence — egress/ingress ledger controls (EG-3, doc 24 §3)", 
     expect(si4.evidence).toContain("No denials observed");
   });
 });
+
+describe("buildEvidence — run-correlation appendix (S3)", () => {
+  // A verified in-memory row optionally carrying kriya.corr.
+  function row(
+    stepId: string,
+    action_id: string,
+    corr?: { run_id?: string; parent_step_id?: string; agent_id?: string },
+  ): AuditRow {
+    const params: Record<string, unknown> = { x: 1 };
+    if (corr) params["kriya.corr"] = corr;
+    return {
+      source: "test",
+      lineNo: 1,
+      raw: "",
+      receipt: {
+        step_id: stepId,
+        action_id,
+        params,
+        success: !action_id.includes("deny"),
+        ts_ms: AT,
+        public_key: "pk",
+        signature: "sig",
+      } as SignedReceipt,
+      outcome: { ok: true },
+    };
+  }
+
+  it("omits the appendix entirely when no receipts are correlated (byte-identical export)", () => {
+    const rows: AuditRow[] = [row("s1", "create_note"), row("s2", "list_notes")];
+    const b = buildEvidence(rows, defaultPolicy(), { generatedAt: AT, organization: "Acme" });
+    expect(b.correlation).toBeUndefined();
+    // The JSON must not gain a `correlation` KEY (the word appears in unrelated control text), and
+    // the Markdown must not gain the appendix heading.
+    expect(renderJson(b)).not.toContain('"correlation":');
+    expect(renderMarkdown(b)).not.toContain("Session correlation");
+  });
+
+  it("emits the appendix numbers when correlated receipts exist", () => {
+    const rows: AuditRow[] = [
+      row("m1", "claude-code__task", { run_id: "sess" }),
+      row("s1", "claude-code__bash", { run_id: "sess", agent_id: "sub-A" }),
+      row("s2", "claude-code__bash", { run_id: "sess", agent_id: "sub-A" }),
+    ];
+    const b = buildEvidence(rows, defaultPolicy(), { generatedAt: AT, organization: "Acme" });
+    expect(b.correlation).toEqual({ runs: 1, subAgents: 1, spawns: 1, actions: 3, blocked: 0 });
+    const md = renderMarkdown(b);
+    expect(md).toContain("## Session correlation (appendix)");
+    expect(md).toContain("**1** run(s)");
+    expect(md).toContain("**1** sub-agent(s) observed");
+    // The correlation field also appears in the JSON.
+    expect(JSON.parse(renderJson(b)).correlation.runs).toBe(1);
+  });
+});

@@ -79,6 +79,13 @@ const PREVIEW_SURFACE: GovernableSurface = {
     { id: "claude-desktop:mcp-server:linear", agent: "claude-desktop", kind: "mcp-server", seam: "gateway", state: "out-of-scope-cloud", configPath: "~/Library/Application Support/Claude/claude_desktop_config.json", label: "linear (remote MCP)", detail: "Runs off-device (remote/SSE/HTTP) — an on-device receipt is physically impossible." },
     { id: "hermes:mcp-server:fs", agent: "hermes", kind: "mcp-server", seam: "gateway", state: "ungoverned", configPath: "~/.hermes/config.yaml", label: "fs (MCP)", detail: "Local stdio server — wrap it with kriya-gateway to sign every tool call." },
     { id: "desktop:desktop-apps", agent: "desktop", kind: "desktop-apps", seam: "reach-in/computer-use", state: "needs-permission", label: "Desktop apps (no API)", detail: "2 desktop apps detected. Reach-in/computer-use needs macOS Accessibility — grant Kriya Console.app, then govern a specific app in Advanced." },
+    // S1: the VS-Code family (Cursor/Cline/GitHub Copilot) + Gemini CLI — MCP-only clients wired through
+    // the gateway (Cline left ungoverned so the one-click "Govern" action is visible). Rendered in
+    // AGENT_ORDER position, so array order here is irrelevant.
+    { id: "cursor:mcp-server:filesystem", agent: "cursor", kind: "mcp-server", seam: "gateway", state: "governed", configPath: "~/.cursor/mcp.json", label: "filesystem (MCP)", detail: "Wrapped by kriya-gateway — every tool call is policy-gated and signed. Cursor's built-in edit/terminal tools bypass MCP (contain via B14)." },
+    { id: "cline:mcp-server:github", agent: "cline", kind: "mcp-server", seam: "gateway", state: "ungoverned", configPath: "~/…/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json", label: "github (MCP)", detail: "Local stdio server — wrap it with kriya-gateway to sign every tool call." },
+    { id: "copilot:mcp-server:playwright", agent: "copilot", kind: "mcp-server", seam: "gateway", state: "governed", configPath: "~/Library/Application Support/Code/User/mcp.json", label: "playwright (MCP)", detail: "Wrapped by kriya-gateway. Copilot's cloud coding agent stays out of scope (locus rule)." },
+    { id: "gemini:mcp-server:fetch", agent: "gemini", kind: "mcp-server", seam: "gateway", state: "governed", configPath: "~/.gemini/settings.json", label: "fetch (MCP)", detail: "Wrapped by kriya-gateway — every tool call is policy-gated and signed." },
   ],
   hookAvailable: true,
   gatewayAvailable: true,
@@ -92,10 +99,12 @@ const PREVIEW_PLAN: GovernPlan = {
     { targetId: "hermes:hook", agent: "hermes", seam: "hook", action: "install-hook", detail: "Install the kriya-hermes-hook block (record-only) so every native tool + attached MCP call signs a receipt." },
     { targetId: "claude-desktop:mcp-server:github", agent: "claude-desktop", seam: "gateway", action: "wrap-mcp-server", serverKey: "github", detail: "Wrap github with kriya-gateway — policy → approval → signed receipt on every tool call." },
     { targetId: "hermes:mcp-server:fs", agent: "hermes", seam: "gateway", action: "wrap-mcp-server", serverKey: "fs", detail: "Wrap fs with kriya-gateway — policy → approval → signed receipt on every tool call." },
+    { targetId: "cline:mcp-server:github", agent: "cline", seam: "gateway", action: "wrap-mcp-server", serverKey: "github", detail: "Wrap github with kriya-gateway — policy → approval → signed receipt on every tool call." },
   ],
   needsPermission: [PREVIEW_SURFACE.targets[6]!],
   outOfScopeCloud: [PREVIEW_SURFACE.targets[4]!],
-  alreadyGoverned: [PREVIEW_SURFACE.targets[3]!],
+  // filesystem (Claude Desktop) + the S1 governed VS-Code-family/CLI agents (cursor/copilot/gemini).
+  alreadyGoverned: [PREVIEW_SURFACE.targets[3]!, PREVIEW_SURFACE.targets[7]!, PREVIEW_SURFACE.targets[9]!, PREVIEW_SURFACE.targets[10]!],
   blocked: [],
   hookAvailable: true,
   gatewayAvailable: true,

@@ -40,6 +40,32 @@ pub enum Client {
     /// Hermes (`NousResearch/hermes-agent`) — `~/.hermes/config.yaml`; local stdio MCP via the
     /// gateway, AND native tools + attached MCP via the `kriya-hermes-hook` shell-hook seam (R31).
     Hermes,
+    /// Cursor — `~/.cursor/mcp.json` (global; project override `.cursor/mcp.json`); local stdio MCP
+    /// only (no local hook seam — Cursor's built-in edit/terminal tools bypass MCP entirely; see the
+    /// honest ceiling in the Coverage view + FEATURE-PROOF). Shares Anthropic's `mcpServers`
+    /// (camelCase) shape, `{command,args,env}` for stdio / `url` for remote — verified 2026-07-21
+    /// against cursor.com/docs (MCP), not assumed by analogy.
+    Cursor,
+    /// Cline (VS Code / Cursor extension `saoudrizwan.claude-dev`) — the extension's own
+    /// `cline_mcp_settings.json` under VS Code's `globalStorage`; local stdio MCP only. Top-level
+    /// `mcpServers`, stdio `{command,args,env,disabled,autoApprove}` — verified 2026-07-21 against
+    /// docs.cline.bot (Configuring MCP Servers). NOTE the host split: this points at the **VS Code**
+    /// storage path; a Cline running inside Cursor stores under `Cursor/User/globalStorage/…` instead
+    /// (recorded in FEATURE-PROOF as the known host-variant limitation).
+    Cline,
+    /// GitHub Copilot (VS Code agent mode) — VS Code's user-level `mcp.json`; local stdio MCP only
+    /// (Copilot's own built-in tools + its cloud coding agent are out of scope — locus rule). UNLIKE
+    /// every other client here the servers map is keyed **`servers`** (lowercase), NOT `mcpServers`;
+    /// stdio `{command,args,env}` (`type:"stdio"` implicit), remote `{type:"http",url}` — verified
+    /// 2026-07-21 against code.visualstudio.com/docs/copilot/chat/mcp-servers. Detection is best-effort
+    /// on the user `mcp.json`'s presence (VS Code writes it only once MCP is configured).
+    Copilot,
+    /// Gemini CLI (Google) — `~/.gemini/settings.json`; local stdio MCP only. Top-level `mcpServers`,
+    /// stdio `{command,args,env,cwd}` / remote `{httpUrl}` or `{url}` — verified 2026-07-21 against
+    /// github.com/google-gemini/gemini-cli (docs/tools/mcp-server). Presence keys on `settings.json`
+    /// specifically (the bare `~/.gemini/` dir is also used by other Google tooling — do not
+    /// false-detect it as an installed Gemini CLI).
+    Gemini,
 }
 
 /// Serialization format of a client's config file.
@@ -56,6 +82,10 @@ impl Client {
             Client::ClaudeDesktop => "claude-desktop",
             Client::ClaudeCode => "claude-code",
             Client::Hermes => "hermes",
+            Client::Cursor => "cursor",
+            Client::Cline => "cline",
+            Client::Copilot => "copilot",
+            Client::Gemini => "gemini",
         }
     }
 
@@ -64,6 +94,10 @@ impl Client {
             "claude-desktop" => Some(Client::ClaudeDesktop),
             "claude-code" => Some(Client::ClaudeCode),
             "hermes" => Some(Client::Hermes),
+            "cursor" => Some(Client::Cursor),
+            "cline" => Some(Client::Cline),
+            "copilot" => Some(Client::Copilot),
+            "gemini" => Some(Client::Gemini),
             _ => None,
         }
     }
@@ -74,17 +108,23 @@ impl Client {
             Client::ClaudeCode => claude_settings_path()
                 .unwrap_or_else(|| PathBuf::from(".claude").join("settings.json")),
             Client::Hermes => hermes_config_path(),
+            Client::Cursor => cursor_mcp_path(),
+            Client::Cline => cline_mcp_path(),
+            Client::Copilot => vscode_user_mcp_path(),
+            Client::Gemini => gemini_settings_path(),
         }
     }
 
     fn fmt(self) -> Fmt {
         match self {
             Client::Hermes => Fmt::Yaml,
-            _ => Fmt::Json,
+            _ => Fmt::Json, // Claude {Desktop,Code}, Cursor, Cline, Copilot, Gemini all use JSON
         }
     }
 
-    /// Whether this client has a hook seam govern-all can install into.
+    /// Whether this client has a hook seam govern-all can install into. The VS-Code-family clients
+    /// (Cursor/Cline/Copilot) and Gemini CLI expose **no local hook API** — they are MCP-only, so
+    /// govern-all reaches them through the gateway (per-server wrap), never a hook.
     fn supports_hooks(self) -> bool {
         matches!(self, Client::ClaudeCode | Client::Hermes)
     }
@@ -94,7 +134,11 @@ impl Client {
         match self {
             Client::ClaudeCode => Some("claude"),
             Client::Hermes => Some("hermes"),
-            Client::ClaudeDesktop => None, // a GUI app, not a PATH binary
+            Client::Gemini => Some("gemini"),
+            // GUI apps / extensions — not a PATH binary; detected via their config file's presence.
+            // (Cursor ships a `cursor` shell command, but it is opt-in from the app and often absent
+            // even on a full install — so presence keys on `~/.cursor/mcp.json`, like Claude Desktop.)
+            Client::ClaudeDesktop | Client::Cursor | Client::Cline | Client::Copilot => None,
         }
     }
 
@@ -109,9 +153,57 @@ impl Client {
     pub(crate) fn servers_key(self) -> &'static str {
         match self {
             Client::Hermes => "mcp_servers",
+            // VS Code's native MCP config (Copilot agent mode) keys the map `servers` (lowercase) —
+            // NOT Anthropic's `mcpServers`. Getting this wrong makes a real Copilot install's servers
+            // invisible to detection, exactly the class of bug the Hermes `mcp_servers` note records.
+            Client::Copilot => "servers",
+            // Claude Desktop/Code, Cursor, Cline, Gemini CLI all use Anthropic's `mcpServers`.
             _ => "mcpServers",
         }
     }
+}
+
+/// `~/.cursor/mcp.json` — Cursor's global MCP server map (`mcpServers`).
+pub fn cursor_mcp_path() -> PathBuf {
+    home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".cursor")
+        .join("mcp.json")
+}
+
+/// `~/.gemini/settings.json` — Gemini CLI's settings (the `mcpServers` map lives here).
+pub fn gemini_settings_path() -> PathBuf {
+    home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".gemini")
+        .join("settings.json")
+}
+
+/// Cline's MCP settings under VS Code's per-user `globalStorage` (extension `saoudrizwan.claude-dev`).
+/// macOS path; the Console is macOS-first (mirrors [`crate::onboarding::claude_config_path`]'s
+/// `~/Library/Application Support` convention).
+pub fn cline_mcp_path() -> PathBuf {
+    home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Library")
+        .join("Application Support")
+        .join("Code")
+        .join("User")
+        .join("globalStorage")
+        .join("saoudrizwan.claude-dev")
+        .join("settings")
+        .join("cline_mcp_settings.json")
+}
+
+/// VS Code's user-level `mcp.json` (the seam GitHub Copilot agent mode reads). macOS path.
+pub fn vscode_user_mcp_path() -> PathBuf {
+    home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Library")
+        .join("Application Support")
+        .join("Code")
+        .join("User")
+        .join("mcp.json")
 }
 
 /// `~/.hermes/config.yaml` — Hermes' agent config (the `mcp_servers:` map + a future `hooks:` block).
@@ -147,7 +239,7 @@ pub fn agent_policy_path() -> PathBuf {
 /// record-only, allow everything. Writing this changes nothing about current enforcement
 /// behavior until the operator authors a real rule; it exists purely so `--policy <path>` always
 /// points at a real file (never a dangling one) the moment any seam starts passing the flag.
-const PERMISSIVE_DEFAULT_POLICY_YAML: &str = "rules:\n  - { action: \"*\", allow: true }\n";
+pub(crate) const PERMISSIVE_DEFAULT_POLICY_YAML: &str = "rules:\n  - { action: \"*\", allow: true }\n";
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -326,12 +418,16 @@ fn gateway_subcommand(entry: &Value) -> Option<String> {
 }
 
 /// A remote/off-device MCP server (url- or transport-typed): out of scope, never wrappable.
+/// `httpUrl` is Gemini CLI's remote key (alongside `url`); `streamableHttp` is Cline's remote
+/// `type` — both verified 2026-07-21 and folded in so a remote server on those clients is honestly
+/// classed out-of-scope-cloud, never mistaken for a wrappable local stdio server.
 fn is_remote(entry: &Value) -> bool {
     entry.get("url").is_some()
+        || entry.get("httpUrl").is_some()
         || entry
             .get("type")
             .and_then(Value::as_str)
-            .map(|t| matches!(t, "sse" | "http" | "streamable-http" | "ws"))
+            .map(|t| matches!(t, "sse" | "http" | "streamable-http" | "streamableHttp" | "ws"))
             .unwrap_or(false)
 }
 
@@ -826,8 +922,16 @@ fn detect(
 
 /// Read the real client states from disk + PATH.
 fn read_client_states() -> Vec<ClientState> {
-    [Client::ClaudeCode, Client::ClaudeDesktop, Client::Hermes]
-        .into_iter()
+    [
+        Client::ClaudeCode,
+        Client::ClaudeDesktop,
+        Client::Hermes,
+        Client::Cursor,
+        Client::Cline,
+        Client::Copilot,
+        Client::Gemini,
+    ]
+    .into_iter()
         .map(|client| {
             let path = client.config_path();
             let file_exists = path.is_file();
@@ -914,7 +1018,7 @@ pub fn install_hook(agent: String) -> Result<HookResult, String> {
             let q = shell_quote(&h.to_string_lossy());
             (h, q)
         }
-        Client::ClaudeDesktop => unreachable!("supports_hooks() excludes Claude Desktop"),
+        _ => unreachable!("supports_hooks() gates install_hook to Claude Code + Hermes"),
     };
     let policy_path = ensure_policy_file()?;
     let policy_quoted = shell_quote(&policy_path.to_string_lossy());
@@ -924,7 +1028,7 @@ pub fn install_hook(agent: String) -> Result<HookResult, String> {
     match client {
         Client::ClaudeCode => install_hook_block(&mut config, &quoted, &policy_quoted, approval),
         Client::Hermes => install_hermes_hook_block(&mut config, &quoted, &policy_quoted, approval),
-        Client::ClaudeDesktop => unreachable!(),
+        _ => unreachable!(),
     }
     write_config(&path, client.fmt(), &config)?;
     Ok(HookResult {
@@ -1185,7 +1289,9 @@ fn apply_action(action: &GovernAction, gateway: &str, hook: &str, hermes_hook: &
                 }
                 install_hermes_hook_block(&mut config, &shell_quote(hermes_hook), &policy_quoted, approval);
             }
-            Client::ClaudeDesktop => return Err("Claude Desktop has no hook seam".into()),
+            // No other client produces an install-hook action (action_for only emits it for the
+            // hook-bearing clients) — but fail loud rather than silently mis-wire if one ever does.
+            other => return Err(format!("{} has no hook seam", other.agent_id())),
         },
         "wrap-mcp-server" => {
             if gateway.is_empty() {
@@ -1755,6 +1861,144 @@ mod tests {
         assert_eq!(Client::ClaudeDesktop.servers_key(), "mcpServers");
         assert_eq!(Client::ClaudeCode.servers_key(), "mcpServers");
         assert_eq!(Client::Hermes.servers_key(), "mcp_servers");
+    }
+
+    // --- S1: the VS-Code family (Cursor/Cline/Copilot) + Gemini CLI --------------------------
+    // MCP-only clients (no hook seam) — govern-all reaches them through the gateway per-server wrap,
+    // exactly like Claude Desktop. Config seams verified 2026-07-21 against each agent's current docs
+    // (see the Client-variant doc comments); these fixtures use the literal on-disk shapes.
+
+    #[test]
+    fn new_client_servers_keys_match_the_verified_seams() {
+        assert_eq!(Client::Cursor.servers_key(), "mcpServers");
+        assert_eq!(Client::Cline.servers_key(), "mcpServers");
+        assert_eq!(Client::Gemini.servers_key(), "mcpServers");
+        // VS Code's native MCP config keys the map `servers` (lowercase), NOT mcpServers — the guard
+        // against silently reading a real Copilot install's servers as empty.
+        assert_eq!(Client::Copilot.servers_key(), "servers");
+    }
+
+    #[test]
+    fn new_client_config_paths_are_the_verified_locations() {
+        with_sandbox_home(|home| {
+            assert_eq!(Client::Cursor.config_path(), home.join(".cursor").join("mcp.json"));
+            assert_eq!(Client::Gemini.config_path(), home.join(".gemini").join("settings.json"));
+            assert_eq!(
+                Client::Cline.config_path(),
+                home.join("Library")
+                    .join("Application Support")
+                    .join("Code")
+                    .join("User")
+                    .join("globalStorage")
+                    .join("saoudrizwan.claude-dev")
+                    .join("settings")
+                    .join("cline_mcp_settings.json")
+            );
+            assert_eq!(
+                Client::Copilot.config_path(),
+                home.join("Library")
+                    .join("Application Support")
+                    .join("Code")
+                    .join("User")
+                    .join("mcp.json")
+            );
+        });
+    }
+
+    #[test]
+    fn cursor_mcpservers_stdio_is_an_ungoverned_gateway_target_and_has_no_hook() {
+        let config = json!({ "mcpServers": { "github": { "command": "npx", "args": ["-y", "server-github"] } } });
+        let cs = ClientState { client: Client::Cursor, config, present: true };
+        let s = detect(&[cs], None, &[], true, true, true);
+        let t = s.targets.iter().find(|t| t.id == "cursor:mcp-server:github").unwrap();
+        assert_eq!(t.agent, "cursor");
+        assert_eq!(t.seam, "gateway");
+        assert_eq!(t.state, "ungoverned");
+        // Cursor is MCP-only: it must never grow a hook target (the honest "built-ins bypass MCP" line).
+        assert!(!s.targets.iter().any(|t| t.agent == "cursor" && t.kind == "hook"));
+    }
+
+    #[test]
+    fn copilot_lowercase_servers_key_detected_and_type_stdio_survives_wrap() {
+        // VS Code stdio entries carry `"type":"stdio"`; wrapping must keep it (kriya-gateway is a
+        // stdio command too) and round-trip it byte-for-byte.
+        let config =
+            json!({ "servers": { "pw": { "type": "stdio", "command": "npx", "args": ["-y", "playwright-mcp"] } } });
+        let cs = ClientState { client: Client::Copilot, config: config.clone(), present: true };
+        let s = detect(&[cs], None, &[], true, true, true);
+        let t = s.targets.iter().find(|t| t.id == "copilot:mcp-server:pw").unwrap();
+        assert_eq!(t.state, "ungoverned");
+
+        let entry = &config["servers"]["pw"];
+        let wrapped = wrap_entry(entry, "/g/kriya-gateway", "copilot", "gui", "/x/p.yaml").unwrap();
+        assert_eq!(wrapped["type"], json!("stdio"), "type:stdio must survive the wrap");
+        assert_eq!(unwrap_entry(&wrapped).unwrap(), *entry, "wrap→unwrap is byte-identical incl. type");
+    }
+
+    #[test]
+    fn gemini_httpurl_remote_is_out_of_scope_and_never_wrapped() {
+        // Gemini's remote key is `httpUrl` (not `url`); is_remote must catch it, so it's classed
+        // cloud rather than mistaken for a wrappable local stdio server (it carries no command).
+        let config = json!({ "mcpServers": { "remote": { "httpUrl": "http://localhost:3000/mcp" } } });
+        let cs = ClientState { client: Client::Gemini, config: config.clone(), present: true };
+        let s = detect(&[cs], None, &[], true, true, true);
+        let t = s.targets.iter().find(|t| t.id == "gemini:mcp-server:remote").unwrap();
+        assert_eq!(t.state, "out-of-scope-cloud");
+        assert!(wrap_entry(&config["mcpServers"]["remote"], "/g", "gemini", "gui", "/x/p.yaml").is_none());
+    }
+
+    #[test]
+    fn new_agents_wrap_is_idempotent_non_clobbering_and_reverts_byte_for_byte() {
+        for (client, key) in [
+            (Client::Cursor, "mcpServers"),
+            (Client::Cline, "mcpServers"),
+            (Client::Copilot, "servers"),
+            (Client::Gemini, "mcpServers"),
+        ] {
+            let id = client.agent_id();
+            let original = json!({
+                key: {
+                    "fs": { "command": "uvx", "args": ["mcp-server-fs"], "env": { "ROOT": "/tmp" } },
+                    "remote": { "url": "https://x/mcp" }
+                },
+                "otherTopLevelKey": { "keep": true }
+            });
+            let mut cfg = original.clone();
+
+            let wrap_all = |cfg: &mut Value| {
+                let servers = servers_mut(cfg, client);
+                let keys: Vec<String> = servers.keys().cloned().collect();
+                for k in keys {
+                    if let Some(w) =
+                        wrap_entry(&servers[&k], "/g/kriya-gateway", client.agent_id(), "gui", "/x/p.yaml")
+                    {
+                        servers.insert(k, w);
+                    }
+                }
+            };
+            let unwrap_all = |cfg: &mut Value| {
+                let servers = servers_mut(cfg, client);
+                let keys: Vec<String> = servers.keys().cloned().collect();
+                for k in keys {
+                    if let Some(u) = unwrap_entry(&servers[&k]) {
+                        servers.insert(k, u);
+                    }
+                }
+            };
+
+            wrap_all(&mut cfg);
+            let after_first = cfg.clone();
+            assert_eq!(gateway_subcommand(&cfg[key]["fs"]).as_deref(), Some("proxy"), "{id}: fs wrapped");
+            assert_eq!(cfg[key]["fs"]["env"], json!({ "ROOT": "/tmp" }), "{id}: env sibling preserved");
+            assert_eq!(cfg[key]["remote"], json!({ "url": "https://x/mcp" }), "{id}: remote untouched");
+            assert_eq!(cfg["otherTopLevelKey"], json!({ "keep": true }), "{id}: unrelated top-level keys kept");
+
+            wrap_all(&mut cfg);
+            assert_eq!(cfg, after_first, "{id}: wrapping twice is idempotent");
+
+            unwrap_all(&mut cfg);
+            assert_eq!(cfg, original, "{id}: unwire restores the config byte-for-byte");
+        }
     }
 
     #[test]

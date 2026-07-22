@@ -3,6 +3,34 @@
 All notable changes to the Console and the `kriyad` control plane. Dates are release dates of the
 signed, notarized macOS DMG unless noted.
 
+## v0.3.0 — 2026-07-22 — sessions, test-before-apply, more agents
+
+- **Sessions — run correlation.** A new **Sessions** view reconstructs every governed run as a tree
+  — *which session → which sub-agent → which action, in order* — from the signed receipts alone.
+  Governed lanes now stamp an optional `kriya.corr` block into each receipt (`run_id`, and where the
+  seam really exposes them, `parent_step_id` / `agent_id`); the bundled `kriya-hook` and
+  `kriya-gateway` sidecars emit it, and the SDK middleware threads explicit nested-call lineage.
+  Honest by construction: the tree is computed from **verified receipts only**, Claude Code's hook
+  payload has no parent pointer so none is invented (sub-agents group by `agent_id`), and run ids
+  live in receipt `params` — structurally unreachable by the fleet envelope minimizer, so they never
+  leave the device. The compliance export gains a session-correlation appendix **only** when
+  correlated receipts exist; a zero-correlation export is byte-identical to v0.2.6's.
+- **Policy — "test before apply."** Replay a candidate policy over this device's own re-verified
+  receipts and see which past actions would land on a different tier ("this edit would have changed
+  N of last week's M actions") — in the Policy view and as the fleet pre-publish gate. Scope stated
+  in the UI: the action-tier gate only; the simulation itself is a signed, chained
+  `kriya.policy.sim.result` receipt.
+- **Govern All: Cursor · Cline · GitHub Copilot · Gemini CLI.** One-click detection + routing of
+  each client's stdio MCP servers through the governed gateway — idempotent, non-clobbering, fully
+  reversible. Ceiling stated where it's shown: the MCP lane is governed; each agent's native
+  built-in tools bypass MCP unless launched under containment; cloud-executed agents are out of
+  scope.
+- **In the open runtime** (same release train): `kriya-govern` (per-call govern + sign over stdio),
+  SDK middleware for **LangGraph · OpenAI Agents SDK · CrewAI · Claude Agent SDK** (TypeScript +
+  Python, no crypto in the wrappers), and **`kriya-ci`** — the governed CI lane (run an agent step
+  in CI under a repo-committed policy; the build fails on a policy block and the signed receipts are
+  the build artifact, re-verifiable offline).
+
 ## v0.2.6 — 2026-07-16
 
 - **Audit log: date-range filter + sort by time.** The Audit log now has a From/To date filter
@@ -97,4 +125,5 @@ The control-plane cockpit comes together — central governance, fleet drift, or
   enforced by `npm test`.
 
 Every tagged release (notarized DMG + SHA-256) lives on
-[GitHub Releases](https://github.com/sandeepshekhar26/kriya/releases), tagged `console-vX.Y.Z`.
+[GitHub Releases](https://github.com/sandeepshekhar26/kriya-console/releases), tagged `vX.Y.Z`
+(releases through v0.2.4 were published on the runtime repo, tagged `console-vX.Y.Z`).

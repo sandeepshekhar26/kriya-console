@@ -273,6 +273,50 @@ mod tests {
         assert!(verify_value(&line).is_err(), "tampered receipt must fail");
     }
 
+    /// S3 run correlation: a receipt whose `params` carry the reserved `kriya.corr` object (run_id +
+    /// agent_id) must verify, and tampering a run id inside it must fail — proving the console's Rust
+    /// verifier treats correlation as ordinary signed params (frozen schema, TS↔Rust byte parity).
+    #[test]
+    fn kriya_corr_receipt_verifies_and_tampering_a_run_id_fails() {
+        let key = SigningKey::from_bytes(&[11u8; 32]);
+        let params =
+            json!({ "command": "ls", "kriya.corr": { "agent_id": "sub-A", "run_id": "sess-1" } });
+        let canon = CanonicalReceipt {
+            step_id: "s1".into(),
+            action_id: "claude-code__bash".into(),
+            params: canonical_value(&params),
+            success: true,
+            ts_ms: 1_700_000_000_000,
+            actor: Some(Actor {
+                agent: "claude-code".into(),
+                user: "ci".into(),
+            }),
+            prev_hash: None,
+        };
+        let msg = serde_json::to_vec(&canon).unwrap();
+        let sig = hex::encode(key.sign(&msg).to_bytes());
+        let pk = hex::encode(key.verifying_key().to_bytes());
+
+        let mut line = json!({
+            "step_id": "s1", "action_id": "claude-code__bash",
+            "params": params,
+            "success": true, "ts_ms": 1_700_000_000_000u64,
+            "actor": { "agent": "claude-code", "user": "ci" },
+            "public_key": pk, "signature": sig,
+        });
+        assert!(
+            verify_value(&line).is_ok(),
+            "a correlated receipt must verify"
+        );
+
+        // Tamper the run id inside kriya.corr — it is inside the signed bytes, so verification fails.
+        line["params"]["kriya.corr"]["run_id"] = json!("FORGED");
+        assert!(
+            verify_value(&line).is_err(),
+            "tampering run correlation must invalidate the receipt"
+        );
+    }
+
     #[test]
     fn genesis_receipt_without_actor_or_chain_verifies() {
         let key = SigningKey::from_bytes(&[3u8; 32]);
@@ -378,7 +422,10 @@ mod tests {
             None,
             None,
         );
-        assert!(verify_value(&genesis).is_ok(), "a freshly signed receipt verifies");
+        assert!(
+            verify_value(&genesis).is_ok(),
+            "a freshly signed receipt verifies"
+        );
         assert!(looks_like_receipt(&genesis));
 
         let line1 = serde_json::to_string(&genesis).unwrap();
@@ -390,7 +437,10 @@ mod tests {
             json!({}),
             false,
             2000,
-            Some(Actor { agent: "kriya-console".into(), user: "system".into() }),
+            Some(Actor {
+                agent: "kriya-console".into(),
+                user: "system".into(),
+            }),
             Some(h1.clone()),
         );
         assert!(verify_value(&second).is_ok());
@@ -454,12 +504,26 @@ mod tests {
         let mut io_seen = 0;
         for line in &lines {
             let v: Value = serde_json::from_str(line).expect("fixture line parses");
-            assert!(verify_value(&v).is_ok(), "runtime-signed line must verify under this verifier: {line}");
-            if v["action_id"].as_str().unwrap_or("").starts_with("kriya.io.") {
+            assert!(
+                verify_value(&v).is_ok(),
+                "runtime-signed line must verify under this verifier: {line}"
+            );
+            if v["action_id"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("kriya.io.")
+            {
                 io_seen += 1;
             }
         }
-        assert_eq!(io_seen, 5, "five kriya.io.* receipts in the runtime fixture");
-        assert_eq!(chain_break(text), None, "the runtime's chain must be intact under this verifier");
+        assert_eq!(
+            io_seen, 5,
+            "five kriya.io.* receipts in the runtime fixture"
+        );
+        assert_eq!(
+            chain_break(text),
+            None,
+            "the runtime's chain must be intact under this verifier"
+        );
     }
 }

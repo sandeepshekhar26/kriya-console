@@ -10,8 +10,9 @@ unlock with an offline license.**
 > proof of what they did.** Everything runs on your device or your own server. Nothing goes to
 > our cloud, because we don't have one.
 
-**Current release: v0.2.6** — signed + notarized macOS app, with egress governance.
-[Download the latest DMG](https://github.com/sandeepshekhar26/kriya-console/releases/tag/v0.2.6) ·
+**Current release: v0.3.0** — signed + notarized macOS app: session trees, policy
+test-before-apply, and one-click governance for Cursor / Cline / GitHub Copilot / Gemini CLI.
+[Download the latest DMG](https://github.com/sandeepshekhar26/kriya-console/releases/tag/v0.3.0) ·
 [kriyanative.com](https://kriyanative.com)
 
 ---
@@ -49,9 +50,10 @@ side as a signed, tamper-evident receipt you can re-verify yourself, offline.**
 
 **Use it (macOS):**
 
-1. [Download the DMG](https://github.com/sandeepshekhar26/kriya-console/releases/tag/v0.2.6) and open **kriya Console**.
-2. Click **Govern All**. The Console detects the agents on your Mac (Claude Code, Hermes) and
-   wires them into governance in one click — reversible, no config files to edit.
+1. [Download the DMG](https://github.com/sandeepshekhar26/kriya-console/releases/tag/v0.3.0) and open **kriya Console**.
+2. Click **Govern All**. The Console detects the agents on your Mac (Claude Code, Hermes, Cursor,
+   Cline, GitHub Copilot, Gemini CLI) and wires them into governance in one click — reversible, no
+   config files to edit.
 3. Use your agents as normal. Watch the **Monitor** view fill with live, signed, verified receipts.
 
 The free tier needs no account, no license, and opens no network connection — that's

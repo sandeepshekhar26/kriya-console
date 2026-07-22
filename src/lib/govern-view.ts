@@ -4,13 +4,27 @@
 
 import type { GovernableSurface, GovernState, GovernTarget } from "./tauri";
 
-/** Render order for the detected agents (unknown agents append after, stable). */
-export const AGENT_ORDER = ["claude-code", "claude-desktop", "hermes", "desktop"] as const;
+/** Render order for the detected agents (unknown agents append after, stable). The VS-Code family
+ *  (Cursor/Cline/Copilot) + Gemini CLI are MCP-only, governed through the gateway (S1). */
+export const AGENT_ORDER = [
+  "claude-code",
+  "claude-desktop",
+  "hermes",
+  "cursor",
+  "cline",
+  "copilot",
+  "gemini",
+  "desktop",
+] as const;
 
 export const AGENT_LABEL: Record<string, string> = {
   "claude-code": "Claude Code",
   "claude-desktop": "Claude Desktop",
   hermes: "Hermes",
+  cursor: "Cursor",
+  cline: "Cline",
+  copilot: "GitHub Copilot",
+  gemini: "Gemini CLI",
   desktop: "Desktop apps",
 };
 

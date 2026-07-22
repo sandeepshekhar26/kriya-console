@@ -29,6 +29,7 @@ mod policy;
 mod receipts;
 pub mod redact;
 mod sig;
+mod simulate;
 
 pub use canonical::{canonical_json_bytes, canonical_value, sha256_hex};
 pub use classify::is_destructive;
@@ -55,3 +56,4 @@ pub use receipts::{
 };
 pub use redact::{minimize_io, minimize_window, Allowlist, IoDestinationPattern, MinimizedAction, UNLISTED_PATTERN};
 pub use sig::verify_detached;
+pub use simulate::{simulate_tier, SimDecision, SimPolicy};

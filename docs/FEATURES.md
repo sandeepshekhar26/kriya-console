@@ -7,7 +7,7 @@ your own server — there is no vendor cloud to trust.
 
 Status labels, used honestly:
 
-- ✅ **Shipped** — in the current notarized DMG (v0.2.4).
+- ✅ **Shipped** — in the current notarized DMG (v0.3.0).
 - 🟢 **Merged** — built, tested, and merged on `main`; ships in the next DMG.
 - 🧭 **Roadmap** — not built; we don't sell it.
 
@@ -26,11 +26,20 @@ Every ✅/🟢 claim traces to a test, a signed sample, or a public release —
 - **Coverage Map** — the honest view of what *isn't* recorded. Six lanes (Claude Code, remote MCP,
   local MCP, desktop apps, file & exec, network egress) each show GREEN / AMBER / GREY, and every
   change to the map is itself a signed receipt — nobody can quietly claim coverage they didn't have.
+- **Sessions** — every governed run reconstructed as a tree from the signed receipts alone: *which
+  session → which sub-agent → which action, in order*, with blocked attempts marked. Computed from
+  verified receipts only; where a seam exposes no parent pointer (Claude Code's hook), none is
+  invented — sub-agents group by their real `agent_id`. Run ids never leave the device: they live in
+  receipt params, which the fleet-envelope minimizer structurally cannot read.
 
 ## 2 · Control what agents may do — ✅ free
 
 - **Policy** — ordered *allow / require-approval / deny* rules with live preview and linting. The
   Console authors the exact policy file the open runtime enforces. Fails closed on errors.
+- **Test before apply** — replay a policy edit over this device's own re-verified receipts before
+  applying it: *"this change would have changed N of last week's M actions — here they are."* Works
+  on the single device and as the fleet pre-publish gate. Scope stated in the UI: the action-tier
+  gate only (not budget/egress heuristics); the simulation is itself a signed receipt.
 - **Approvals** — one queue across all agents, ranked by risk. Destructive and financial actions
   wait for a human; the decision, the person, and the reason become part of the signed record.
 - **Budgets & rate caps** — a runaway agent stops at the cap, not at your data.
@@ -39,13 +48,22 @@ Every ✅/🟢 claim traces to a test, a signed sample, or a public release —
 
 ## 3 · Wire it up without pain — ✅ free
 
-- **Govern All** — one button: detect the agents on this Mac (Claude Code, Hermes) and wire hooks +
-  gateway + policy for all of them. Reversible.
+- **Govern All** — one button: detect the agents on this Mac (Claude Code, Hermes, **Cursor, Cline,
+  GitHub Copilot, Gemini CLI**) and wire hooks + gateway + policy for all of them, one click each.
+  Idempotent and reversible — un-govern restores every config byte-for-byte.
 - **Connections** — add governed MCP servers without hand-editing JSON; walks you through macOS
   permissions.
 - **Broad coverage** — Claude Code (native hook: every tool call, including subagents and headless
-  runs), Hermes, any MCP server via the zero-change gateway, and no-API desktop apps via
-  computer-use. Vendor-neutral by design.
+  runs), Hermes, the VS-Code-family and CLI MCP clients above via the gateway, any MCP server via
+  the zero-change gateway, and no-API desktop apps via computer-use. Vendor-neutral by design.
+  Honest ceiling where it's shown: for broker-wired clients the *MCP lane* is governed — their
+  native built-in tools bypass MCP unless launched under containment, and cloud-executed agents
+  (Cursor background, Copilot's cloud coding agent) are out of scope.
+- **In-process agents & CI** (open runtime) — SDK middleware wraps a framework's tool callback
+  (LangGraph, OpenAI Agents SDK, CrewAI, Claude Agent SDK — TypeScript + Python) so in-process tool
+  calls are gated and receipted with no MCP hop; **`kriya-ci`** runs an agent step in CI under a
+  repo-committed policy, fails the build on a policy block, and leaves the signed receipts as a
+  build artifact anyone re-verifies offline. Both are cooperative lanes and say so.
 
 ## 4 · Prove it to an auditor — ✅ paid (CLI free)
 

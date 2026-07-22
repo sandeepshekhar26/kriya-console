@@ -758,3 +758,28 @@ table.audit tbody tr:hover { background: var(--surface-2); }
 .cp-verdict.bad .icon { color: var(--bad); }
 .cp-foot { margin: 12px 0 0; line-height: 1.5; }
 @keyframes cp-pop { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+
+/* ── Sessions (S3 run correlation) ──────────────────────────────────────────── */
+.pill.bad { color: var(--bad-text); border-color: var(--bad); }
+.dot.bad { background: var(--bad); }
+.badge.subtle { background: var(--surface-2); color: var(--ink-muted); }
+
+.session-list { display: flex; flex-direction: column; gap: 10px; }
+.run-card { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); overflow: hidden; }
+.run-head {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 10px 12px; background: none; border: none; cursor: pointer; text-align: left;
+  color: var(--ink); font: inherit;
+}
+.run-head:hover { background: var(--surface-2); }
+.run-id { max-width: 30ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-stats { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.run-time { margin-left: auto; white-space: nowrap; }
+.run-body { padding: 6px 14px 12px; border-top: 1px solid var(--line); }
+.subagent-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px 0; }
+
+.action-tree { list-style: none; margin: 0; padding: 0; }
+.action-node { padding: 1px 0; }
+.action-line { display: flex; align-items: center; gap: 8px; padding: 3px 0; border-left: 2px solid var(--line); padding-left: 8px; }
+.action-id { font-size: 12px; }
+.action-time { margin-left: auto; white-space: nowrap; }

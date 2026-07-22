@@ -69,6 +69,40 @@ describe("tamper + forgery detection", () => {
   });
 });
 
+// S3 run correlation: real Rust-signed receipts carrying `kriya.corr` (run_id / agent_id /
+// parent_step_id) must verify byte-for-byte in the TS verifier — the frozen-schema + TS↔Rust-parity
+// proof that correlation rides `params` and changes no signing rule. The fixture also carries a
+// LEGACY (pre-S3, no-corr) receipt: the cross-version guarantee that old receipts verify unchanged.
+// Generated via the real `kriya-govern` binary (see the PR notes); regenerate the same way.
+const corrSample = readFileSync(join(here, "fixtures/s3-corr-audit.jsonl"), "utf8");
+
+describe("run correlation (S3) — TS↔Rust parity on kriya.corr receipts", () => {
+  it("verifies every correlated + legacy receipt byte-for-byte", async () => {
+    const rows = await loadAuditLog(corrSample, "s3-corr");
+    expect(rows.length).toBe(3);
+    expect(rows.every((r) => r.outcome.ok)).toBe(true); // incl. the legacy no-corr line
+  });
+
+  it("the fixture actually carries kriya.corr (we are testing the real thing)", async () => {
+    const rows = await loadAuditLog(corrSample, "s3-corr");
+    const corr = (r: SignedReceipt) => (r.params as Record<string, unknown>)["kriya.corr"] as
+      | Record<string, string>
+      | undefined;
+    expect(corr(rows[0]!.receipt!)).toMatchObject({ run_id: "sess-fixture-1", agent_id: "subagent-explore-1" });
+    expect(corr(rows[1]!.receipt!)).toMatchObject({ run_id: "run-fixture-2", parent_step_id: "step-parent-abc" });
+    expect(corr(rows[2]!.receipt!)).toBeUndefined(); // the legacy receipt has none
+  });
+
+  it("tampering a run id inside kriya.corr breaks the signature (it is inside the signed bytes)", async () => {
+    const rows = await loadAuditLog(corrSample, "s3-corr");
+    const r = rows[0]!.receipt!;
+    const params = r.params as Record<string, unknown>;
+    const corr = { ...(params["kriya.corr"] as Record<string, string>), run_id: "FORGED-RUN" };
+    const tampered: SignedReceipt = { ...r, params: { ...params, "kriya.corr": corr } as never };
+    expect((await verifyReceipt(tampered)).ok).toBe(false);
+  });
+});
+
 describe("parse robustness", () => {
   it("flags concatenated / garbage lines as failed rows, not crashes", async () => {
     const rows = await loadAuditLog('{"a":1}{"b":2}\nnot json at all\n', "junk");

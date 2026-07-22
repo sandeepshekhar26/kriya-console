@@ -28,6 +28,7 @@ const VIEWS = [
   ["monitor", "Monitor"],
   ["coverage", "Coverage"],
   ["audit", "Audit log"],
+  ["sessions", "Sessions"],
   ["approvals", "Approvals"],
   ["policy", "Policy"],
   ["budgets", "Budgets & rate"],
@@ -52,6 +53,32 @@ try {
     await page.screenshot({ path: `${SHOTS}/${file}.png` });
     console.log("shot:", file);
   }
+
+  // S1 (A2.8): scroll the Connections "Detected agents" list to the VS-Code family so the still
+  // showcases Cursor/Cline/GitHub Copilot/Gemini CLI governed through the gateway alongside Claude.
+  try {
+    await page.locator(".nav-item", { hasText: "Connections" }).first().click();
+    await sleep(500);
+    await page.getByText("Cursor", { exact: true }).first().scrollIntoViewIfNeeded();
+    await sleep(400);
+    await page.screenshot({ path: `${SHOTS}/connections-agents.png` });
+    console.log("shot: connections-agents");
+  } catch (e) { console.log("skip: connections-agents —", e.message.split("\n")[0]); }
+
+  // Policy CI (I3, A2.7): the "Test before apply" panel — click Simulate impact, wait for the seeded
+  // report (real signed action-ids from the capture corpus) to render, then shoot the panel as a
+  // focused still. Run before the egress edits below, which mutate this same Policy view.
+  try {
+    await page.locator(".nav-item", { hasText: "Policy" }).first().click();
+    await sleep(600);
+    const simSection = page.locator("article", { has: page.locator("h2", { hasText: "Test before apply" }) });
+    await simSection.locator("button", { hasText: "Simulate impact" }).click();
+    await simSection.locator(".decision-table").waitFor({ timeout: 5000 });
+    await simSection.scrollIntoViewIfNeeded();
+    await sleep(300);
+    await simSection.screenshot({ path: `${SHOTS}/policy-sim.png` });
+    console.log("shot: policy-sim");
+  } catch (e) { console.log("skip: policy-sim —", e.message.split("\n")[0]); }
 
   // Egress (EG-2/EG-3): the Policy egress-destinations card and the evidence rows computed from the
   // seeded kriya.io.* receipts — scrolled into frame; skipped (not failed) if the anchor is absent.

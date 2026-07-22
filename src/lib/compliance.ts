@@ -11,6 +11,7 @@
 
 import { decide, type Policy, type Tier } from "./policy.ts";
 import type { AuditRow } from "./types";
+import { buildSessionTrees, summarizeCorrelation, type CorrelationSummary } from "./sessionTree.ts";
 
 /** Reserved action id for the R13 on-device attestation receipt. */
 export const ATTESTATION_ON_DEVICE = "kriya.attestation.on_device";
@@ -105,6 +106,10 @@ export interface EvidenceBundle {
   egress: EgressEvidence | null;
   /** The governed-surface posture statement (doc 24 §7.2 row 4) — always present, unlike `egress`. */
   egressPosture: EgressPosture;
+  /** Run-correlation appendix (S3) — the session structure computed from verified `kriya.corr`
+   *  receipts. **Omitted entirely** when the window carries no correlated receipts, so a
+   *  zero-correlation export is byte-identical to a pre-S3 one (BC law). */
+  correlation?: CorrelationSummary;
 }
 
 function iso(ms: number): string {
@@ -224,6 +229,9 @@ export function buildEvidence(
     actionInventory,
     egress,
     egressPosture,
+    // Run correlation (S3): the appendix numbers, present ONLY when correlated receipts exist so a
+    // zero-correlation export stays byte-identical (undefined ⇒ omitted by JSON.stringify + Markdown).
+    correlation: summarizeCorrelation(buildSessionTrees(rows)) ?? undefined,
   };
 
   const distinctApps = new Set(withReceipt.map((r) => r.source)).size;
@@ -616,6 +624,21 @@ export function renderMarkdown(b: EvidenceBundle): string {
     L.push(`| ${c.framework} | ${c.control} | ${ICON[c.status]} ${c.status} | ${c.evidence} |`);
   }
   L.push("");
+  // Run-correlation appendix (S3) — appended ONLY when correlated receipts exist, so a
+  // zero-correlation report is byte-identical to a pre-S3 one.
+  if (b.correlation) {
+    const c = b.correlation;
+    L.push("## Session correlation (appendix)");
+    L.push("");
+    L.push(
+      `Computed from verified \`kriya.corr\` receipts: **${c.runs}** run(s) across **${c.actions}** correlated action(s); **${c.subAgents}** sub-agent(s) observed; **${c.spawns}** subagent-spawn action(s); **${c.blocked}** blocked/failed attempt(s).`,
+    );
+    L.push("");
+    L.push(
+      "_Run correlation groups a session's actions from the signed receipts; approval decisions are recorded separately in the approvals queue._",
+    );
+    L.push("");
+  }
   L.push("_Status: ✓ satisfied · ◐ partial · ✗ gap. This report is evidence, not a certification._");
   L.push("");
   return L.join("\n");

@@ -244,6 +244,44 @@ mod tests {
         );
     }
 
+    /// S3 hostile fixture: run correlation (`kriya.corr.run_id`/`agent_id`/`parent_step_id`) lives in
+    /// `params`, which `minimize_window` NEVER reads — so a secret planted in a run id can never
+    /// surface in an envelope, at ANY verbosity. This guards design law 2 for the correlation
+    /// vocabulary (run ids are pseudonymous but linkable; the default is that NONE of them leave).
+    #[test]
+    fn a_secret_planted_in_run_correlation_never_reaches_a_minimized_window() {
+        // Both an allowlisted id and a bucketed one, each carrying a poisoned kriya.corr.
+        let poison = json!({
+            "command": "ls",
+            "kriya.corr": {
+                "run_id": "SECRET-TENANT-XYZ",
+                "agent_id": "SECRET-AGENT",
+                "parent_step_id": "SECRET-PARENT"
+            }
+        });
+        let receipts = vec![
+            receipt("create_note", true, poison.clone()), // allowlisted → passes verbatim as an id
+            receipt("wire_funds", true, poison.clone()),  // not allowlisted, destructive → bucketed
+        ];
+        // Try every allowlist width — the run ids must never surface under any of them.
+        for allow in [
+            Allowlist::default(),
+            Allowlist::new(["create_note", "wire_funds"]),
+        ] {
+            let out = minimize_window(&receipts, &allow);
+            let serialized = serde_json::to_string(&out).unwrap();
+            assert!(
+                !serialized.contains("SECRET"),
+                "run correlation must never leak into an envelope: {serialized}"
+            );
+            // The reserved key name itself must not appear either — the minimizer never touches params.
+            assert!(
+                !serialized.contains("kriya.corr"),
+                "the reserved key must not surface: {serialized}"
+            );
+        }
+    }
+
     // ─── minimize_io (doc 24 §4.5/§7.5, EG-4) ──────────────────────────────────────────────────────
 
     fn io_receipt(action_id: &str, dest_host: &str) -> Value {
@@ -292,11 +330,21 @@ mod tests {
         let out = minimize_io(&receipts, &patterns);
 
         let serialized = serde_json::to_string(&out).unwrap();
-        assert!(!serialized.contains("eu.vendor.com"), "observed host must never leak");
-        assert!(!serialized.contains("us.vendor.com"), "observed host must never leak");
+        assert!(
+            !serialized.contains("eu.vendor.com"),
+            "observed host must never leak"
+        );
+        assert!(
+            !serialized.contains("us.vendor.com"),
+            "observed host must never leak"
+        );
 
-        let by: std::collections::HashMap<_, _> = out.iter().map(|p| (p.pattern.as_str(), p)).collect();
-        assert_eq!(by["*.vendor.com"].count, 2, "both vendor.com subdomains aggregate under the pattern");
+        let by: std::collections::HashMap<_, _> =
+            out.iter().map(|p| (p.pattern.as_str(), p)).collect();
+        assert_eq!(
+            by["*.vendor.com"].count, 2,
+            "both vendor.com subdomains aggregate under the pattern"
+        );
         assert_eq!(by["*.vendor.com"].denied, 0);
         assert_eq!(by["api.partner.com"].count, 1);
         assert_eq!(by["api.partner.com"].denied, 1);
@@ -310,7 +358,10 @@ mod tests {
             receipt("create_note", true, json!({ "body": "irrelevant" })),
         ];
         let out = minimize_io(&receipts, &patterns);
-        assert!(out.is_empty(), "ingress + non-io receipts contribute nothing to the destination view");
+        assert!(
+            out.is_empty(),
+            "ingress + non-io receipts contribute nothing to the destination view"
+        );
     }
 
     #[test]
@@ -329,10 +380,25 @@ mod tests {
     #[test]
     fn host_matching_mirrors_the_runtime_semantics() {
         assert!(host_matches("*", "anything.example"));
-        assert!(host_matches("*.vendor.com", "vendor.com"), "apex matches too");
-        assert!(host_matches("*.vendor.com", "a.b.vendor.com"), "nested subdomain matches");
-        assert!(!host_matches("*.vendor.com", "notvendor.com"), "no accidental suffix match");
-        assert!(!host_matches("api.vendor.com", "www.vendor.com"), "exact pattern is exact");
-        assert!(!host_matches("*.", "vendor.com"), "malformed bare '*.' matches nothing");
+        assert!(
+            host_matches("*.vendor.com", "vendor.com"),
+            "apex matches too"
+        );
+        assert!(
+            host_matches("*.vendor.com", "a.b.vendor.com"),
+            "nested subdomain matches"
+        );
+        assert!(
+            !host_matches("*.vendor.com", "notvendor.com"),
+            "no accidental suffix match"
+        );
+        assert!(
+            !host_matches("api.vendor.com", "www.vendor.com"),
+            "exact pattern is exact"
+        );
+        assert!(
+            !host_matches("*.", "vendor.com"),
+            "malformed bare '*.' matches nothing"
+        );
     }
 }

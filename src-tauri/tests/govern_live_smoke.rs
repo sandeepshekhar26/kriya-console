@@ -59,6 +59,32 @@ fn govern_all_round_trip_on_real_configs() {
         "mcp_servers:\n  fs:\n    command: uvx\n    args: [mcp-server-fs]\n",
     );
 
+    // S1: the VS-Code family (Cursor/Cline/Copilot) + Gemini CLI — MCP-only clients govern-all wires
+    // through the gateway per-server wrap. Config seams verified 2026-07-21 against each agent's
+    // current docs. Cursor.app is installed on this Mac (its `~/.cursor/mcp.json` seeds from real if
+    // the user has one, else this sample); the wire/unwire logic is config-shape-driven, so the
+    // round-trip proof below holds identically for all of them. NOTE Copilot's map is keyed `servers`.
+    let cursor = seed(
+        &sandbox,
+        ".cursor/mcp.json",
+        "{\n  \"mcpServers\": {\n    \"filesystem\": { \"command\": \"npx\", \"args\": [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"/tmp\"] }\n  }\n}\n",
+    );
+    let gemini = seed(
+        &sandbox,
+        ".gemini/settings.json",
+        "{\n  \"mcpServers\": {\n    \"fs\": { \"command\": \"uvx\", \"args\": [\"mcp-server-fs\"] }\n  }\n}\n",
+    );
+    let cline = seed(
+        &sandbox,
+        "Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json",
+        "{\n  \"mcpServers\": {\n    \"fs\": { \"command\": \"node\", \"args\": [\"/srv/fs.js\"], \"disabled\": false, \"autoApprove\": [] }\n  }\n}\n",
+    );
+    let copilot = seed(
+        &sandbox,
+        "Library/Application Support/Code/User/mcp.json",
+        "{\n  \"servers\": {\n    \"pw\": { \"type\": \"stdio\", \"command\": \"npx\", \"args\": [\"-y\", \"playwright-mcp\"] }\n  }\n}\n",
+    );
+
     // Whether each file is YAML (Hermes) or JSON — for the content-equality check.
     let is_yaml = |p: &Path| p.extension().and_then(|e| e.to_str()) == Some("yaml");
     // Parse a config file into a serde_json::Value regardless of on-disk format (content, not bytes).
@@ -71,7 +97,15 @@ fn govern_all_round_trip_on_real_configs() {
         }
     };
 
-    let files = [cc.clone(), desktop.clone(), hermes.clone()];
+    let files = [
+        cc.clone(),
+        desktop.clone(),
+        hermes.clone(),
+        cursor.clone(),
+        gemini.clone(),
+        cline.clone(),
+        copilot.clone(),
+    ];
     // The raw originals' *content* (order-independent) — nothing here may be lost or altered.
     let orig_content: Vec<serde_json::Value> = files.iter().map(|p| content_of(p)).collect();
 
@@ -103,6 +137,29 @@ fn govern_all_round_trip_on_real_configs() {
         eprintln!("    + {} {}", a.action, a.target_id);
     }
     assert!(report.errors.is_empty(), "govern_all reported errors: {:?}", report.errors);
+
+    // S1 explicit acceptance — Cursor (installed on this Mac): detected as an ungoverned gateway
+    // target, wired by govern_all, and its on-disk config now routes through kriya-gateway.
+    assert!(
+        surface.targets.iter().any(|t| t.agent == "cursor" && t.kind == "mcp-server" && t.state == "ungoverned"),
+        "Cursor's stdio MCP server must be detected as an ungoverned gateway target"
+    );
+    assert!(
+        report.wired.iter().any(|a| a.agent == "cursor" && a.action == "wrap-mcp-server"),
+        "govern_all must wire Cursor's server through the gateway"
+    );
+    {
+        let v = content_of(&cursor);
+        let entry = &v["mcpServers"]["filesystem"];
+        let cmd = entry["command"].as_str().unwrap_or("");
+        assert!(cmd.contains("kriya-gateway"), "Cursor's server command should be the gateway: {cmd}");
+        assert_eq!(entry["args"][0], "proxy", "wrapped via the gateway proxy subcommand");
+    }
+    // Copilot's `servers` (lowercase) map is wired too, proving the non-mcpServers key path.
+    assert!(
+        report.wired.iter().any(|a| a.agent == "copilot" && a.action == "wrap-mcp-server"),
+        "govern_all must wire Copilot's server under the `servers` key"
+    );
 
     eprintln!("\n== after govern_all (full configs) ==");
     for p in &files {

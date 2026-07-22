@@ -5,6 +5,7 @@ export type View =
   | "monitor"
   | "coverage"
   | "audit"
+  | "sessions"
   | "approvals"
   | "policy"
   | "budget"
@@ -29,6 +30,7 @@ const GROUPS: NavGroup[] = [
       { id: "monitor", label: "Monitor", icon: "monitor" },
       { id: "coverage", label: "Coverage", icon: "coverage" },
       { id: "audit", label: "Audit log", icon: "list" },
+      { id: "sessions", label: "Sessions", icon: "folder" },
       { id: "approvals", label: "Approvals", icon: "approvals" },
     ],
   },

@@ -77,11 +77,13 @@ const STANDARD_IDS: [&str; 36] = [
 /// mechanism is unchanged) — "extended" only widens WHICH action ids are named, never what's disclosed
 /// about any single action.
 fn extended_allowlist() -> Allowlist {
-    Allowlist::new(
-        STANDARD_IDS
-            .into_iter()
-            .chain(["read_note", "get_task", "read_transaction", "export_report", "approve_request"]),
-    )
+    Allowlist::new(STANDARD_IDS.into_iter().chain([
+        "read_note",
+        "get_task",
+        "read_transaction",
+        "export_report",
+        "approve_request",
+    ]))
 }
 
 /// Resolve the allowlist for the currently-applied `envelope_verbosity` (`"standard"` | `"extended"`,
@@ -118,7 +120,10 @@ mod tests {
         assert!(standard.allows("create_note"));
         assert!(!standard.allows("read_note"), "read_note is extended-only");
 
-        assert!(extended.allows("create_note"), "extended is a superset of standard");
+        assert!(
+            extended.allows("create_note"),
+            "extended is a superset of standard"
+        );
         assert!(extended.allows("read_note"));
 
         assert!(
@@ -160,10 +165,17 @@ mod tests {
         for verbosity in ["standard", "extended", "some-future-value"] {
             let allow = allowlist_for(verbosity);
             for id in KRIYA_IO_IDS {
-                assert!(allow.allows(id), "verbosity={verbosity} must allowlist {id}");
+                assert!(
+                    allow.allows(id),
+                    "verbosity={verbosity} must allowlist {id}"
+                );
             }
         }
-        assert_eq!(KRIYA_IO_IDS.len(), 24, "the closed 2x4x3 facet set (doc 24 §4.2 rule 5)");
+        assert_eq!(
+            KRIYA_IO_IDS.len(),
+            24,
+            "the closed 2x4x3 facet set (doc 24 §4.2 rule 5)"
+        );
     }
 
     #[test]
@@ -184,7 +196,10 @@ mod tests {
         // governance metadata, not app data an operator would want to dial down.
         for verbosity in ["standard", "extended", "anything-unrecognized"] {
             let allow = allowlist_for(verbosity);
-            assert!(allow.allows("kriya.policy.applied"), "verbosity={verbosity}");
+            assert!(
+                allow.allows("kriya.policy.applied"),
+                "verbosity={verbosity}"
+            );
             assert!(allow.allows("kriya.policy.stale"), "verbosity={verbosity}");
         }
     }
@@ -212,6 +227,34 @@ mod tests {
             operator_pseudonym(&[9u8; 32], "Jane Q. Operator"),
             "a different pepper → a different pseudonym (not reversible without it)"
         );
+    }
+
+    /// S3 hostile fixture (device side): run correlation rides `params.kriya.corr`, which the sealed
+    /// `minimize_window` never reads — so a secret planted in `run_id` cannot reach an envelope at
+    /// EITHER verbosity. The default posture for run correlation is therefore "nothing leaves",
+    /// structurally, with zero allowlist change (design law 2 / doc 24 §4.5).
+    #[test]
+    fn a_secret_in_run_correlation_never_reaches_an_envelope_at_any_verbosity() {
+        let receipts = vec![json!({
+            "action_id": "create_note", "success": true,
+            "params": {
+                "title": "hi",
+                "kriya.corr": { "run_id": "SECRET-RUN", "agent_id": "SECRET-AGENT" }
+            },
+            "actor": { "agent": "claude-code", "user": "Jane Q. Operator" }
+        })];
+        for verbosity in ["standard", "extended", "some-future-value"] {
+            let actions = kriya_verify::minimize_window(&receipts, &allowlist_for(verbosity));
+            let serialized = serde_json::to_string(&actions).unwrap();
+            assert!(
+                !serialized.contains("SECRET"),
+                "verbosity={verbosity}: run correlation must not leak: {serialized}"
+            );
+            assert!(
+                !serialized.contains("kriya.corr"),
+                "verbosity={verbosity}: reserved key must not surface"
+            );
+        }
     }
 
     #[test]

@@ -185,6 +185,51 @@ export interface PolicySaveResult {
 export const saveAgentPolicy = (yaml: string) => invoke<PolicySaveResult>("save_agent_policy", { yaml });
 export const loadAgentPolicy = () => invoke<string | null>("load_agent_policy");
 
+// ── Policy CI (free — I3, doc 26): counterfactual replay ─────────────────────
+/** One changed action from a simulation, capped/sampled — mirrors Rust `policy_sim::SimExample`. */
+export interface SimExample {
+  source: string;
+  actionId: string;
+  tsMs: number;
+  /** `"allow" | "approval" | "deny"` under the CURRENT on-disk policy. */
+  before: string;
+  /** `"allow" | "approval" | "deny"` under the CANDIDATE policy. */
+  after: string;
+}
+/** Mirrors Rust `policy_sim::SimulationReport`. Replays ONLY the action-tier gate (allow/approval/
+ *  deny, incl. the B11 read-only pre-empt) — budget, egress-tier, and detection-pack body/host
+ *  heuristics are not replayed (see the Rust doc comment). */
+export interface SimulationReport {
+  windowFromMs: number;
+  windowToMs: number;
+  totalReplayed: number;
+  changed: number;
+  changedToDeny: number;
+  changedToApproval: number;
+  changedToAllow: number;
+  unchanged: number;
+  examples: SimExample[];
+  examplesTruncated: boolean;
+  candidatePolicyHash: string;
+}
+/** Replay a candidate policy (YAML or JSON text — JSON is valid YAML) against this device's own
+ *  verified receipt history. `windowDays` defaults to 7 server-side, clamped to `[1, 90]`. Free,
+ *  unconditional — used both by `PolicyView`'s "Test before apply" and
+ *  `ControlPlanePolicyTab`'s pre-publish simulation step. */
+export const simulatePolicy = async (
+  candidateYaml: string,
+  windowDays?: number,
+): Promise<SimulationReport> => {
+  // Screenshot pipeline only (`KRIYA_DEMO=1` capture build with no Tauri backend — the whole branch
+  // tree-shakes out of the shipped app, where `__KRIYA_DEMO__` is `false`): serve a deterministic
+  // report over the seed's REAL signed action-ids so the still shows the feature. The desktop app
+  // always has a backend (`isTauri()`), so it always computes the real replay in Rust.
+  if (__KRIYA_DEMO__ && !isTauri()) {
+    return (await import("../demo/capture-seed")).CAPTURE_SIM_REPORT;
+  }
+  return invoke<SimulationReport>("simulate_policy", { candidateYaml, windowDays });
+};
+
 // ── Govern-all orchestrator (free, GA-1) ─────────────────────────────────────
 /** One planned/performed change. Mirrors Rust `govern::GovernAction`. */
 export interface GovernAction {

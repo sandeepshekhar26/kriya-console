@@ -14,6 +14,7 @@ pub mod govern;
 pub mod license;
 pub mod onboarding;
 pub mod paid;
+pub mod policy_sim;
 pub mod receipts;
 
 // Control-plane device modules — compiled ONLY under the off-by-default `control-plane` feature
@@ -75,6 +76,11 @@ pub fn run() {
             govern::govern_all,
             govern::ungovern_all,
             govern::ungovern,
+            // Free: I3 Policy CI — counterfactual replay of a candidate policy over this device's own
+            // verified receipts ("would have blocked N of last week's M actions"). Single-device
+            // (`PolicyView`) and fleet pre-publish (`ControlPlanePolicyTab`, control-plane feature)
+            // both call this same command — the replay logic doesn't need a license to be honest.
+            policy_sim::simulate_policy,
             // License (R29).
             license::license_status,
             license::install_license,
