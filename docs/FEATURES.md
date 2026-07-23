@@ -7,7 +7,7 @@ your own server — there is no vendor cloud to trust.
 
 Status labels, used honestly:
 
-- ✅ **Shipped** — in the current notarized DMG (v0.3.0).
+- ✅ **Shipped** — in the current notarized DMG (v0.3.1).
 - 🟢 **Merged** — built, tested, and merged on `main`; ships in the next DMG.
 - 🧭 **Roadmap** — not built; we don't sell it.
 

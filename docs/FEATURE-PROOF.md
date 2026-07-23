@@ -9,8 +9,8 @@
 > TRUST.md wins.
 >
 > Companion: [`FEATURES.md`](FEATURES.md) — the same features in plain words.
-> Current release: **Console v0.3.0**
-> ([public DMG](https://github.com/sandeepshekhar26/kriya-console/releases/tag/v0.3.0)) ·
+> Current release: **Console v0.3.1**
+> ([public DMG](https://github.com/sandeepshekhar26/kriya-console/releases/tag/v0.3.1)) ·
 > auditor CLI **audit-v0.1.0**.
 >
 > **Post-release rows:** a row tagged `✅ (main; ships vNEXT)` is merged and test-proven but

@@ -3,6 +3,17 @@
 All notable changes to the Console and the `kriyad` control plane. Dates are release dates of the
 signed, notarized macOS DMG unless noted.
 
+## v0.3.1 — 2026-07-23
+
+- **Connections: clearer guidance for the MCP-only agents.** When nothing is detected, the "Govern
+  everything" empty state now names all seven supported clients and explains the key distinction:
+  Claude Code and Hermes are governed whole-lane the moment their CLI is on your PATH (via a hook),
+  while **Cursor, Cline, GitHub Copilot, and Gemini CLI have no hook** — kriya governs their *MCP
+  lane* via the gateway, so each appears here only once it has a **local (stdio) MCP server** in its
+  config. Previously the empty state mentioned only Claude Code / Claude Desktop / Hermes, so there
+  was no way to discover that the VS-Code-family and CLI clients were supported. No behavior change —
+  detection and wiring were already correct; this is the missing signpost.
+
 ## v0.3.0 — 2026-07-22 — sessions, test-before-apply, more agents
 
 - **Sessions — run correlation.** A new **Sessions** view reconstructs every governed run as a tree

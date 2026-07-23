@@ -255,7 +255,7 @@ export function ConnectionsView({
                   ? <>Detected <strong>{toWire}</strong> ungoverned {toWire === 1 ? "surface" : "surfaces"} that can be wired now. You'll see exactly what changes before anything is written.</>
                   : summary && summary.governed > 0
                   ? <>Everything detected is already governed. Re-run any time you add an agent or MCP server.</>
-                  : <>No ungoverned surfaces detected yet. Install an agent (Claude Code, Claude Desktop, Hermes) or add one manually below.</>}
+                  : <>No ungoverned surfaces detected yet. kriya governs <strong>Claude Code</strong> &amp; <strong>Hermes</strong> (the whole lane, the moment the CLI is on your PATH) and <strong>Cursor</strong>, <strong>Cline</strong>, <strong>GitHub Copilot</strong> &amp; <strong>Gemini CLI</strong> (via the gateway) — but the last four have no hook, so each one appears here only once it has a <strong>local (stdio) MCP server</strong> in its config (that's the lane kriya governs for them). Install a supported agent, add a local MCP server to it, then re-run — or add a connection manually below.</>}
               </p>
             </div>
             <button

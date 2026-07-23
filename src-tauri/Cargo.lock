@@ -2052,7 +2052,7 @@ dependencies = [
 
 [[package]]
 name = "kriya-console"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ed25519-dalek",
  "getrandom 0.3.4",

@@ -1,6 +1,6 @@
 {
   "name": "kriya-console",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "kriya Console — governed-agent oversight (proprietary, paid tier): cross-app signed-audit viewer, policy editor, approval routing, budget controls.",
   "license": "UNLICENSED",

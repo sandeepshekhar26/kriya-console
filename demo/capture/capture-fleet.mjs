@@ -206,6 +206,21 @@ function tauriStub() {
       verifiedReceipts: i === 0 ? 42 : 0, allow: i === 0 ? 38 : 0, deny: i === 0 ? 3 : 0, approve: i === 0 ? 1 : 0,
     })),
     egressTotals: { verifiedReceipts: 42, allow: 38, deny: 3, approve: 1 },
+    // EG-4 pattern-echo roll-up: device 0 runs pattern-echo (bundle-authored patterns only, never raw
+    // hosts); the rest never enabled it — the tab must render both states without crashing.
+    egressPatterns: DEVICES.map((d, i) => ({
+      devicePub: d.device_pub, deviceLabel: d.device_label,
+      patternEchoActive: i === 0,
+      patterns: i === 0
+        ? [
+            { pattern: "*.github.com", count: 31, denied: 0, fewDevicePattern: false },
+            { pattern: "api.anthropic.com", count: 7, denied: 0, fewDevicePattern: false },
+          ]
+        : [],
+      unlistedCount: i === 0 ? 2 : null,
+      unlistedDenied: i === 0 ? 2 : null,
+    })),
+    purposeStatement: "Quarterly egress-destination review (change window CW-31)",
     controls,
     markdown: [
       `# Fleet evidence — ${organization}`, "",

@@ -83,6 +83,17 @@ async function main() {
   await caption(page, "One tamper-evident audit trail. Ed25519-signed, hash-chained.");
   await sleep(4200);
 
+  // Sessions (S3, v0.3.0): the run tree — the most-recent run auto-expands, showing the Claude Code
+  // session with its sub-agents and a policy-blocked action. Skipped gracefully on a pre-v0.3 build.
+  try {
+    await nav(page, "Sessions");
+    await page.getByText("correlated run", { exact: false }).first().waitFor({ timeout: 4000 });
+    await caption(page, "NEW — Sessions. Every run rebuilt as a tree: session → sub-agent → action.");
+    await sleep(4600);
+    await caption(page, "From verified receipts only — blocked attempts flagged, no lineage ever invented.");
+    await sleep(4200);
+  } catch { /* pre-sessions build — skip the beat */ }
+
   await nav(page, "Approvals");
   await caption(page, "Risky actions route to a human — with full RBAC.");
   await sleep(4000);
@@ -90,6 +101,22 @@ async function main() {
   await nav(page, "Policy");
   await caption(page, "Author the policy the runtime enforces — deny by default.");
   await sleep(4000);
+
+  // Test before apply (I3, v0.3.0): run the simulator over the seeded receipt corpus — the report
+  // renders live, so the beat shows the blast-radius answer, not a static card. Skipped pre-I3.
+  try {
+    const sim = page.locator("article", { has: page.locator("h2", { hasText: "Test before apply" }) });
+    await sim.scrollIntoViewIfNeeded({ timeout: 3000 });
+    await caption(page, "NEW — test a policy edit against last week's REAL receipts before you apply it.");
+    await sleep(1600);
+    await sim.locator("button", { hasText: "Simulate impact" }).click();
+    await sim.locator(".decision-table").waitFor({ timeout: 5000 });
+    await sleep(1200);
+    await caption(page, "“This change would have changed N of last week's actions” — and the simulation itself is a signed receipt.");
+    await sleep(4200);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await sleep(400);
+  } catch { /* pre-I3 build — skip the beat */ }
 
   // Egress (EG-2/EG-3): turn the egress tier ON live and author a rule — the YAML pane updates in real
   // time, so the beat shows control being created, not a static card. Skipped on a pre-egress build.
@@ -109,6 +136,14 @@ async function main() {
     await caption(page, "Allow what you name, approve the sensitive, deny the rest — signed per decision.");
     await sleep(3800);
   } catch { /* pre-egress build — skip the beat */ }
+
+  // Connections (S1, v0.3.0): the one-click governed-agent list now spans the VS-Code family + CLIs.
+  try {
+    await nav(page, "Connections");
+    await page.getByText("Cursor", { exact: true }).first().scrollIntoViewIfNeeded({ timeout: 4000 });
+    await caption(page, "One click governs Claude Code, Hermes — and now Cursor, Cline, GitHub Copilot, Gemini CLI.");
+    await sleep(4600);
+  } catch { /* older build — skip the beat */ }
 
   await nav(page, "Evidence");
   await caption(page, "Compliance evidence — SOC 2 / ISO 42001 / EU AI Act — generated on-device.");
